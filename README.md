@@ -110,7 +110,9 @@ SQLite 保存文件状态、片段、全文索引与向量；文档和代码分�
 - Host 构建要求先有匹配 Rust 目标的 tokenizer DLL。已有入口为 [build-inference-host.ps1](scripts/build-inference-host.ps1)，完整暂存入口为 [Prepare-NativeRelease.ps1](scripts/Prepare-NativeRelease.ps1)。它们不是“已验收的一键安装命令”；首次依赖还原可能联网。
 - `-AppOnlyPreview` 只生成不含完整模型／推理能力的预览暂存，不能作为完整功能或发布成功的证据。完整暂存要求显式模型目录，且拒绝覆盖已有阶段目录。
 
-开发 CLI 的帮助入口（在仓库根目录执行；首次运行可能还原依赖）：
+**已知构建缺口：CLI 的原有 RID 声明与包锁图尚未对齐。** CLI 锁文件包含 `win-x64`，工程未声明对应 `RuntimeIdentifiers`；直接对整个引用图强制 RID 又会影响无 RID 的 Core／Infrastructure 锁图。本次整合前后相关工程、锁文件及 SDK 配置一致，因此保留为既有问题，未更改包版本、重写锁文件或宣称 CLI 的锁定模式离线构建通过。后续应在独立修复中统一这组契约并重新验证；不要用去掉锁定检查来掩盖它。
+
+开发 CLI 的帮助入口示意（先完成上述构建契约修复；在仓库根目录执行，首次运行可能还原依赖）：
 
 ```powershell
 Push-Location desktop
@@ -146,7 +148,7 @@ $files = 'C:\WinSightExample\Files'
 
 设置保存为 `<data-dir>\settings.json`，JSON 字段使用 camelCase。开发 App 未指定数据目录时默认使用 `%LOCALAPPDATA%\WinSight\NativePreview`；CLI 必须显式传入 `--data-dir`。安装启动器可以指定其他受控数据根，不能把开发默认目录当作所有安装的固定路径。
 
-默认索引目录为 `<data-dir>\index`。未显式配置 Host／模型路径时，后端相对应用目录查找 `inference\WinSight.InferenceHost.exe`、`inference\model-manifest.json` 和 `models\`；不同安装布局应以实际启动器与显式配置为准。
+默认索引目录为 `<data-dir>\index`。数据目录应保持较短：SQLite 初始化还会追加私有暂存库及 sidecar 文件名，Windows 下过长路径可能报 `SQLITE_CANTOPEN`；当前不承诺任意长路径均可用。未显式配置 Host／模型路径时，后端相对应用目录查找 `inference\WinSight.InferenceHost.exe`、`inference\model-manifest.json` 和 `models\`；不同安装布局应以实际启动器与显式配置为准。
 
 | 字段 | 默认值 | 含义 |
 | --- | --- | --- |
