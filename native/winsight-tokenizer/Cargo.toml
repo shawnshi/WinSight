@@ -1,0 +1,17 @@
+[package]
+name = "winsight-tokenizer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+name = "winsight_tokenizer"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tokenizers = { version = "=0.23.1", default-features = false, features = ["onig"] }
+
+[profile.release]
+panic = "unwind"
+strip = "debuginfo"

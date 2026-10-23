@@ -1,0 +1,59 @@
+# Build output
+.build/
+.swiftpm/
+/Vendor/
+
+# Dev runs (scripts/dev-run.sh): their indexes, models and settings
+.dev/
+
+# Python build/check scripts
+__pycache__/
+*.pyc
+
+# Evals that name your own files
+evals/*.local.json
+
+# Model cache used by Windows package checks
+/models/
+
+# Local agent execution artifacts
+.pi/
+
+# The Tauri shell (shell/): Cargo builds and the schemas tauri-build writes
+shell/src-tauri/target/
+shell/src-tauri/gen/
+# What scripts/package-windows.sh gathers for the installer
+shell/src-tauri/helper/
+shell/src-tauri/THIRD-PARTY-NOTICES.txt
+
+# Native desktop build outputs; retain packages.lock.json in source control.
+desktop/**/bin/
+desktop/**/obj/
+desktop/**/TestResults/
+inference/**/bin/
+inference/**/obj/
+native/**/target/
+
+# Local qualification records and generated diagnostics, not public source.
+desktop/*-handoff.md
+inference/*-handoff.md
+**/review-baseline/
+desktop/**/review-*.log
+desktop/**/validation.log
+desktop/**/build-output.txt
+/docs/*.diff
+/docs/*.patch
+/docs/cargo-*.txt
+
+# Credentials and local data must never be added by a broad source staging step.
+.env
+.env.*
+*.pfx
+*.p12
+*.key
+*.pem
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.onnx
+*.onnx_data

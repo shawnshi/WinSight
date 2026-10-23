@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="CompositeHost/**/*.cs" />
+    <ProjectReference Include="CompositeHost/CompositeHost.csproj" ReferenceOutputAssembly="false" />
+    <Reference Include="WinSight.Infrastructure"><HintPath>$(ActualInfrastructureAssembly)</HintPath><Private>true</Private></Reference>
+    <Reference Include="WinSight.Core"><HintPath>$(ActualCoreAssembly)</HintPath><Private>true</Private></Reference>
+    <!-- The explicit production DLL is not self contained; supply its exact real transitive graph offline. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.13]" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="[3.5.1]" />
+    <PackageReference Include="PdfPig" Version="[0.1.16]" />
+  </ItemGroup>
+  <Target Name="RequireActualAssemblies" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(ActualInfrastructureAssembly)') Or !Exists('$(ActualCoreAssembly)')" Text="Explicit actual Infrastructure/Core DLLs required; no stubs." />
+  </Target>
+</Project>

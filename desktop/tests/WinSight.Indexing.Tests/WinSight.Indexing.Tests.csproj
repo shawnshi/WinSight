@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Link the frozen contracts and owned sources; never generate outputs in sibling projects. -->
+    <Compile Include="../../src/WinSight.Core/Contracts.cs" Link="Core/Contracts.cs" />
+    <Compile Include="../../src/WinSight.Infrastructure/Extraction/**/*.cs" Link="Extraction/%(Filename)%(Extension)" />
+    <Compile Include="../../src/WinSight.Infrastructure/Indexing/**/*.cs" Link="Indexing/%(Filename)%(Extension)" />
+    <!-- Candidate IndexingService now has a typed internal media dependency; keep testing the real owned sources. -->
+    <Compile Include="../../src/WinSight.Infrastructure/Media/**/*.cs" Link="Media/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Remove="bin/**;obj/**" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="[3.5.1]" />
+    <PackageReference Include="PdfPig" Version="[0.1.16]" />
+  </ItemGroup>
+</Project>

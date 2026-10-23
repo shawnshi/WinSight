@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "profile_path": ".dev/onnx-p0/profiles/path-regression-0of4argh/text-profile_2026-10-19_13-50-56.json",
+  "sha256": "f709c194c7205f3be22e2964d95c7fd3476aee1d75f7130708eafdb72f744dce",
+  "node_execution_providers": [
+    "CPUExecutionProvider"
+  ],
+  "model_runs": 1,
+  "root_profile_files_unchanged": true,
+  "full_model_suite_repeated": false
+}

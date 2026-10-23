@@ -1,0 +1,168 @@
+<Page
+    x:Class="WinSight.App.Views.SearchPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:vm="using:WinSight.App.ViewModels"
+    mc:Ignorable="d">
+
+    <Grid Padding="24,16,24,24" RowSpacing="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Search Bar and Mode Filter -->
+        <Grid Grid.Row="0" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBox x:Name="SearchBox"
+                     PlaceholderText="Search files, documents, media and code..."
+                     Text="{x:Bind ViewModel.Query, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                     KeyDown="OnSearchBoxKeyDown"
+                     VerticalAlignment="Center"/>
+
+            <ComboBox Grid.Column="1"
+                      x:Name="KindFilterCombo"
+                      SelectedIndex="0"
+                      SelectionChanged="OnKindFilterChanged"
+                      VerticalAlignment="Center">
+                <ComboBoxItem Content="All Types" Tag="all"/>
+                <ComboBoxItem Content="Documents" Tag="doc"/>
+                <ComboBoxItem Content="PDF" Tag="pdf"/>
+                <ComboBoxItem Content="Images" Tag="image"/>
+                <ComboBoxItem Content="Screenshots" Tag="screenshot"/>
+                <ComboBoxItem Content="Audio" Tag="audio"/>
+                <ComboBoxItem Content="Video" Tag="video"/>
+                <ComboBoxItem Content="Code" Tag="code"/>
+            </ComboBox>
+        </Grid>
+
+        <!-- Notice Banner -->
+        <InfoBar Grid.Row="1"
+                 IsOpen="{x:Bind ViewModel.HasNotice, Mode=OneWay}"
+                 Severity="Informational"
+                 Message="{x:Bind ViewModel.NoticeText, Mode=OneWay}"
+                 IsClosable="False"/>
+
+        <!-- Results List -->
+        <Grid Grid.Row="2">
+            <!-- Loading Indicator -->
+            <ProgressRing IsActive="{x:Bind ViewModel.IsLoading, Mode=OneWay}"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Center"
+                          Width="48" Height="48"/>
+
+            <!-- Empty State -->
+            <StackPanel HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Spacing="8"
+                        Visibility="{x:Bind GetEmptyStateVisibility(ViewModel.Hits.Count, ViewModel.IsLoading), Mode=OneWay}">
+                <FontIcon Glyph="&#xE721;" FontSize="36" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <TextBlock Text="No search results"
+                           Style="{ThemeResource SubtitleTextBlockStyle}"
+                           HorizontalAlignment="Center"/>
+                <TextBlock Text="Type a query above to search indexed local files"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           HorizontalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- Virtualized Results ListView -->
+            <ListView x:Name="ResultsListView"
+                      ItemsSource="{x:Bind ViewModel.Hits, Mode=OneWay}"
+                      SelectedIndex="{x:Bind ViewModel.SelectedIndex, Mode=TwoWay}"
+                      SelectionMode="Single"
+                      IsItemClickEnabled="True"
+                      ItemClick="OnResultItemClick"
+                      ScrollViewer.VerticalScrollBarVisibility="Auto">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="vm:SearchItemViewModel">
+                        <Grid Padding="12,10" ColumnSpacing="12" BorderThickness="0,0,0,1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Type Icon -->
+                            <FontIcon Grid.Column="0"
+                                      Glyph="{x:Bind IconGlyph}"
+                                      FontSize="24"
+                                      VerticalAlignment="Center"
+                                      Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+
+                            <!-- Metadata & Excerpt -->
+                            <StackPanel Grid.Column="1" Spacing="2">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="{x:Bind FileName}"
+                                               Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                               MaxLines="1"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{x:Bind LocationDisplay}"
+                                               Style="{ThemeResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <TextBlock Text="{x:Bind DirectoryPath}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           MaxLines="1"
+                                           TextTrimming="CharacterEllipsis"/>
+
+                                <TextBlock Text="{x:Bind Excerpt}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                           MaxLines="2"
+                                           TextTrimming="CharacterEllipsis"
+                                           Visibility="{x:Bind ExcerptVisibility}"/>
+                            </StackPanel>
+
+                            <!-- Actions & Score -->
+                            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <TextBlock Text="{x:Bind ScoreDisplay}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,0"/>
+
+                                <Button ToolTipService.ToolTip="Open File"
+                                        Click="OnOpenItemClick"
+                                        Padding="6"
+                                        Tag="{x:Bind}">
+                                    <FontIcon Glyph="&#xE8A7;" FontSize="14"/>
+                                </Button>
+
+                                <Button ToolTipService.ToolTip="Show in Explorer"
+                                        Click="OnRevealItemClick"
+                                        Padding="6"
+                                        Tag="{x:Bind}">
+                                    <FontIcon Glyph="&#xED25;" FontSize="14"/>
+                                </Button>
+
+                                <Button ToolTipService.ToolTip="Copy File Path"
+                                        Click="OnCopyItemClick"
+                                        Padding="6"
+                                        Tag="{x:Bind}">
+                                    <FontIcon Glyph="&#xE8C8;" FontSize="14"/>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+        </Grid>
+
+        <!-- Status Footer -->
+        <TextBlock Grid.Row="3"
+                   Text="{x:Bind ViewModel.StatusText, Mode=OneWay}"
+                   Style="{ThemeResource CaptionTextBlockStyle}"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+    </Grid>
+</Page>

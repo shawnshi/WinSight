@@ -1,0 +1,382 @@
+{
+  "baseline": ".dev/native-migration/p0/manifest.json",
+  "source": "shell/src-tauri/src/main.rs",
+  "commandCount": 47,
+  "commands": [
+    {
+      "name": "ask",
+      "callers": [
+        "shell/ui/results.js",
+        "shell/ui/settings.js"
+      ],
+      "contract": "UI-SEARCH",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "estimate",
+      "callers": [
+        "shell/ui/setup.js"
+      ],
+      "contract": "UI-SETUP",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "setup_info",
+      "callers": [],
+      "contract": "UI-SETUP",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "pick_folders",
+      "callers": [
+        "shell/ui/settings.js",
+        "shell/ui/setup.js"
+      ],
+      "contract": "UI-SETUP",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "apply_setup_folders",
+      "callers": [],
+      "contract": "UI-SETUP",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "finish_setup",
+      "callers": [
+        "shell/ui/setup.js"
+      ],
+      "contract": "UI-SETUP",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "open_path",
+      "callers": [
+        "shell/ui/results.js"
+      ],
+      "contract": "SYS-FILES",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "open_code",
+      "callers": [
+        "shell/ui/results.js"
+      ],
+      "contract": "SYS-FILES",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "reveal",
+      "callers": [
+        "shell/ui/panel.js",
+        "shell/ui/settings.js",
+        "shell/ui/window.js"
+      ],
+      "contract": "SYS-FILES",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "hide_panel",
+      "callers": [
+        "shell/ui/panel.js"
+      ],
+      "contract": "SYS-WINDOW",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "panel_height",
+      "callers": [
+        "shell/ui/panel.js"
+      ],
+      "contract": "SYS-WINDOW",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "panel_area",
+      "callers": [
+        "shell/ui/panel.js"
+      ],
+      "contract": "SYS-WINDOW",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "settings_info",
+      "callers": [
+        "shell/ui/settings.js"
+      ],
+      "contract": "CONFIG",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_open_at_login",
+      "callers": [],
+      "contract": "CONFIG",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_center_panel",
+      "callers": [],
+      "contract": "CONFIG",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_processor_only",
+      "callers": [],
+      "contract": "CONFIG",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "debug_query",
+      "callers": [
+        "shell/ui/panel.js"
+      ],
+      "contract": "UI-SEARCH",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "debug_report",
+      "callers": [
+        "shell/ui/panel.js",
+        "shell/ui/settings.js",
+        "shell/ui/window.js"
+      ],
+      "contract": "UI-SEARCH",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "window_info",
+      "callers": [
+        "shell/ui/window.js"
+      ],
+      "contract": "UI-SEARCH",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "app_state",
+      "callers": [
+        "shell/ui/panel.js"
+      ],
+      "contract": "INDEX",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "open_window",
+      "callers": [
+        "shell/ui/panel.js"
+      ],
+      "contract": "SYS-WINDOW",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "open_settings",
+      "callers": [
+        "shell/ui/window.js"
+      ],
+      "contract": "SYS-WINDOW",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "choose_folders",
+      "callers": [
+        "shell/ui/settings.js",
+        "shell/ui/window.js"
+      ],
+      "contract": "INDEX",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "index_now",
+      "callers": [
+        "shell/ui/window.js"
+      ],
+      "contract": "INDEX",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "quit_app",
+      "callers": [
+        "shell/ui/window.js"
+      ],
+      "contract": "SYS-WINDOW",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "close_window",
+      "callers": [
+        "shell/ui/setup.js",
+        "shell/ui/window.js"
+      ],
+      "contract": "SYS-WINDOW",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "pause_indexing",
+      "callers": [
+        "shell/ui/settings.js",
+        "shell/ui/window.js"
+      ],
+      "contract": "INDEX",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "remove_folder",
+      "callers": [],
+      "contract": "INDEX",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_skipped",
+      "callers": [
+        "shell/ui/settings.js"
+      ],
+      "contract": "INDEX",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_skip_types",
+      "callers": [
+        "shell/ui/settings.js"
+      ],
+      "contract": "INDEX",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_index_hours",
+      "callers": [
+        "shell/ui/settings.js"
+      ],
+      "contract": "INDEX",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "code_setup_info",
+      "callers": [],
+      "contract": "CODE",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_code_folders",
+      "callers": [
+        "shell/ui/setup.js"
+      ],
+      "contract": "CODE",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "choose_code_folders",
+      "callers": [
+        "shell/ui/settings.js",
+        "shell/ui/window.js"
+      ],
+      "contract": "CODE",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "remove_code_folder",
+      "callers": [],
+      "contract": "CODE",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "turn_off_code",
+      "callers": [
+        "shell/ui/settings.js"
+      ],
+      "contract": "CODE",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_code_editor",
+      "callers": [
+        "shell/ui/settings.js"
+      ],
+      "contract": "CODE",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "window_resized",
+      "callers": [
+        "shell/ui/window.js"
+      ],
+      "contract": "SYS-WINDOW",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "copy_file",
+      "callers": [
+        "shell/ui/results.js",
+        "shell/ui/window.js"
+      ],
+      "contract": "SYS-FILES",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "drag_out",
+      "callers": [
+        "shell/ui/window.js"
+      ],
+      "contract": "SYS-FILES",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_hotkey",
+      "callers": [],
+      "contract": "CONFIG",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "hold_hotkey",
+      "callers": [],
+      "contract": "CONFIG",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_tray_click",
+      "callers": [
+        "shell/ui/settings.js"
+      ],
+      "contract": "CONFIG",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "check_for_updates",
+      "callers": [
+        "shell/ui/settings.js",
+        "shell/ui/window.js"
+      ],
+      "contract": "RELEASE",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "offer_update",
+      "callers": [
+        "shell/ui/settings.js",
+        "shell/ui/window.js"
+      ],
+      "contract": "RELEASE",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "set_update_checks",
+      "callers": [],
+      "contract": "CONFIG",
+      "nativeParity": "pending"
+    },
+    {
+      "name": "open_licenses",
+      "callers": [
+        "shell/ui/settings.js"
+      ],
+      "contract": "RELEASE",
+      "nativeParity": "pending"
+    }
+  ],
+  "protected": [
+    "settings camelCase JSON; hours in minutes since midnight",
+    "CLI search/index/service callers must be inventoried before removal",
+    "index.sqlite and code.sqlite schema 5, segments.vec 768 Float16 little-endian",
+    "model profile identity, query/document prompts, errors and file state semantics",
+    "media locators/page/line evidence and source permission boundaries"
+  ],
+  "cutover": "Blocked until all required behavioral, model, UI, installer and review gates pass."
+}

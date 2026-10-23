@@ -1,0 +1,84 @@
+{
+  "repository": "onnx-community/embeddinggemma-2-ONNX",
+  "revision": "daa72c51243991dfcaf9f9137d2c573d8f7790c0",
+  "sourceUrl": "https://huggingface.co/api/models/onnx-community/embeddinggemma-2-ONNX/revision/daa72c51243991dfcaf9f9137d2c573d8f7790c0?blobs=true",
+  "modalities": {
+    "text": true,
+    "vision": true,
+    "audio": true
+  },
+  "files": [
+    {
+      "path": "README.md",
+      "size": 28720,
+      "sha256": null,
+      "gitBlobSha1": "ddfe751d31ecbfe6c1ba691a5cb270ab2b5de28a"
+    },
+    {
+      "path": "config.json",
+      "size": 5031,
+      "sha256": null,
+      "gitBlobSha1": "b267dcb270ba41f67a8d14001bf470f23a9525fb"
+    },
+    {
+      "path": "onnx/audio_encoder_q4.onnx",
+      "size": 245543,
+      "sha256": "c4cce3370e72262280d00293cac038896050a03a8e9a27e10b061ca97510296e",
+      "gitBlobSha1": "849dd20245643fc1ec3b3c6983d6607496c6e04a"
+    },
+    {
+      "path": "onnx/audio_encoder_q4.onnx_data",
+      "size": 189075968,
+      "sha256": "ba9328e6341360974083085b44b2bba265003bda564740f7c4c23ed9928f17e2",
+      "gitBlobSha1": "b50d8728c9826bcfadc4ecec0c23a8b3e88024d0"
+    },
+    {
+      "path": "onnx/model_q4.onnx",
+      "size": 490742,
+      "sha256": "f9eeba97acddf139b8ee2ddf04bc30dceafa88de93fadf74d7644e0d61a477a9",
+      "gitBlobSha1": "b0a23124ab3039bb538dda8fb6384c0fb4883d98"
+    },
+    {
+      "path": "onnx/model_q4.onnx_data",
+      "size": 174028800,
+      "sha256": "c3975f2d1ab7a1878ae31a7d7a9b7804a827aff3800b60dfceafce21cac3df49",
+      "gitBlobSha1": "3eba0312dfcdf819876c9185e487ae42c6d9d53e"
+    },
+    {
+      "path": "onnx/vision_encoder_q4.onnx",
+      "size": 159400,
+      "sha256": "7ea284226d4938f0ad921ab091f1d80a9ca699aa802984ef5cd5eec4f4761d96",
+      "gitBlobSha1": "4aa00ad7b39f3e94d31debcf370b8404714724d2"
+    },
+    {
+      "path": "onnx/vision_encoder_q4.onnx_data",
+      "size": 108957696,
+      "sha256": "0a9d6c927334f152a33dd90874f65d6ea5228999abe6a450d3f7813677fa704c",
+      "gitBlobSha1": "09fcb633b7d97ffe636c1989dc3d719d257b9a2a"
+    },
+    {
+      "path": "preprocessor_config.json",
+      "size": 560,
+      "sha256": null,
+      "gitBlobSha1": "97ebeb96191bcc96d5ea299ad16c2952eb9e36c9"
+    },
+    {
+      "path": "processor_config.json",
+      "size": 1788,
+      "sha256": null,
+      "gitBlobSha1": "63043a5a2fd2e25a2fc5336fcdaf24e515d12289"
+    },
+    {
+      "path": "tokenizer.json",
+      "size": 32170510,
+      "sha256": "4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c393504828be4",
+      "gitBlobSha1": "8562f6c9ab4b722ecf89bf869e734560e54d3b85"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "size": 1599,
+      "sha256": null,
+      "gitBlobSha1": "a9afd12fb3ca2c418fd405320ace85ad46748d03"
+    }
+  ]
+}

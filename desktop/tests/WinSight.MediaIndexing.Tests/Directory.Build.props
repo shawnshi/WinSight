@@ -1,0 +1,13 @@
+<Project>
+  <Import Project="$(MSBuildThisFileDirectory)../../Directory.Build.props" />
+  <PropertyGroup>
+    <!-- IDE diagnostics must share the synthetic-only offline boundary, not ambient NuGet defaults. -->
+    <RestoreSources>$(UserProfile)/.nuget/packages</RestoreSources>
+    <NuGetAudit>false</NuGetAudit>
+    <RestoreIgnoreFailedSources>false</RestoreIgnoreFailedSources>
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    <ArtifactsPath Condition="'$(ArtifactsPath)' == ''">$(MSBuildThisFileDirectory)../../../.dev/n2b-index-tests/diagnostic-offline</ArtifactsPath>
+    <RestorePackagesPath Condition="'$(RestorePackagesPath)' == ''">$(ArtifactsPath)/packages</RestorePackagesPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/bin/**;**/obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>

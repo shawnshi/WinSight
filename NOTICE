@@ -1,0 +1,25 @@
+WinSight
+-------
+
+This source tree includes code derived from DigUp:
+https://github.com/ARahim3/DigUp
+Local source checkpoint: 7db9537712995d14e50e0e44baa00f721b98f1c6
+
+The WinSight repository retains its Apache License 2.0 in LICENSE.
+Inherited DigUp portions remain subject to the original MIT copyright and
+permission notice, reproduced without changes in desktop/licenses/DigUp-MIT.txt
+and licenses/DigUp-MIT.txt. This notice does not remove or relicense those
+upstream notices.
+
+licenses/DigUp-Acknowledgements.txt retains the upstream acknowledgements for
+the legacy components. It is historical attribution, not a statement that every
+listed component is included in the current native preview or a complete bill
+of materials for a distributable package. See also desktop/THIRD-PARTY-NOTICES.txt
+and docs/media-attribution.md.
+
+WinSight changes include the Windows/native migration, project naming, current
+README, indexing/search fixes, image OCR/EXIF integration and controlled installer
+prototypes. Model weights, local indexes, credentials and private run artifacts
+are not included in this source publication. Models and other dependencies have
+separate terms; source publication is not approval to distribute their binaries
+or models, nor an assertion that installation/release acceptance is complete.

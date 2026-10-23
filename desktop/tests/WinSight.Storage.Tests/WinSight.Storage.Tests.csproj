@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Compile only the exclusive slice: no shared project build/obj writes. -->
+    <Compile Include="../../src/WinSight.Core/Contracts.cs" Link="Core/Contracts.cs" />
+    <Compile Include="../../src/WinSight.Infrastructure/Storage/**/*.cs" Link="Storage/%(Filename)%(Extension)" />
+    <Compile Include="../../src/WinSight.Infrastructure/Search/**/*.cs" Link="Search/%(Filename)%(Extension)" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.13]" />
+  </ItemGroup>
+</Project>

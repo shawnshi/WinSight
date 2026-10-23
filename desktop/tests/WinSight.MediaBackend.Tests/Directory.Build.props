@@ -1,0 +1,9 @@
+<Project>
+  <Import Project="$(MSBuildThisFileDirectory)../../Directory.Build.props" />
+  <PropertyGroup>
+    <RestoreSources>$(UserProfile)/.nuget/packages</RestoreSources>
+    <NuGetAudit>false</NuGetAudit>
+    <RestoreIgnoreFailedSources>false</RestoreIgnoreFailedSources>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/bin/**;**/obj/**;**/.dev/**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>

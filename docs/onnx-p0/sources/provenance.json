@@ -1,0 +1,13 @@
+{
+  "repository": "onnx-community/embeddinggemma-2-ONNX",
+  "revision": "daa72c51243991dfcaf9f9137d2c573d8f7790c0",
+  "sourceUrl": "https://huggingface.co/api/models/onnx-community/embeddinggemma-2-ONNX/revision/daa72c51243991dfcaf9f9137d2c573d8f7790c0?blobs=true",
+  "urls": [
+    "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/raw/daa72c51243991dfcaf9f9137d2c573d8f7790c0/config.json",
+    "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/raw/daa72c51243991dfcaf9f9137d2c573d8f7790c0/tokenizer_config.json",
+    "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/raw/daa72c51243991dfcaf9f9137d2c573d8f7790c0/processor_config.json",
+    "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/raw/daa72c51243991dfcaf9f9137d2c573d8f7790c0/preprocessor_config.json",
+    "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/raw/daa72c51243991dfcaf9f9137d2c573d8f7790c0/README.md"
+  ],
+  "note": "Small public source snapshots; no model weights in docs. All large model artifacts are isolated under .dev/onnx-p0/models."
+}

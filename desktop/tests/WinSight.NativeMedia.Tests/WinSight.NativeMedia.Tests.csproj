@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="Fixtures/**/*.cs;TailProbe/**/*.cs;.artifacts/**/*.cs" />
+    <Compile Include="../../../inference/WinSight.InferenceHost/NativeMediaContracts.cs" Link="Production/NativeMediaContracts.cs" />
+    <Compile Include="../../../inference/WinSight.InferenceHost/NativeMediaCommand.cs" Link="Production/NativeMediaCommand.cs" />
+  </ItemGroup>
+</Project>

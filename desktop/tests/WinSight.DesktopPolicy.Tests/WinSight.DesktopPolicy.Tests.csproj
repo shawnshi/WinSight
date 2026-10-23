@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/WinSight.Core/Contracts.cs" Link="Core/Contracts.cs" />
+    <Compile Include="../../src/WinSight.App/Services/NativeMethods.cs" Link="Services/NativeMethods.cs" />
+    <Compile Include="../../src/WinSight.App/Services/HotkeyService.cs" Link="Services/HotkeyService.cs" />
+    <Compile Include="../../src/WinSight.App/ViewModels/SettingsViewModel.cs" Link="ViewModels/SettingsViewModel.cs" />
+  </ItemGroup>
+</Project>

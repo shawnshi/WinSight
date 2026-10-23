@@ -1,0 +1,43 @@
+{
+  "input_sha256": "177892f1ee44d09d36620d23ead1c720d1ee755cf570841efd365ff04b2b5ec8",
+  "ico_sizes": [
+    [
+      16,
+      16
+    ],
+    [
+      24,
+      24
+    ],
+    [
+      32,
+      32
+    ],
+    [
+      48,
+      48
+    ],
+    [
+      64,
+      64
+    ],
+    [
+      128,
+      128
+    ],
+    [
+      256,
+      256
+    ]
+  ],
+  "assets_sha256": {
+    "shell/src-tauri/icons/32x32.png": "c21330ef43541c0aa9d8041df3b1d3ad25638c890831489f10202588a771b62b",
+    "shell/src-tauri/icons/128x128.png": "2979548458355b5fe4566a5deaa52346b38a78d542afc081e7a75b0e4618f705",
+    "shell/src-tauri/icons/128x128@2x.png": "813c89442debfd006cb6f0cb71ffe1cc031c9cb806ed3e994efea5bdd76b0773",
+    "shell/ui/icon.png": "813c89442debfd006cb6f0cb71ffe1cc031c9cb806ed3e994efea5bdd76b0773",
+    "docs/logo.png": "813c89442debfd006cb6f0cb71ffe1cc031c9cb806ed3e994efea5bdd76b0773",
+    "Resources/AppIcon/tray.png": "b8effe5886f73779e7873f25c8ec788c0e89261dd9de6f1b7b19270626e11085",
+    "Resources/AppIcon/tray-dim.png": "4a337249441b3eb91aa648e6a475ed4c0c4c5a25c2d357bbf0e684a7673fddb7",
+    "Resources/AppIcon/tray-paused.png": "d47ca20f1cbfc640cf5b1b07a45e5fc43eb084f8e4e95d5e0f61767364e092b9"
+  }
+}

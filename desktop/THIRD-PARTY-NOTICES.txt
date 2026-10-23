@@ -1,0 +1,20 @@
+WinSight NativePreview - development candidate
+Distribution is not approved by this notice.
+
+Portions of the storage, search and indexing behavior derive from DigUp
+commit 7db9537712995d14e50e0e44baa00f721b98f1c6.
+Copyright (c) 2026 Abdur Rahim. MIT license: licenses/DigUp-MIT.txt.
+
+Direct managed dependencies are pinned in src/*/*.csproj and packages.lock.json.
+Official PdfPig 0.1.16 is Apache-2.0, not the earlier custom package:
+https://www.nuget.org/packages/PdfPig/0.1.16
+https://github.com/UglyToad/PdfPig
+
+The package metadata audit, signature verification and vulnerability query are
+separate development receipts under .dev/native-migration/verification.
+Their passing scope does not complete distribution licensing or full parity.
+
+Before distribution, collect and review all NuGet/runtime/native tokenizer,
+model, dictionary and media-library license texts/notices in the staged payload.
+Model manifest identity and hashes alone are not model distribution permission.
+Do not use this partial notice as the P6 license approval gate.

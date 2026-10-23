@@ -1,0 +1,212 @@
+name: Native model-free CI
+
+# Native packaging/diagnostic artifacts require an explicit manual run.
+# Ordinary source pushes run only the separate read-only source-check workflow.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+      DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: 'false'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_CLI_HOME: ${{ runner.temp }}/winsight-native/dotnet-home
+      DOTNET_INSTALL_DIR: ${{ runner.temp }}/winsight-native/dotnet-sdk
+      NUGET_PACKAGES: ${{ runner.temp }}/winsight-native/nuget-public
+      CARGO_HOME: ${{ runner.temp }}/winsight-native/cargo-public
+      RUSTUP_AUTO_INSTALL: '0'
+    steps:
+      # Official tag-to-commit/action metadata provenance: docs/native-migration/native-ci-handoff.md.
+      - name: Checkout source without persisted credentials
+        timeout-minutes: 2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Initialize ephemeral task directories
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $paths = @($env:DOTNET_CLI_HOME, $env:NUGET_PACKAGES, $env:CARGO_HOME)
+          New-Item -ItemType Directory -Path $paths -Force | Out-Null
+      - name: Provision exact public SDK (ephemeral runner only)
+        timeout-minutes: 2
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: '10.0.113'
+          cache: false
+      - name: Validate deterministic CI script behavior
+        run: ./scripts/native-ci/Invoke-NativeCIContract.ps1 -Suite Original
+      - name: Validate bounded checkpoint protocol without product builds
+        run: ./scripts/native-ci/Invoke-NativeCIContract.ps1 -Suite Checkpoint
+      - name: Validate N3 baseline contract
+        timeout-minutes: 3
+        run: ./scripts/native-ci/Invoke-NativeCIContract.ps1 -Suite N3 -Group baseline
+      - name: Validate N3 final output integrity
+        timeout-minutes: 3
+        run: ./scripts/native-ci/Invoke-NativeCIContract.ps1 -Suite N3 -Group final-output
+      - name: Validate N3 partial output integrity
+        timeout-minutes: 3
+        run: ./scripts/native-ci/Invoke-NativeCIContract.ps1 -Suite N3 -Group partial-output
+      - name: Validate N3 rolling output contract
+        timeout-minutes: 3
+        run: ./scripts/native-ci/Invoke-NativeCIContract.ps1 -Suite N3 -Group rolling
+      - name: Validate N3 hosted entrypoint and boundaries
+        timeout-minutes: 3
+        run: ./scripts/native-ci/Invoke-NativeCIContract.ps1 -Suite N3 -Group hosted
+      # Finite plan: 5 toolchain + 3 Rust + 6 production + 15 core + 15 media.
+      # At most one new command per invocation, 44 total. No polling/batching.
+      - name: Advance native checkpoint 01 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1 -Start
+      - name: Advance native checkpoint 02 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 03 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 04 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 05 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 06 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 07 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 08 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 09 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 10 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 11 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 12 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 13 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 14 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 15 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 16 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 17 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 18 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 19 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 20 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 21 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 22 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 23 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 24 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 25 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 26 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 27 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 28 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 29 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 30 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 31 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 32 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 33 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 34 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 35 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 36 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 37 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 38 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 39 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 40 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 41 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 42 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 43 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 44 of 44
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Require complete native validation and revalidated candidate
+        run: |
+          $leaf = '.dev/native-migration/native-ci/run-{0}-{1}' -f (
+            $env:GITHUB_RUN_ID), $env:GITHUB_RUN_ATTEMPT
+          $root = Join-Path $env:GITHUB_WORKSPACE $leaf
+          & ./scripts/native-ci/Invoke-NativeCICheckpoint.ps1 `
+            -DependencyMode PublicHosted -ArtifactRoot $root `
+            -NuGetPackageRoot $env:NUGET_PACKAGES `
+            -CargoCacheRoot $env:CARGO_HOME -Resume -RequireComplete
+          exit $LASTEXITCODE
+      - name: Retain explicit evidence (never upload caches or source workspace)
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-ci-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ format('.dev/native-migration/native-ci/{0}-{1}-{2}/{3}',
+              'contract', github.run_id, github.run_attempt,
+              'contract-result.json') }}
+            ${{ format('.dev/native-migration/native-ci/{0}-{1}-{2}/{3}',
+              'checkpoint-contract', github.run_id, github.run_attempt,
+              'checkpoint-contract-result.json') }}
+            ${{ format('.dev/native-migration/native-ci/n3-contract-baseline-{0}-{1}/n3-regression-result.json', github.run_id, github.run_attempt) }}
+            ${{ format('.dev/native-migration/native-ci/n3-contract-final-output-{0}-{1}/n3-regression-result.json', github.run_id, github.run_attempt) }}
+            ${{ format('.dev/native-migration/native-ci/n3-contract-partial-output-{0}-{1}/n3-regression-result.json', github.run_id, github.run_attempt) }}
+            ${{ format('.dev/native-migration/native-ci/n3-contract-rolling-{0}-{1}/n3-regression-result.json', github.run_id, github.run_attempt) }}
+            ${{ format('.dev/native-migration/native-ci/n3-contract-hosted-{0}-{1}/n3-regression-result.json', github.run_id, github.run_attempt) }}
+            ${{ format('.dev/native-migration/native-ci/{0}-{1}-{2}/{3}',
+              'run', github.run_id, github.run_attempt,
+              'native-ci-result.json') }}
+            ${{ format('.dev/native-migration/native-ci/{0}-{1}-{2}/{3}',
+              'run', github.run_id, github.run_attempt,
+              'candidate-inventory.json') }}
+            ${{ format('.dev/native-migration/native-ci/{0}-{1}-{2}/{3}',
+              'run', github.run_id, github.run_attempt, 'logs/*.log') }}
+            ${{ format('.dev/native-migration/native-ci/{0}-{1}-{2}/{3}',
+              'run', github.run_id, github.run_attempt,
+              'fixtures/media-*/results.json') }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain model-free candidate only after all required CI gates pass
+        timeout-minutes: 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: >-
+            native-model-free-candidate-${{ github.run_id }}-${{
+            github.run_attempt }}
+          path: >-
+            ${{ format('.dev/native-migration/native-ci/run-{0}-{1}/candidate/',
+              github.run_id, github.run_attempt) }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

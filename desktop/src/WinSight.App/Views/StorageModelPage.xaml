@@ -1,0 +1,137 @@
+<Page
+    x:Class="WinSight.App.Views.StorageModelPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer Padding="24,16,24,24">
+        <StackPanel Spacing="24" MaxWidth="800" HorizontalAlignment="Left">
+            <!-- Header -->
+            <StackPanel Spacing="4">
+                <TextBlock Text="Storage &amp; Embedding Model" Style="{ThemeResource TitleTextBlockStyle}"/>
+                <TextBlock Text="Local vector database index metrics and embedding model execution host diagnostics."
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
+
+            <!-- Migration Preview Banner -->
+            <InfoBar IsOpen="True"
+                     IsClosable="False"
+                     Severity="Warning"
+                     Title="Native Migration Preview Pipeline"
+                     Message="{x:Bind ViewModel.MigrationNotice, Mode=OneWay}"/>
+
+            <!-- Storage & Index Database Card -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="16">
+                    <TextBlock Text="Index Database Status" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+
+                    <Grid RowSpacing="10" ColumnSpacing="16">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Index Path:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind ViewModel.DatabasePath, Mode=OneWay}" TextWrapping="Wrap"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Files Summary:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="16">
+                            <TextBlock Text="{x:Bind FormatTotal(ViewModel.FilesCount), Mode=OneWay}"/>
+                            <TextBlock Text="{x:Bind FormatDone(ViewModel.DoneCount), Mode=OneWay}" Foreground="{ThemeResource SystemFillColorSuccessBrush}"/>
+                            <TextBlock Text="{x:Bind FormatPending(ViewModel.PendingCount), Mode=OneWay}" Foreground="{ThemeResource SystemFillColorCautionBrush}"/>
+                            <TextBlock Text="{x:Bind FormatFailed(ViewModel.FailedCount), Mode=OneWay}" Foreground="{ThemeResource SystemFillColorCriticalBrush}"/>
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Status Detail:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind ViewModel.StatusDetail, Mode=OneWay}" TextWrapping="Wrap"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Embedding Model Diagnostics Card -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="16">
+                    <TextBlock Text="Embedding Model Host" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+
+                    <TextBlock Text="Embedding model execution host provides 768-dimensional L2-normalized vector embeddings. Inspection actively starts the model host and hashes model weights. Click below to inspect."
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+
+                    <!-- Explicit Action Button -->
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Content="Inspect Model &amp; Embedding Engine"
+                                Style="{ThemeResource AccentButtonStyle}"
+                                Click="OnInspectModelClick"
+                                IsEnabled="{x:Bind Invert(ViewModel.IsInspecting), Mode=OneWay}"/>
+
+                        <ProgressRing IsActive="{x:Bind ViewModel.IsInspecting, Mode=OneWay}"
+                                      Width="24" Height="24"
+                                      VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <!-- Error Alert -->
+                    <InfoBar IsOpen="{x:Bind HasError(ViewModel.InspectionError), Mode=OneWay}"
+                             Severity="Error"
+                             Title="Model Probe Error"
+                             Message="{x:Bind ViewModel.InspectionError, Mode=OneWay}"
+                             IsClosable="False"/>
+
+                    <!-- Model Diagnostic Fields (Shown when inspected) -->
+                    <Grid RowSpacing="10" ColumnSpacing="16"
+                          Visibility="{x:Bind BoolToVisibility(ViewModel.HasEmbeddingInfo), Mode=OneWay}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Profile ID:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind ViewModel.ProfileId, Mode=OneWay}"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Dimension:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind ViewModel.Dimension, Mode=OneWay}"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Runtime Host:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind ViewModel.RuntimeHost, Mode=OneWay}"/>
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Model &amp; Revision:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{x:Bind ViewModel.ModelName, Mode=OneWay}"/>
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Execution Provider:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="4" Grid.Column="1" Text="{x:Bind ViewModel.RequestedProvider, Mode=OneWay}"/>
+
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Validation Status:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="5" Grid.Column="1" Text="{x:Bind ViewModel.ValidationStatus, Mode=OneWay}"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Status Notice -->
+            <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                       Style="{ThemeResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

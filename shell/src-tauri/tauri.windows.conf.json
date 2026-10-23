@@ -1,0 +1,10 @@
+{
+  "mainBinaryName": "WinSight",
+  "bundle": {
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

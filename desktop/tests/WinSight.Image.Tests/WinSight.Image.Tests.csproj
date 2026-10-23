@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+    <NuGetAudit>false</NuGetAudit>
+    <ActualInfrastructureAssembly Condition="'$(ActualInfrastructureAssembly)' == ''">$(MSBuildProjectDirectory)/../../src/WinSight.Infrastructure/bin/Debug/net10.0-windows10.0.26100.0/WinSight.Infrastructure.dll</ActualInfrastructureAssembly>
+    <ActualCoreAssembly Condition="'$(ActualCoreAssembly)' == ''">$(MSBuildProjectDirectory)/../../src/WinSight.Core/bin/Debug/net10.0/WinSight.Core.dll</ActualCoreAssembly>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="FakeWorker/**/*.cs" />
+    <Reference Include="WinSight.Infrastructure"><HintPath>$(ActualInfrastructureAssembly)</HintPath></Reference>
+    <Reference Include="WinSight.Core"><HintPath>$(ActualCoreAssembly)</HintPath></Reference>
+    <ProjectReference Include="FakeWorker/FakeWorker.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <Target Name="RequireActualImageAssemblies" BeforeTargets="CoreCompile">
+    <Error Condition="!Exists('$(ActualInfrastructureAssembly)') Or !Exists('$(ActualCoreAssembly)')" Text="Build/pass the actual Infrastructure and Core assemblies first." />
+  </Target>
+</Project>

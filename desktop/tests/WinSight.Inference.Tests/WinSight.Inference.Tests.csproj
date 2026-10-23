@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+    <EnableWindowsTargeting>false</EnableWindowsTargeting>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="FakeHost/**/*.cs" />
+    <Compile Include="../../src/WinSight.Infrastructure/Inference/*.cs" Link="Production/%(Filename)%(Extension)" />
+    <Compile Include="../../src/WinSight.Core/Contracts.cs" Link="Production/Contracts.cs" />
+    <ProjectReference Include="FakeHost/FakeHost.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

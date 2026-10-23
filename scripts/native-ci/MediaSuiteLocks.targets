@@ -1,0 +1,7 @@
+<Project>
+  <!-- The reviewed suite locks must be consumed without enabling lock generation in package-free helper projects. -->
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'WinSight.MediaBackend.Tests' Or '$(MSBuildProjectName)' == 'WinSight.MediaProcess.Tests'">
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,45 @@
+name: Bug report
+description: Something doesn't work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for the report. A few details save a round of questions.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: >-
+        What you did (or searched for), what WinSight did,
+        and what you expected instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options: [Windows]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: WinSight version and system version
+      placeholder: "WinSight Windows development build, Windows 11 x64"
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Computer
+      placeholder: "i7-12700, RTX 3060, 32 GB"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Windows shell logs: `%LOCALAPPDATA%\com.winsight.desktop\logs`.
+        Model logs: `worker.log` in `%LOCALAPPDATA%\WinSight\index`.
+        They can contain file names and your searches;
+        look through them before you paste.
+      render: text

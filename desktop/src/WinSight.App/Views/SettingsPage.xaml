@@ -1,0 +1,242 @@
+<Page
+    x:Class="WinSight.App.Views.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer Padding="24,16,24,24">
+        <StackPanel Spacing="24" MaxWidth="800" HorizontalAlignment="Left">
+            <!-- Header -->
+            <StackPanel Spacing="4">
+                <TextBlock Text="Settings" Style="{ThemeResource TitleTextBlockStyle}"/>
+                <TextBlock Text="Configure hotkeys, background indexing schedule, appearance and behavior."
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
+
+            <!-- Hotkey Section -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Global Shortcut" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="Global keyboard shortcut to summon the Quick Search panel from anywhere in Windows."
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBox x:Name="HotkeyBox"
+                                 Text="{x:Bind ViewModel.Hotkey, Mode=TwoWay}"
+                                 PlaceholderText="e.g. Control+Shift+Space"
+                                 VerticalAlignment="Center"/>
+
+                        <Button Grid.Column="1"
+                                Content="Apply Hotkey"
+                                Click="OnApplyHotkeyClick"
+                                VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <!-- Conflict Warning Banner -->
+                    <InfoBar IsOpen="{x:Bind ViewModel.HasHotkeyConflict, Mode=OneWay}"
+                             Severity="Warning"
+                             Title="Hotkey Registration Conflict"
+                             Message="{x:Bind ViewModel.HotkeyConflictMessage, Mode=OneWay}"
+                             IsClosable="False"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Background Indexing & Schedule Section -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="16">
+                    <TextBlock Text="Indexing &amp; Schedule" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+
+                    <!-- Background monitoring -->
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Background monitoring &amp; indexing" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="Watch folders for changes and run debounce queue when idle."
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                        <ToggleSwitch Grid.Column="1"
+                                      IsOn="{x:Bind ViewModel.BackgroundIndexingEnabled, Mode=TwoWay}"/>
+                    </Grid>
+
+                    <!-- Index Hours Toggle -->
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Restrict Indexing to Specific Hours" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="Limit heavy indexing to off-peak hours (times in minutes from midnight)."
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                        <ToggleSwitch Grid.Column="1"
+                                      IsOn="{x:Bind ViewModel.IndexHoursOn, Mode=TwoWay}"/>
+                    </Grid>
+
+                    <!-- Hours Inputs (in minutes since midnight) -->
+                    <Grid ColumnSpacing="16" RowSpacing="8" Visibility="{x:Bind BoolToVisibility(ViewModel.IndexHoursOn), Mode=OneWay}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Spacing="4">
+                            <TextBlock Text="Start (minutes from midnight, e.g. 60 = 01:00):" Style="{ThemeResource CaptionTextBlockStyle}"/>
+                            <NumberBox Value="{x:Bind ViewModel.IndexHoursStart, Mode=TwoWay}"
+                                       Minimum="0" Maximum="1439" SmallChange="15" SpinButtonPlacementMode="Inline"/>
+                            <TextBlock Text="{x:Bind ViewModel.IndexHoursStartFormatted, Mode=OneWay}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       Style="{ThemeResource CaptionTextBlockStyle}"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Spacing="4">
+                            <TextBlock Text="End (minutes from midnight, e.g. 420 = 07:00):" Style="{ThemeResource CaptionTextBlockStyle}"/>
+                            <NumberBox Value="{x:Bind ViewModel.IndexHoursEnd, Mode=TwoWay}"
+                                       Minimum="0" Maximum="1439" SmallChange="15" SpinButtonPlacementMode="Inline"/>
+                            <TextBlock Text="{x:Bind ViewModel.IndexHoursEndFormatted, Mode=OneWay}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       Style="{ThemeResource CaptionTextBlockStyle}"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Processor Only -->
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Automatic indexing on AC power only" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="Automatic indexing waits on battery or unknown power and pauses within 30 seconds after AC disconnects. Manual indexing remains available."
+                                       TextWrapping="Wrap"
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                        <ToggleSwitch Grid.Column="1"
+                                      AutomationProperties.AutomationId="AcOnlyIndexingToggle"
+                                      AutomationProperties.Name="Automatic indexing on AC power only"
+                                      IsOn="{x:Bind ViewModel.ProcessorOnly, Mode=TwoWay}"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Appearance & Integration Section -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="16">
+                    <TextBlock Text="Appearance &amp; System Integration" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+
+                    <!-- Theme Selection -->
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Application Theme" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="Choose system default, light or dark mode."
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                        <ComboBox Grid.Column="1"
+                                  x:Name="ThemeComboBox"
+                                  SelectionChanged="OnThemeSelectionChanged">
+                            <ComboBoxItem Content="Default"/>
+                            <ComboBoxItem Content="Light"/>
+                            <ComboBoxItem Content="Dark"/>
+                        </ComboBox>
+                    </Grid>
+
+                    <!-- Tray Click Action -->
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Tray Icon Left Click" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="Action to perform when single-clicking the taskbar tray icon."
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                        <ComboBox Grid.Column="1"
+                                  x:Name="TrayClickComboBox"
+                                  SelectionChanged="OnTrayClickSelectionChanged">
+                            <ComboBoxItem Content="Quick Search Panel"/>
+                            <ComboBoxItem Content="Main Window"/>
+                        </ComboBox>
+                    </Grid>
+
+                    <!-- Code Editor Choice -->
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Preferred Code Editor" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="Editor used when opening code search results."
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                        <ComboBox Grid.Column="1"
+                                  x:Name="CodeEditorComboBox"
+                                  SelectionChanged="OnCodeEditorSelectionChanged">
+                            <ComboBoxItem Content="Default System Editor"/>
+                            <ComboBoxItem Content="Visual Studio Code (code)"/>
+                        </ComboBox>
+                    </Grid>
+
+                    <!-- Open At Login -->
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Open at Windows Login" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="Note: Registry changes are disabled during native migration preview."
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                        <ToggleSwitch Grid.Column="1"
+                                      IsOn="{x:Bind ViewModel.OpenAtLogin, Mode=TwoWay}"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Save Button and Feedback -->
+            <StackPanel Orientation="Horizontal" Spacing="16">
+                <Button Content="Save Settings"
+                        Style="{ThemeResource AccentButtonStyle}"
+                        Click="OnSaveSettingsClick"/>
+                <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                           VerticalAlignment="Center"
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Page>
