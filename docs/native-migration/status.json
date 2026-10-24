@@ -2,9 +2,9 @@
   "schema": 1,
   "sourcePublication": {
     "date": "2026-10-24",
-    "scope": "Accepted native source only; non-GUI source APIs included; GUI preview candidates excluded",
+    "scope": "Accepted native source, bounded non-GUI source APIs and current-DPI synthetic SearchPage preview/keyboard source; not installation or Release",
     "publicSummary": "docs/native-migration/source-integration-status.md",
-    "guiPreviewIncluded": false,
+    "guiPreviewIncluded": true,
     "localEvidencePublished": false,
     "modelWeightsOrCompiledBinariesPublished": false,
     "releaseApproved": false
@@ -13,7 +13,7 @@
   "productionCutover": false,
   "releaseApproved": false,
   "documentSearch": {
-    "status": "partial_delivery_three_phases_and_bounded_non_gui_ppt_api_source_accepted",
+    "status": "partial_delivery_three_phases_bounded_non_gui_api_and_searchpage_gui_source_accepted",
     "phase1": {
       "status": "approved_local_document_search_phase1_source",
       "reviewRunId": "ad0eba9e-46d6-4d2d-ad68-c9e81ff580d9",
@@ -41,7 +41,7 @@
       "retainedNotes": ["Office profile/cache and manual exclusive-interval risks", "Accepted-PNG64MiB is not an OS disk quota", "LSP58 remains; Worker01 has8 vendor nullable warnings"]
     },
     "phase4SourceNavigation": {
-      "status": "accepted_bounded_non_gui_ppt_api_source_gui_blocked",
+      "status": "accepted_bounded_non_gui_api_and_searchpage_gui_source",
       "independentlyApproved": false,
       "independentReviewCompleted": true,
       "independentReviewVerdict": "CONDITIONAL_ON_OWNER_ACCEPTANCE",
@@ -51,27 +51,49 @@
       "ownerAcceptedUtc": "2026-10-24T05:17:14.843457+00:00",
       "nonGuiPptApiSourceAccepted": true,
       "ownerAcceptanceEvidence": ".dev/source-navigation-03/owner-acceptance-01/acceptance.json",
-      "acceptedScope": "Bounded nonGUI local readonly PPT/API LOCAL SOURCE only; notGUI/realuserindex/install/merge/commit/push/Release",
+      "acceptedScope": "Original owner receipt accepts bounded nonGUI readonly PPT/API source only. Later SearchPage synthetic GUI and source publication have separate scoped authorization/evidence; no realuserindex/install/Release acceptance.",
       "stableLateCancelP1": "SN01-R01 = SN02-R01 CLOSED by finalindependentreview; no openP0/P1 in boundednonGUIlocalreadonlyPPT/API subset",
-      "gui": "Control/overlay draft compiled; actual GUI acceptance failed. Own SearchPage entry changes precisely rolled back to approved430baseline; not enabled in production UI.",
-      "guiBlocker": ".dev/source-navigation-02/gui-extra-execution-result.json; separately authorized extra1failed with XamlParseException0x802B000A beforeOnLaunched, remaining0. Original3failures preserved; no new GUI entry.",
-      "powerPointExactNavigation": "After original3failures, one explicitly authorized extra prototype passed; used1remaining0. New production backend/native readonly slide2 navigation10/10 including ownbusyrefusal, worker/backenddisposal survival and cleanup. Finalreview conditionallyaccepts boundednonGUIlocalreadonlyPPT/API source withdisclosedP2/non-sandboxpremises; owneracceptedthatboundedsubset, UI dormant.",
+      "gui": "Bounded SearchPage preview/OCR overlay/keyboard source applied. Fresh owned synthetic current200%DPI GUI passed visual43/43, keyboard26/26, activation2/2, lifecycle6/6;13leasesreleased and12rawcaptures inspected. No complete product/hardware/allDPI/realOfficeGUI claim.",
+      "guiBlocker": "No remaining blocker in this bounded synthetic slice. Historical startup/focus failures retained; SDK ApplicationDefinition metadata path and SearchBox PreviewKeyDown fixed and live-verified. Does not erase prior failures or open other retry gates.",
+      "guiAcceptance": {
+        "status": "done_bounded_gui_visual_keyboard_source_applied",
+        "scope": "Synthetic owned WinUI SearchPage/SourcePreviewPane,200%DPI,light/dark,1000x720 and360x720DIP",
+        "independentStaticReviewCompleted": true,
+        "runtimeAndManualQaPassed": true,
+        "visualCases": "43/43",
+        "keyboardCases": "26/26",
+        "activationCases": "2/2",
+        "lifecycleCases": "6/6",
+        "leasesCreated": 13,
+        "leasesDisposed": 13,
+        "rawControlImagesInspected": 12,
+        "rootSourceByteMatchedTestedCandidateBeforePublicationDocs": true,
+        "rootUiAppLockedBuildPassed": true,
+        "rootBinaryRelaunchedAfterApply": false,
+        "testSource": "desktop/tests/WinSight.Ui.Harness/SourcePreviewHarness.cs",
+        "maintainerReceipt": ".dev/gui-visual-keyboard-06/final-receipt.json",
+        "localEvidencePublished": false,
+        "physicalKeyboardOrAllDpiAccepted": false,
+        "realOfficeGuiCorpusAccepted": false,
+        "productionStyleModifiedForCapture": false
+      },
+      "powerPointExactNavigation": "After original3failures, one explicitly authorized extra prototype passed; used1remaining0. New production backend/native readonly slide2 navigation10/10 including ownbusyrefusal, worker/backenddisposal survival and cleanup. Finalreview conditionallyaccepts boundednonGUIlocalreadonlyPPT/API source withdisclosedP2/non-sandboxpremises; owneracceptedthatboundedsubset. Later GUI validates synthetic callbacks, not a broad live Office GUI corpus.",
       "lateCancellationRepair": "Prior client-only5/5 was insufficient; reviewbc4db262-fa49-4fc0-a5fe-bad8a0f14b47 found SN02-R01 in actual RunAsync. Final process-layer candidate records natural exit0 before forcedtermination, still requires settled job/valid boundedpipe output plus strictprotocol. Actual production process+client+filepins red2fail/5controls -> same7pass, expanded9/9, actual PPT10/10 rerun. Final independent reviewdf952a0e-2c1a-4653-828c-ffe19dae413f CLOSED stableP1; unknown/nonzero/killed/failedsettlement remains nonreplayable.",
-      "wordExcelExactNavigation": "Production native readonly paragraph2 / Case!B3 selection and committed owned-window handoff passed own synthetic fixtures after final policy; UI route not enabled. Candidate declines Word fields and Excel formulas/defined names/external or linked data before Office. Ordinary manual open unchanged.",
+      "wordExcelExactNavigation": "Production native readonly paragraph2 / Case!B3 selection and committed owned-window handoff passed own synthetic fixtures after final policy; later GUI checks callback routing with a synthetic backend, not end-to-end live Office windows. Candidate declines Word fields and Excel formulas/defined names/external or linked data before Office. Ordinary manual open unchanged.",
       "officePolicyCases": "10/10 headless policy cases; one actual nativeHost denial before any Office launch, not a sandbox guarantee.",
       "headlessBackendCases": "16/16, actual SQLite/WIC/PDF/PPTsinglepage; source hash / provenance / current authorization checks. Not GUI or model-quality acceptance.",
       "evidence": ".dev/source-navigation-03/ final bounded process-boundary repair on445baseline; source-navigation01/02 reviews, insufficientstubscope and allfailedrecords retained",
       "originalUserWordProcesses": "Four original PIDs and creationtimes unchanged in explicit WMI metadata checks; no existing Office document/windowcontent inspected. Earlier faulty numericPID lookup metric retained, not rewritten.",
-      "review": "Original443/445 rejectedreports retained. Finaldf952a0e-2c1a-4653-828c-ffe19dae413f closesstablelatecancelP1 and conditionallyaccepts onlyboundednonGUIlocalreadonlyPPT/API source, owneracceptedretainedP2forboundednonGUIsubset. GUIblocked; SN02-R02 and SN01-R03..R07 retainedP2; no overallcompletion/merge/install/release approval. Originalreport .dev/source-navigation-03/independent-final-review.md"
+      "review": "Original443/445 rejectedreports retained. Finaldf952a0e-2c1a-4653-828c-ffe19dae413f closesstablelatecancelP1 and conditionallyaccepts onlyboundednonGUIlocalreadonlyPPT/API source, owneracceptedretainedP2forboundednonGUIsubset. That original review did not approve GUI. Later bounded GUI has separate static review/live acceptance above; SN02-R02 and remaining SN01-R03..R07 P2 are not blanket-closed, full-product/install/Release remain unaccepted. Originalreport .dev/source-navigation-03/independent-final-review.md"
     },
     "overallRequestComplete": false,
     "fullProductQualificationAccepted": false,
     "realUserIndexOrSettingsOperated": false,
     "stageCommitPushInstallReleasePerformed": false,
     "remaining": [
-      "GUI page preview/overlay draft not runtime accepted; entry rolled back, screenshots/keyboard/cancellation/visual geometry still missing",
-      "Bounded nonGUI local readonly PPT/API source accepted byowner with retainedP2 after conditionalindependentreview; no activeGUI or broadcorpus/fullproduct acceptance",
-      "PowerPoint local source approved; real-model relevance, broad slide fidelity, disk-quota isolation and fresh GUI unqualified",
+      "SearchPage bounded preview/overlay currentDPI synthetic acceptance passed; allDPI/hardware/QuickSearchWindow/formalaccessibility/realOfficeGUI acceptance not claimed",
+      "Bounded nonGUI readonly PPT/API source accepted byowner with retainedP2; later SearchPage source entry enabled, but broadcorpus/fullproduct acceptance remains absent",
+      "PowerPoint local source approved; synthetic SearchPage GUI separately accepted; real-model relevance, broad slide fidelity, disk-quota isolation and broad live Office GUI unqualified",
       "No broad OCR or model-relevance benchmark, malicious-PDF memory-pressure matrix, install or Release acceptance"
     ]
   },
@@ -382,5 +404,5 @@
     "backendIndependentRecheck": "pass limited to NM-BR-01..10; 55 snapshot files verified against main; reviews/backend-recheck.md",
     "lspLimit": "active LSP probe reported cross-project unresolved references inconsistent with actual successful dotnet builds/tests; no LSP-clean claim and no global language-server configuration changes"
   },
-  "limits": ["No personal indexes, settings or model caches read or migrated", "No global toolchain installation", "No production install, signing, push or publishing", "Backend ten-issue recheck passed. UI partial recheck resolved stale-grant save; final equality mismatch then patched with dual-domain three-action regressions, but not independently accepted. Real pause, full media, PDF/media automatic location, pixels and installer gates remain incomplete. No overall migration/release approval.", "No claim of full Swift feature parity or real inference validation"]
+  "limits": ["No personal indexes, settings or model caches read or migrated", "No global toolchain installation", "No production install, signing or Release publication; ordinary main source synchronization is separately authorized and is not product qualification", "Backend ten-issue recheck passed. UI partial recheck resolved stale-grant save; final equality mismatch then patched with dual-domain three-action regressions, but not independently accepted. Real pause, full media, PDF/media automatic location, pixels and installer gates remain incomplete. No overall migration/release approval.", "No claim of full Swift feature parity or real inference validation"]
 }

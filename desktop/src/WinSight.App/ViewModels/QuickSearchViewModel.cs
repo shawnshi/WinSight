@@ -251,6 +251,11 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         return result.Success;
     }
 
+    public Task<ISourcePreview> PreviewAsync(SearchItemViewModel item,CancellationToken token=default) =>
+        backend.PreviewSourceAsync(item.Hit,item.Kind.Equals("code",StringComparison.OrdinalIgnoreCase),token);
+    public Task<SourceNavigationResult> NavigateAsync(SearchItemViewModel item,CancellationToken token=default) =>
+        backend.NavigateSourceAsync(item.Hit,item.Kind.Equals("code",StringComparison.OrdinalIgnoreCase),token);
+
     public async Task<bool> OpenCurrentAsync() => await OpenHitAsync(SelectedItem);
     public async Task<bool> RevealCurrentAsync() => await RevealHitAsync(SelectedItem);
     public async Task<bool> CopyCurrentAsync() => await CopyHitAsync(SelectedItem);

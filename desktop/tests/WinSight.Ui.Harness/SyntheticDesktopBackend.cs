@@ -15,6 +15,12 @@ public sealed class SyntheticDesktopBackend : IDesktopBackend
     public IndexingControlState IndexingState => status.IndexingState;
     public Func<bool, CancellationToken, Task>? PauseControlHandler { get; set; }
     public Func<CancellationToken, Task<EngineStatus>>? StatusHandler { get; set; }
+    public Func<SearchRequest,CancellationToken,Task<SearchResponse>>? SearchHandler { get; set; }
+    public int LoadSettingsCount { get; private set; }
+    public Func<SearchHit,CancellationToken,Task<ISourcePreview>>? PreviewHandler {get;set;}
+    public Func<SearchHit,CancellationToken,Task<SourceNavigationResult>>? NavigationHandler {get;set;}
+    public Task<ISourcePreview> PreviewSourceAsync(SearchHit hit,bool code=false,CancellationToken cancellationToken=default)=>PreviewHandler?.Invoke(hit,cancellationToken)??Task.FromException<ISourcePreview>(new NotSupportedException("Synthetic preview not configured."));
+    public Task<SourceNavigationResult> NavigateSourceAsync(SearchHit hit,bool code=false,CancellationToken cancellationToken=default)=>NavigationHandler?.Invoke(hit,cancellationToken)??Task.FromException<SourceNavigationResult>(new NotSupportedException("Synthetic navigation not configured."));
 
     public async Task SetIndexingPausedAsync(bool paused, CancellationToken cancellationToken = default)
     {
@@ -107,6 +113,7 @@ public sealed class SyntheticDesktopBackend : IDesktopBackend
 
     public Task<AppSettings> LoadSettingsAsync(CancellationToken cancellationToken = default)
     {
+        LoadSettingsCount++;
         return Task.FromResult(DeepClone(settings));
     }
 
@@ -129,6 +136,7 @@ public sealed class SyntheticDesktopBackend : IDesktopBackend
     public Task<SearchResponse> SearchAsync(SearchRequest request, CancellationToken cancellationToken = default)
     {
         SearchCallCount++;
+        if (SearchHandler is not null) return SearchHandler(request, cancellationToken);
 
         var hits = new List<SearchHit>();
         if (!string.IsNullOrWhiteSpace(request.Query))
@@ -226,7 +234,7 @@ public sealed class SyntheticDesktopBackend : IDesktopBackend
             Revision: "preview-synthetic-rev",
             RequestedProvider: "CPU (Synthetic)",
             Validation: "Validated",
-            Capabilities: ["text", "document", "code"]));
+            Capabilities: new string[]{"text", "document", "code"}));
     }
 
     public ValueTask DisposeAsync()
