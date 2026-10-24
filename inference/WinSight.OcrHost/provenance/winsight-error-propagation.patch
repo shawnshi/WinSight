@@ -1,0 +1,52 @@
+diff --git a/vendor/RapidOcrNet/TextRecognizer.cs b/vendor/RapidOcrNet/TextRecognizer.cs
+index e37dcb9..ceeb8d8 100644
+--- a/vendor/RapidOcrNet/TextRecognizer.cs
++++ b/vendor/RapidOcrNet/TextRecognizer.cs
+@@ -214,10 +214,9 @@ public sealed class TextRecognizer : IDisposable
+         }
+         catch (Exception ex) when (ex is not OperationCanceledException)
+         {
+-            System.Diagnostics.Debug.WriteLine(ex.Message + ex.StackTrace);
++            // WinSight OCR-RAPID-ERROR-01: failed inference is not successful blank text.
++            throw;
+         }
+-
+-        return new TextLine() { Time = (float)sw.ElapsedMilliseconds };
+     }
+ 
+     private TextLine ScoreToTextLine(Tensor<float> srcData)
+diff --git a/vendor/RapidOcrNet/TextClassifier.cs b/vendor/RapidOcrNet/TextClassifier.cs
+index 5396f40..836d55c 100644
+--- a/vendor/RapidOcrNet/TextClassifier.cs
++++ b/vendor/RapidOcrNet/TextClassifier.cs
+@@ -186,11 +186,9 @@ public sealed class TextClassifier : IDisposable
+         }
+         catch (Exception ex) when (ex is not OperationCanceledException)
+         {
+-            System.Diagnostics.Debug.WriteLine(ex.Message + ex.StackTrace);
+-            //throw;
++            // WinSight OCR-RAPID-ERROR-01: failed inference is not an unconfident angle.
++            throw;
+         }
+-
+-        return new Angle() { Time = (float)sw.ElapsedMilliseconds };
+     }
+ 
+     private static Angle ScoreToAngle(ReadOnlySpan<float> srcData, int angleColumns)
+diff --git a/vendor/RapidOcrNet/TextDetector.cs b/vendor/RapidOcrNet/TextDetector.cs
+index 23490c6..4f947f2 100644
+--- a/vendor/RapidOcrNet/TextDetector.cs
++++ b/vendor/RapidOcrNet/TextDetector.cs
+@@ -129,10 +129,9 @@ public sealed class TextDetector : IDisposable
+         }
+         catch (Exception ex) when (ex is not OperationCanceledException)
+         {
+-            System.Diagnostics.Debug.WriteLine(ex.Message + ex.StackTrace);
++            // WinSight OCR-RAPID-ERROR-01: failed inference is not an empty detection.
++            throw;
+         }
+-
+-        return null;
+     }
+ 
+     private static SKPoint[][] FindContours(ReadOnlySpan<byte> array, int rows, int cols)

@@ -193,7 +193,7 @@ public static class FileActionPlanner
                     DenialReason: null,
                     ActionType: ActionPlanType.LaunchProcess,
                     Executable: "code",
-                    Arguments: ["-g", $"{path}:{line}"],
+                    Arguments: new string[] { "-g", $"{path}:{line}" },
                     UseShellExecute: false,
                     NoticeMessage: $"Opening in VS Code at line {line}.");
             }
@@ -204,7 +204,7 @@ public static class FileActionPlanner
                     DenialReason: null,
                     ActionType: ActionPlanType.LaunchProcess,
                     Executable: "cursor",
-                    Arguments: ["-g", $"{path}:{line}"],
+                    Arguments: new string[] { "-g", $"{path}:{line}" },
                     UseShellExecute: false,
                     NoticeMessage: $"Opening in Cursor at line {line}.");
             }
@@ -215,7 +215,7 @@ public static class FileActionPlanner
                 DenialReason: null,
                 ActionType: ActionPlanType.LaunchProcess,
                 Executable: "notepad.exe",
-                Arguments: [path],
+                Arguments: new string[] { path },
                 UseShellExecute: false,
                 NoticeMessage: line > 1
                     ? $"Opened in default editor. (Note: line {line} navigation not supported by notepad; line locator displayed for reference.)"
@@ -289,7 +289,7 @@ public static class FileActionPlanner
             DenialReason: null,
             ActionType: ActionPlanType.RevealInExplorer,
             Executable: "explorer.exe",
-            Arguments: [$"/select,\"{path}\""],
+            Arguments: new string[] { $"/select,\"{path}\"" },
             UseShellExecute: false,
             NoticeMessage: null);
     }
@@ -318,7 +318,7 @@ public static class FileActionPlanner
             DenialReason: null,
             ActionType: ActionPlanType.CopyClipboard,
             Executable: string.Empty,
-            Arguments: [path],
+            Arguments: new string[] { path },
             UseShellExecute: false,
             NoticeMessage: "File path copied to clipboard.");
     }

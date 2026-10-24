@@ -5,10 +5,16 @@ namespace WinSight.Infrastructure.Media;
 
 internal static class NativeMediaPng
 {
-    internal static void Validate(FileStream stream, int width, int height, int maxEdge, CancellationToken cancellationToken)
+    internal static void Validate(FileStream stream, int width, int height, int maxEdge, CancellationToken cancellationToken) =>
+        ValidateCore(stream, width, height, maxEdge, 1024, cancellationToken);
+
+    internal static void ValidateDocumentPage(FileStream stream, int width, int height, int maxEdge, CancellationToken cancellationToken) =>
+        ValidateCore(stream, width, height, maxEdge, 2600, cancellationToken);
+
+    private static void ValidateCore(FileStream stream, int width, int height, int maxEdge, int allowedEdge, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (maxEdge is < 64 or > 1024 || width < 1 || height < 1 || width > maxEdge || height > maxEdge ||
+        if (maxEdge < 64 || maxEdge > allowedEdge || width < 1 || height < 1 || width > maxEdge || height > maxEdge ||
             stream.Length < 33 || stream.Length > maxEdge * (long)maxEdge * 8 + 65536)
             throw new InvalidDataException("N1 PNG size is outside the bounded artifact contract.");
         var png = new byte[checked((int)stream.Length)];
@@ -107,7 +113,7 @@ internal static class NativeMediaPng
             throw new InvalidDataException("Invalid N1 PNG zlib header.");
         using var input = new ExactZlibInput(compressed, length, cancellationToken);
         using var zlib = new ZLibStream(input, CompressionMode.Decompress, leaveOpen: true);
-        Span<byte> row = stackalloc byte[4096];
+        Span<byte> row = stackalloc byte[checked(width * channels)];
         uint a = 1, b = 0;
         // Adam7 includes seven independently filtered passes; empty passes have no filter byte.
         ReadOnlySpan<int> x = [0, 4, 0, 2, 0, 1, 0], y = [0, 0, 4, 0, 2, 0, 1];

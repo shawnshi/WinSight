@@ -38,6 +38,20 @@ static async Task Until(Func<bool> condition)
     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
     while (!condition()) await Task.Delay(10, timeout.Token);
 }
+static bool TryReadPublishedPid(string path, out int pid)
+{
+    pid = 0;
+    try
+    {
+        using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(input);
+        var text = reader.ReadToEnd();
+        return text.EndsWith("\n", StringComparison.Ordinal)
+            && int.TryParse(text.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out pid)
+            && pid > 0;
+    }
+    catch (IOException) { return false; } // Only the task-owned readiness marker may still be opening/writing.
+}
 static bool Exited(int pid)
 {
     try { using var process = Process.GetProcessById(pid); return process.HasExited; }
@@ -58,7 +72,7 @@ await Test("native/unpackaged-English-OCR-and-snapshot-cleanup", async () =>
     File.WriteAllText(Path.Combine(evidence, "english-response.json"), JsonSerializer.Serialize(info));
     Empty("native-english");
 });
-await Test("native/Chinese-OCR-uses-installed-recognizer", async () =>
+await Test("native/Chinese-OCR-uses-pinned-bilingual-model", async () =>
 {
     await using var client = Client(actualHost, "native-chinese");
     var info = await client.InspectImageAsync(Path.Combine(fixtures, "chinese.png"));
@@ -184,7 +198,7 @@ await Test("controlled/success-cleans-task-and-keeps-original-source-identity", 
     Empty("fake-normal");
     File.Move(source, source + ".released");
 });
-foreach (var mode in new[] { "malformed", "duplicate", "protocol", "wrong-source", "gps", "no-language", "dimensions", "text-limit", "utf8", "oversize" })
+foreach (var mode in new[] { "malformed", "duplicate", "protocol", "wrong-source", "engine", "engine-version", "model-profile", "gps", "no-language", "dimensions", "text-limit", "utf8", "oversize" })
 {
     await Test("controlled/reject-" + mode + "-without-no-data", async () =>
     {
@@ -202,8 +216,8 @@ await Test("controlled/cancellation-kills-owned-tree-before-return", async () =>
     await using var client = Client(fakeHost, "cancel-tree");
     using var cancellation = new CancellationTokenSource();
     var pending = client.InspectImageAsync(source, cancellation.Token);
-    await Until(() => File.Exists(source + ".pid") && File.Exists(source + ".child.pid"));
-    int parent = int.Parse(await File.ReadAllTextAsync(source + ".pid")), child = int.Parse(await File.ReadAllTextAsync(source + ".child.pid"));
+    int parent = 0, child = 0;
+    await Until(() => TryReadPublishedPid(source + ".pid", out parent) && TryReadPublishedPid(source + ".child.pid", out child));
     cancellation.Cancel(); await Throws<OperationCanceledException>(() => pending);
     Check(Exited(parent) && Exited(child), "Canceled image operation returned before its physical tree settled.");
     Empty("cancel-tree"); File.Move(source, source + ".released");

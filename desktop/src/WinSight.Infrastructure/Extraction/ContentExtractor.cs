@@ -1,12 +1,10 @@
-using System.IO.Compression;
 using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using DocumentFormat.OpenXml;
-using DocumentFormat.OpenXml.Packaging;
 using WinSight.Core;
 using WinSight.Infrastructure.Media;
+using WinSight.Infrastructure.Search;
 using UglyToad.PdfPig;
 
 namespace WinSight.Infrastructure.Extraction;
@@ -23,7 +21,11 @@ public sealed class ContentExtractor : IContentExtractor
 
     public bool CanExtract(string path, bool code) => FilePolicy.Kind(path, code) is not null;
 
-    public async Task<ExtractionResult> ExtractAsync(string path, bool code, CancellationToken cancellationToken = default)
+    public Task<ExtractionResult> ExtractAsync(string path, bool code, CancellationToken cancellationToken = default) =>
+        ExtractAsync(path, code, new DocumentExtractionOptions(), cancellationToken);
+
+    public async Task<ExtractionResult> ExtractAsync(string path, bool code, DocumentExtractionOptions options,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         path = FilePolicy.Normalize(path);
@@ -56,8 +58,9 @@ public sealed class ContentExtractor : IContentExtractor
         if (code && ext == "ipynb") return await ReadNotebookAsync(stream, path, cancellationToken);
         if (!code && ext is "doc" or "odt" or "rtf")
             return new([], "skipped", $"Unsupported legacy/rich document type: .{ext}; not treated as plain text.");
-        var (text, truncated) = !code && ext == "docx" ? ReadWord(stream, cancellationToken)
-            : await ReadTextAsync(stream, cancellationToken);
+        if (!code && ext is "docx" or "pptx" or "xlsx")
+            return OfficeDocumentExtractor.Read(stream, ext, Path.GetFileNameWithoutExtension(path), options, cancellationToken);
+        var (text, truncated) = await ReadTextAsync(stream, cancellationToken);
         if (!code && ext is "html" or "htm") text = HtmlText(text);
         if (text.Contains("PRIVATE KEY-----", StringComparison.Ordinal)) return new([], "skipped", "Content holds a private key.");
         if (text.Contains('\0')) return new([], "skipped", "Not text (NUL characters).");
@@ -102,53 +105,33 @@ public sealed class ContentExtractor : IContentExtractor
         }
     }
 
-    private static (string, bool) ReadWord(Stream stream, CancellationToken token)
-    {
-        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read, true))
-        {
-            if (zip.Entries.Count > 10000 || zip.Entries.Where(e => e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)).Sum(e => e.Length) > 64L << 20)
-                throw new InvalidDataException("DOCX expanded XML exceeds 64 MiB or entry limit.");
-        }
-        stream.Position = 0;
-        using var doc = WordprocessingDocument.Open(stream, false, new OpenSettings { MaxCharactersInPart = 64L << 20 });
-        var main = doc.MainDocumentPart ?? throw new InvalidDataException("DOCX has no main document part.");
-        using var reader = OpenXmlReader.Create(main);
-        var output = new StringBuilder();
-        while (reader.Read())
-        {
-            token.ThrowIfCancellationRequested();
-            if (reader.IsStartElement && reader.ElementType == typeof(DocumentFormat.OpenXml.Wordprocessing.Text)) output.Append(reader.GetText());
-            else if (reader.IsStartElement && (reader.LocalName is "tab" or "br" or "cr")) output.Append(reader.LocalName == "tab" ? '\t' : '\n');
-            else if (reader.IsEndElement && reader.LocalName == "p") output.Append('\n');
-            if (output.Length > MaxCharacters) return (Prefix(output.ToString(), MaxCharacters), true);
-        }
-        return (output.ToString(), false);
-    }
-
     private static ExtractionResult ReadPdf(Stream stream, string path, CancellationToken token)
     {
         using var pdf = PdfDocument.Open(stream);
         var segments = new List<IndexSegment>();
         var partial = pdf.NumberOfPages > MaxSegments;
+        var textLimited = partial;
         var chars = 0;
         var noText = 0;
+        var rasterPages = new List<int>();
         for (var i = 1; i <= Math.Min(pdf.NumberOfPages, MaxSegments); i++)
         {
             token.ThrowIfCancellationRequested();
             var page = pdf.GetPage(i);
+            if (page.NumberOfImages > 0) rasterPages.Add(i);
             var text = string.Join(" ", page.GetWords().Select(w => w.Text)).Trim();
             // PDF rendering/OCR are not available through PdfPig; scans must not look successfully indexed.
             if (text.Length < 200) { noText++; partial = true; }
             if (text.Length == 0) continue;
             var remaining = Math.Min(65536, MaxCharacters - chars);
-            if (text.Length > remaining) { text = Prefix(text, remaining); partial = true; }
-            if (text.Length > 0) segments.Add(new("page", "text", i, null, text));
+            if (text.Length > remaining) { text = Prefix(text, remaining); partial = true; textLimited = true; }
+            if (text.Length > 0) segments.Add(new("page", "text", i, null, text, Source: new(new("pdf-page", Page: i), Fields: DocumentSearchQuery.FieldsFromText(text))));
             chars += text.Length;
-            if (chars >= MaxCharacters) { partial = i < pdf.NumberOfPages || partial; break; }
+            if (chars >= MaxCharacters) { textLimited |= i < pdf.NumberOfPages; partial |= textLimited; break; }
         }
         return new(segments, partial ? "partial" : segments.Count == 0 ? "skipped" : "done",
             partial ? $"Text-only PDF: {noText} short/scan pages need rendering/OCR; limits {MaxSegments} pages/{MaxCharacters} characters. Text order/layout may differ from PDFium." : null,
-            JsonSerializer.Serialize(new { title = string.IsNullOrWhiteSpace(pdf.Information.Title) ? Path.GetFileNameWithoutExtension(path) : pdf.Information.Title, pages = pdf.NumberOfPages, short_pages = noText }));
+            JsonSerializer.Serialize(new { title = string.IsNullOrWhiteSpace(pdf.Information.Title) ? Path.GetFileNameWithoutExtension(path) : pdf.Information.Title, pages = pdf.NumberOfPages, short_pages = noText, text_limits_reached = textLimited, raster_pages = rasterPages }));
     }
 
     private static async Task<ExtractionResult> ReadNotebookAsync(Stream stream, string path, CancellationToken token)
@@ -239,7 +222,7 @@ public sealed class ContentExtractor : IContentExtractor
     private static bool StartsBlock(string line) => line.Length > 0 && !char.IsWhiteSpace(line[0]) && !"})]".Contains(line[0])
         && !new[] { "end", "fi", "done", "esac", "@end", "#endif", "end;", "end)" }.Contains(line.Trim());
 
-    private static (List<IndexSegment>, bool) Chunks(string text, CancellationToken token)
+    internal static (List<IndexSegment>, bool) Chunks(string text, CancellationToken token)
     {
         text = Regex.Replace(text, "[ \\t\u00A0]+", " ", RegexOptions.None, RegexTimeout).Trim();
         text = Regex.Replace(text, @"\n\s*\n\s*\n+", "\n\n", RegexOptions.None, RegexTimeout);

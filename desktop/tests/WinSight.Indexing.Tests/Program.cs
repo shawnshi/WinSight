@@ -205,7 +205,9 @@ internal sealed partial class Suite
                 main.Document.Save();
             }
             var result = await new ContentExtractor().ExtractAsync(path, false);
-            Check(result.State == "done" && result.Segments[0].Excerpt!.Contains("First paragraph\nSecond tab\nline"), "DOCX paragraph/control extraction mismatch: " + result.Segments.FirstOrDefault()?.Excerpt);
+            Check(result.State == "done" && result.Segments.Count == 2 && result.Segments[0].Excerpt == "First paragraph"
+                && result.Segments[1].Excerpt == "Second\ttab\nline" && result.Segments[0].Source?.Location.Paragraph == 1
+                && result.Segments[1].Source?.Location.Paragraph == 2, "DOCX paragraph/control/source-unit extraction mismatch.");
             var repo = new FakeRepository(); await new IndexingService(repo, new ContentExtractor(), new FakeEmbedding()).IndexAsync(new([root]));
             Check(repo.Files[path].State == "done", "DOCX integration failed.");
         });

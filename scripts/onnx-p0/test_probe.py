@@ -11,7 +11,7 @@ from pathlib import Path
 
 from acquire_models import MANIFEST, ROOT, WORK, validate_manifest, verify
 
-EXE = ROOT / "inference/WinSight.InferenceHost/bin/Release/net10.0-windows10.0.26100.0/win-x64/WinSight.InferenceHost.exe"
+EXE = ROOT / "inference/WinSight.InferenceHost/bin/Release/net11.0-windows10.0.26100.0/win-x64/WinSight.InferenceHost.exe"
 
 
 def command(*args):

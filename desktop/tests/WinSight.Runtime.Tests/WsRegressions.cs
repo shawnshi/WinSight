@@ -134,7 +134,7 @@ internal static class WsRegressions
         });
         await test("WS-06 explicit backend indexing still works with AC-only enabled and an injected battery", async () =>
         {
-            fakeHost ??= Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../WinSight.Inference.Tests/FakeHost/bin/Debug/net10.0/FakeHost.exe"));
+            fakeHost ??= Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../WinSight.Inference.Tests/FakeHost/bin/Debug/net11.0/FakeHost.exe"));
             if (!File.Exists(fakeHost)) throw new FileNotFoundException("Build/pass the task-owned inference fake host before runtime integration.", fakeHost);
             var fixture = Path.Combine(root, "ws-manual");
             var data = Path.Combine(fixture, "data"); var documents = Path.Combine(fixture, "documents");

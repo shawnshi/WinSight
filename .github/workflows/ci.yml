@@ -7,9 +7,13 @@ jobs:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install source-check XML guard
+        run: python -m pip --disable-pip-version-check install defusedxml==0.7.1
       - name: Check source layout and script syntax
         shell: bash
         run: python scripts/check-windows-source.py
-      - name: Test Rust shell
-        working-directory: shell/src-tauri
+      - name: Test native tokenizer
+        working-directory: native/winsight-tokenizer
+        env:
+          WINSIGHT_TEST_TOKENIZER: ${{ github.workspace }}/desktop/tests/Fixtures/Tokenizer/abi-tokenizer.json
         run: cargo test --locked

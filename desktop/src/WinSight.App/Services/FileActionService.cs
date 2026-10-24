@@ -66,7 +66,7 @@ public static class FileActionService
                         if (File.Exists(path))
                         {
                             var file = await StorageFile.GetFileFromPathAsync(path);
-                            dp.SetStorageItems([file]);
+                            dp.SetStorageItems(new Windows.Storage.IStorageItem[] { file });
                         }
                         Clipboard.SetContent(dp);
                     }

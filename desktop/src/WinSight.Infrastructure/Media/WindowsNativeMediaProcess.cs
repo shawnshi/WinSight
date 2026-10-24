@@ -14,12 +14,27 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
     private readonly SafeFileHandle stdout;
     private readonly SafeFileHandle stderr;
     private readonly bool forceUnconfirmedTerminationForTesting;
+    private readonly bool preserveSuccessfulOfficeExit;
     internal bool Settled { get; private set; }
+    internal uint ProcessId => GetProcessId(process);
+    internal bool DetachedForUser { get; private set; }
+    internal bool ContainsProcess(uint pid)
+    {
+        using var candidate=OpenProcess(0x1000,false,pid);if(candidate.IsInvalid)return false;
+        Check(IsProcessInJob(candidate,job,out var member),"Check exact Office job membership");return member;
+    }
+    internal void HandoffForUser(uint windowProcess)
+    {
+        if(DetachedForUser || !ContainsProcess(windowProcess))throw new IOException("Office handoff target is not owned by this job.");
+        var limits=new ExtendedLimits();
+        Check(SetInformationJobObject(job,9,ref limits,(uint)Marshal.SizeOf<ExtendedLimits>()),"Clear limits for explicit user handoff");
+        DetachedForUser=true;
+    }
 
     private WindowsNativeMediaProcess(SafeFileHandle job, SafeFileHandle process,
-        SafeFileHandle stdout, SafeFileHandle stderr, bool forceUnconfirmedTerminationForTesting) =>
-        (this.job, this.process, this.stdout, this.stderr, this.forceUnconfirmedTerminationForTesting) =
-            (job, process, stdout, stderr, forceUnconfirmedTerminationForTesting);
+        SafeFileHandle stdout, SafeFileHandle stderr, bool forceUnconfirmedTerminationForTesting, bool preserveSuccessfulOfficeExit) =>
+        (this.job, this.process, this.stdout, this.stderr, this.forceUnconfirmedTerminationForTesting, this.preserveSuccessfulOfficeExit) =
+            (job, process, stdout, stderr, forceUnconfirmedTerminationForTesting, preserveSuccessfulOfficeExit);
 
     internal static WindowsNativeMediaProcess Start(string executable, string requestPath, string directory, TimeSpan terminationTimeout,
         bool forceUnconfirmedTerminationForTesting, NativeMediaOperation operation = NativeMediaOperation.Extract)
@@ -29,12 +44,24 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
             NativeMediaOperation.Extract => "extract-media",
             NativeMediaOperation.Inspect => "inspect-media",
             NativeMediaOperation.InspectImage => "inspect-image",
+            NativeMediaOperation.InspectOcr => "inspect-ocr",
+            NativeMediaOperation.RenderPdfPage => "render-pdf-page",
+            NativeMediaOperation.RenderPresentation => "render-presentation",
+            NativeMediaOperation.RenderPresentationPage => "render-presentation-page",
+            NativeMediaOperation.RenderRasterPreview => "render-raster-preview",
+            NativeMediaOperation.OfficeNavigation => "navigate-office",
+            NativeMediaOperation.OfficeNavigationServer => Path.GetFileName(executable).ToUpperInvariant() switch
+            { "WINWORD.EXE"=>"/n", "EXCEL.EXE"=>"/x", "POWERPNT.EXE"=>"/AUTOMATION", _=>throw new NotSupportedException("Unsupported Office handoff server.") },
+            NativeMediaOperation.PowerPointServer => "/AUTOMATION",
             NativeMediaOperation.Soundtrack => "extract-soundtrack",
             _ => throw new ArgumentOutOfRangeException(nameof(operation))
         };
         SafeFileHandle? job = null, process = null, thread = null, outputRead = null, outputWrite = null,
             errorRead = null, errorWrite = null, inputRead = null, inputWrite = null;
-        IntPtr attributes = IntPtr.Zero, handles = IntPtr.Zero;
+        IntPtr attributes = IntPtr.Zero, handles = IntPtr.Zero, jobList = IntPtr.Zero;
+        bool atomicNavigation=operation==NativeMediaOperation.OfficeNavigationServer;
+        bool powerpointServer=operation==NativeMediaOperation.PowerPointServer||(atomicNavigation&&Path.GetFileName(executable).Equals("POWERPNT.EXE",StringComparison.OrdinalIgnoreCase));
+        int attributeCount=atomicNavigation?2:1;
         var initialized = false;
         var assigned = false;
         try
@@ -42,6 +69,18 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
             job = CreateJobObjectW(IntPtr.Zero, null);
             Check(!job.IsInvalid, "Create media job");
             var limits = new ExtendedLimits { Basic = new BasicLimits { LimitFlags = 0x2000 } };
+            if (operation is NativeMediaOperation.RenderPdfPage or NativeMediaOperation.RenderRasterPreview)
+            {
+                // Bound this new native parser's aggregate committed memory; other operations retain their existing policy.
+                limits.Basic.LimitFlags |= 0x0200;
+                limits.JobMemory = 512u * 1024u * 1024u;
+            }
+            if (powerpointServer)
+            {
+                limits.Basic.LimitFlags |= 0x0200;
+                limits.JobMemory = 1024u * 1024u * 1024u;
+            }
+            if(operation==NativeMediaOperation.OfficeNavigation) limits.Basic.LimitFlags |= 0x0800;
             Check(SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf<ExtendedLimits>()), "Set kill-on-close");
             Pipe(out outputRead, out outputWrite);
             Pipe(out errorRead, out errorWrite);
@@ -50,10 +89,10 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
             Check(SetHandleInformation(errorRead, 1, 0), "Protect stderr reader");
             Check(SetHandleInformation(inputWrite, 1, 0), "Protect stdin writer");
             nuint size = 0;
-            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+            InitializeProcThreadAttributeList(IntPtr.Zero, attributeCount, 0, ref size);
             if (size == 0) throw Error("Size inherited handle list");
             attributes = Marshal.AllocHGlobal(checked((nint)size));
-            Check(InitializeProcThreadAttributeList(attributes, 1, 0, ref size), "Initialize inherited handle list");
+            Check(InitializeProcThreadAttributeList(attributes, attributeCount, 0, ref size), "Initialize inherited handle list");
             initialized = true;
             handles = Marshal.AllocHGlobal(3 * IntPtr.Size);
             Marshal.WriteIntPtr(handles, 0, inputRead.DangerousGetHandle());
@@ -61,6 +100,11 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
             Marshal.WriteIntPtr(handles, 2 * IntPtr.Size, errorWrite.DangerousGetHandle());
             Check(UpdateProcThreadAttribute(attributes, 0, (nuint)0x20002, handles,
                 (nuint)(3 * IntPtr.Size), IntPtr.Zero, IntPtr.Zero), "Set exact inherited handle list");
+            if(atomicNavigation)
+            {
+                jobList=Marshal.AllocHGlobal(IntPtr.Size);Marshal.WriteIntPtr(jobList,job.DangerousGetHandle());
+                Check(UpdateProcThreadAttribute(attributes,0,(nuint)0x2000D,jobList,(nuint)IntPtr.Size,IntPtr.Zero,IntPtr.Zero),"Atomic Office job-list attribute");
+            }
             var startup = new StartupInfoEx
             {
                 Startup = new StartupInfo
@@ -71,16 +115,17 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
                 },
                 Attributes = attributes
             };
-            var command = new StringBuilder($"{Quote(executable)} {verb} {Quote(requestPath)}");
+            var command = new StringBuilder(powerpointServer
+                ? $"{Quote(executable)} {verb}" : $"{Quote(executable)} {verb} {Quote(requestPath)}");
             Check(CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, true,
-                0x00000004 | 0x00080000 | 0x08000000, IntPtr.Zero, directory, ref startup, out var info),
+                0x00000004 | 0x00080000 | 0x08000000 | (atomicNavigation?0x01000000u:0u), IntPtr.Zero, directory, ref startup, out var info),
                 "Create suspended media worker");
             process = new SafeFileHandle(info.Process, true);
             thread = new SafeFileHandle(info.Thread, true);
-            Check(AssignProcessToJobObject(job, process), "Assign suspended media worker");
+            if(!atomicNavigation) Check(AssignProcessToJobObject(job, process), "Assign suspended media worker");
             assigned = true;
             Check(ResumeThread(thread) != uint.MaxValue, "Resume controlled media worker");
-            var result = new WindowsNativeMediaProcess(job, process, outputRead, errorRead, forceUnconfirmedTerminationForTesting);
+            var result = new WindowsNativeMediaProcess(job, process, outputRead, errorRead, forceUnconfirmedTerminationForTesting, operation==NativeMediaOperation.OfficeNavigation);
             job = process = outputRead = errorRead = null;
             return result;
         }
@@ -115,6 +160,7 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
             if (initialized) DeleteProcThreadAttributeList(attributes);
             if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
             if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
+            if (jobList != IntPtr.Zero) Marshal.FreeHGlobal(jobList);
             thread?.Dispose(); inputRead?.Dispose(); inputWrite?.Dispose();
             outputWrite?.Dispose(); errorWrite?.Dispose(); outputRead?.Dispose(); errorRead?.Dispose();
             process?.Dispose(); job?.Dispose();
@@ -124,11 +170,13 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
     internal async Task<(string Output, string Error, uint ExitCode)> RunAsync(int maxBytes,
         TimeSpan terminationTimeout, CancellationToken cancellationToken)
     {
+        if(DetachedForUser)throw new InvalidOperationException("An Office process handed to the user cannot be terminated by this owner.");
         using var stopReaders = new CancellationTokenSource();
         var output = ReadPipeAsync(stdout, maxBytes, stopReaders.Token);
         var error = ReadPipeAsync(stderr, maxBytes, stopReaders.Token);
         Exception? failure = null;
         uint exitCode = 0;
+        bool naturalExitObserved=false, successfulOfficeExit=false;
         try
         {
             while (!MainExited())
@@ -139,8 +187,25 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
                 await Task.Delay(10, cancellationToken).ConfigureAwait(false);
             }
             Check(GetExitCodeProcess(process, out exitCode), "Read media exit status");
+            naturalExitObserved=true;
         }
         catch (Exception ex) { failure = ex; }
+
+        if(preserveSuccessfulOfficeExit)
+        {
+            try
+            {
+                // Capture natural exit BEFORE TerminateJobObject. A killed/unknown worker must never become success.
+                if(!naturalExitObserved&&failure is OperationCanceledException&&MainExited())
+                {
+                    Check(GetExitCodeProcess(process,out exitCode),"Read natural Office navigation exit status");
+                    naturalExitObserved=true;
+                }
+                successfulOfficeExit=naturalExitObserved&&exitCode==0;
+                if(successfulOfficeExit&&failure is OperationCanceledException)failure=null;
+            }
+            catch(Exception statusError){failure=failure is null?statusError:new AggregateException(failure,statusError);}
+        }
 
         try
         {
@@ -165,7 +230,8 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
             await ObserveReadersAsync(output, error).ConfigureAwait(false);
         }
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
-        cancellationToken.ThrowIfCancellationRequested();
+        // Only an observed natural Office exit0, confirmed job settlement and fully validated pipe drain win over late cancel.
+        if(!successfulOfficeExit)cancellationToken.ThrowIfCancellationRequested();
         return (await output.ConfigureAwait(false), await error.ConfigureAwait(false), exitCode);
     }
 
@@ -239,7 +305,7 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
 
     public void Dispose()
     {
-        if (!Settled) throw new IOException("Cannot release an unsettled media job.");
+        if (!Settled && !DetachedForUser) throw new IOException("Cannot release an unsettled media job.");
         stdout.Dispose(); stderr.Dispose(); process.Dispose(); job.Dispose();
     }
 
@@ -285,6 +351,9 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool TerminateProcess(SafeFileHandle process, uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(SafeFileHandle handle, uint milliseconds);
+    [DllImport("kernel32.dll",SetLastError=true)] private static extern SafeFileHandle OpenProcess(uint access,bool inherit,uint pid);
+    [DllImport("kernel32.dll",SetLastError=true)] private static extern bool IsProcessInJob(SafeFileHandle process,SafeFileHandle job,out bool member);
+    [DllImport("kernel32.dll")] private static extern uint GetProcessId(SafeFileHandle process);
     [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetExitCodeProcess(SafeFileHandle process, out uint code);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint ResumeThread(SafeFileHandle thread);
     [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool CreatePipe(out SafeFileHandle read, out SafeFileHandle write, ref SecurityAttributes security, uint size);
@@ -297,7 +366,7 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool ReadFile(SafeFileHandle file, byte[] buffer, uint count, out uint read, IntPtr overlapped);
 }
 
-internal enum NativeMediaOperation { Extract, Inspect, Soundtrack, InspectImage }
+internal enum NativeMediaOperation { Extract, Inspect, Soundtrack, InspectImage, InspectOcr, RenderPdfPage, RenderPresentation, PowerPointServer, RenderPresentationPage, RenderRasterPreview, OfficeNavigation, OfficeNavigationServer }
 
 internal sealed class MediaTerminationException(string message, Exception inner) : IOException(message, inner);
 

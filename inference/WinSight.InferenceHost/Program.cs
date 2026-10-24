@@ -21,6 +21,34 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
                 return 0;
             }
+            if (args.Length > 0 && args[0] == "render-pdf-page")
+            {
+                if (args is not [_, var requestPath]) throw new ArgumentException("Usage: render-pdf-page ABSOLUTE_REQUEST_JSON");
+                var result = NativeMediaCommand.RenderPdfPageRequestAsync(requestPath).GetAwaiter().GetResult();
+                Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+                return 0;
+            }
+            if (args.Length > 0 && args[0] is "render-presentation-page" or "render-raster-preview")
+            {
+                if(args is not [var command,var path])throw new ArgumentException("Use command ABSOLUTE_REQUEST_JSON");
+                object result=command=="render-presentation-page"
+                    ? NativeMediaCommand.RenderPresentationPageRequestAsync(path).GetAwaiter().GetResult()
+                    : NativeMediaCommand.RenderRasterPreviewAsync(path).GetAwaiter().GetResult();
+                Console.WriteLine(JsonSerializer.Serialize(result,new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase}));return 0;
+            }
+            if(args.Length>0&&args[0]=="navigate-office")
+            {
+                if(args is not [_,var requestPath])throw new ArgumentException("Use navigate-office ABSOLUTE_REQUEST_JSON");
+                var result=NativeMediaCommand.NavigateOfficeAsync(requestPath).GetAwaiter().GetResult();
+                Console.WriteLine(JsonSerializer.Serialize(result,new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase}));return 0;
+            }
+            if (args.Length > 0 && args[0] == "render-presentation")
+            {
+                if (args is not [_, var requestPath]) throw new ArgumentException("Usage: render-presentation ABSOLUTE_REQUEST_JSON");
+                var result = NativeMediaCommand.RenderPresentationRequestAsync(requestPath).GetAwaiter().GetResult();
+                Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+                return 0;
+            }
             if (args.Length > 0 && args[0] == "inspect-image")
             {
                 if (args is not [_, var requestPath])
@@ -78,7 +106,7 @@ internal static class Program
                 return 0;
             }
             if (args is not ["environment"])
-                throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|cpu] | environment | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON");
+                throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|cpu] | environment | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON | render-pdf-page ABSOLUTE_REQUEST_JSON");
 
             var catalog = ExecutionProviderCatalog.GetDefault()
                 ?? throw new InvalidOperationException("Windows ML execution-provider catalog is unavailable");

@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageEnhance
 from PIL.IcoImagePlugin import IcoImageFile
 
 ROOT = Path(__file__).resolve().parent.parent
-ICON = ROOT / "shell/src-tauri/icons/WinSight.ico"
+ICON = ROOT / "Resources/AppIcon/WinSight.ico"
 
 
 def main():
@@ -34,10 +34,10 @@ def main():
         draw.rounded_rectangle((46, 45, 49, 57), radius=1, fill="white")
         draw.rounded_rectangle((54, 45, 57, 57), radius=1, fill="white")
         outputs = {
-            "shell/src-tauri/icons/32x32.png": frame(32),
-            "shell/src-tauri/icons/128x128.png": frame(128),
-            "shell/src-tauri/icons/128x128@2x.png": frame(256),
-            "shell/ui/icon.png": frame(256),
+            "Resources/AppIcon/32x32.png": frame(32),
+            "Resources/AppIcon/128x128.png": frame(128),
+            "Resources/AppIcon/256x256.png": frame(256),
+            "Resources/AppIcon/icon.png": frame(256),
             "docs/logo.png": frame(256),
             "Resources/AppIcon/tray.png": normal,
             "Resources/AppIcon/tray-dim.png": dimmed,
@@ -51,7 +51,8 @@ def main():
     if source.resolve() != ICON.resolve():
         shutil.copyfile(source, ICON)
     hashes = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in outputs}
-    receipt = {"input_sha256": hashlib.sha256(ICON.read_bytes()).hexdigest(),
+    receipt = {"input_path": "Resources/AppIcon/WinSight.ico",
+               "input_sha256": hashlib.sha256(ICON.read_bytes()).hexdigest(),
                "ico_sizes": sorted(sizes), "assets_sha256": hashes}
     (ROOT / "docs/winsight-icon-assets.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print(f"WinSight.ico preserved; generated {len(outputs)} PNG/tray assets")

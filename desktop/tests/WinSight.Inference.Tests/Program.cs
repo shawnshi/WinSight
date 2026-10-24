@@ -4,7 +4,7 @@ using WinSight.Core;
 using WinSight.Infrastructure.Inference;
 
 var testRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "synthetic-runs", Guid.NewGuid().ToString("N")));
-var fake = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../FakeHost/bin/Debug/net10.0/FakeHost.exe"));
+var fake = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../FakeHost/bin/Debug/net11.0/FakeHost.exe"));
 if (args is ["--child-owner", var childFake, var childDirectory])
 {
     await using var owner = NewClient(childDirectory, childFake);

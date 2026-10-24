@@ -7,6 +7,8 @@ namespace WinSight.InferenceHost;
 
 internal sealed class NativeTokenizer : SafeHandleZeroOrMinusOneIsInvalid
 {
+    // Algorithm source identity is separate from the unchanged ABI1 / wrapper package0.1.0.
+    internal const string RuntimeIdentity = "tokenizers-git-v0.23.3;rust=0.23.2;rev=301277072263fb3830eb66eec7e47adadf76f1dc;abi=1;special=true";
     private const string Library = "winsight_tokenizer";
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 

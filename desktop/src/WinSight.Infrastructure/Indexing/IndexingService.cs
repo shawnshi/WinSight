@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Security.Cryptography;
 using WinSight.Core;
 using WinSight.Infrastructure.Extraction;
 using WinSight.Infrastructure.Media;
@@ -11,11 +13,19 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
 {
     private readonly SemaphoreSlim runGate = new(1, 1);
     private readonly NativeMediaSamplingService? mediaSampling;
+    private readonly NativeDocumentPages? documentPages;
+    private readonly NativePresentationPages? presentationPages;
 
     internal IndexingService(IIndexRepository repository, IContentExtractor extractor, IEmbeddingService? embeddings,
-        NativeMediaSamplingService mediaSampling) : this(repository, extractor, embeddings)
+        NativeMediaSamplingService? mediaSampling, NativeDocumentPages? documentPages = null) : this(repository,extractor,embeddings,mediaSampling,documentPages,null) { }
+
+    internal IndexingService(IIndexRepository repository, IContentExtractor extractor, IEmbeddingService? embeddings,
+        NativeMediaSamplingService? mediaSampling, NativeDocumentPages? documentPages, NativePresentationPages? presentationPages) : this(repository, extractor, embeddings)
     {
-        this.mediaSampling = mediaSampling ?? throw new ArgumentNullException(nameof(mediaSampling));
+        if (mediaSampling is null && documentPages is null && presentationPages is null) throw new ArgumentNullException(nameof(mediaSampling));
+        this.mediaSampling = mediaSampling;
+        this.documentPages = documentPages;
+        this.presentationPages = presentationPages;
     }
 
     private const int MaxWalkEntries = 250000;
@@ -59,16 +69,27 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
             var completed = 0;
             var failed = 0;
             var partial = 0;
-            foreach (var file in crawls.SelectMany(c => c.Files))
+            foreach (var item in crawls.SelectMany(c => c.Files.Select(file => (File: file, Root: c.Root))))
             {
+                var file = item.File;
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!visited.Add(file.Path)) continue;
                 previous.TryGetValue(file.Path, out var old);
-                if (!request.Force && file.Skip is null && old is { State: "done" } && old.Kind == file.Kind && old.Size == file.Size && Math.Abs(old.ModifiedTime - file.Mtime) < 0.001
+                bool stablePolicyPartial = !request.Code && file.Kind == "pdf" && documentPages is not null
+                    && old is { State: "partial" } && NativeDocumentPages.IsStablePolicyPartial(old.Info);
+                bool reusablePresentation = !request.Code && FilePolicy.Extension(file.Path) == "pptx" && presentationPages is not null
+                    && old is { State: "partial" } && NativePresentationPages.ReusePartial(old.Info, request.AllowPowerPointAutomation);
+                if (!request.Force && file.Skip is null && old is not null && (old.State == "done" || stablePolicyPartial || reusablePresentation) && old.Kind == file.Kind && old.Size == file.Size && Math.Abs(old.ModifiedTime - file.Mtime) < 0.001
                     && (!IsNativeMedia(file, request.Code) || file.Size <= ContentExtractor.MaxBytes && HasCurrentMediaRevision(old.Info))
-                    && (request.Code || file.Kind is not ("image" or "screenshot") || NativeImageExtraction.IsCurrent(old.Info)))
+                    && (request.Code || file.Kind is not ("image" or "screenshot") || NativeImageExtraction.IsCurrent(old.Info))
+                    && HasCurrentOfficeRevision(file.Path, request.Code, old.Info, request.Documents ?? new())
+                    && (request.Code || HasCurrentLexicalRevision(old.Info))
+                    && (request.Code || !NeedsSourceSnapshot(file.Path) || HasSourceSnapshot(old.Info))
+                    && (request.Code || file.Kind != "pdf" || documentPages is null || NativeDocumentPages.IsCurrent(old.Info))
+                    && (request.Code || FilePolicy.Extension(file.Path) != "pptx" || presentationPages is null || NativePresentationPages.IsCurrent(old.Info)))
                 {
                     completed++;
+                    if (stablePolicyPartial || reusablePresentation) partial++;
                     progress?.Report(new("unchanged", file.Path, completed, failed, partial));
                     continue;
                 }
@@ -82,7 +103,12 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                 else if (file.Skip is not null) result = new([], "skipped", file.Skip);
                 else
                 {
-                    try { result = await ProcessAsync(file, request.Code, info, cancellationToken); }
+                    try
+                    {
+                        if (request.AllowPowerPointAutomation && !request.Code && FilePolicy.Extension(file.Path) == "pptx" && presentationPages is not null)
+                            progress?.Report(new("powerpoint-exclusive",file.Path,completed,failed,partial,"Keep PowerPoint closed during this manual indexing interval."));
+                        result = await ProcessAsync(file, request.Code, info, request.Documents ?? new(), request.AllowPowerPointAutomation, cancellationToken);
+                    }
                     catch (EmbeddingDependencyException error)
                     {
                         await repository.UpsertFileAsync(row with { State = "failed", Detail = error.Message }, cancellationToken);
@@ -102,6 +128,13 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                     }
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException)
                     { result = new([], "failed", IsNativeMedia(file, request.Code) ? DescribeMediaFailure("snapshot validation", error) : Describe(error)); }
+                }
+                if (result.Info is not null)
+                {
+                    var metadata = JsonNode.Parse(result.Info)!.AsObject();
+                    metadata["indexRoot"] = item.Root;
+                    metadata["lexicalRevision"] = "chinese-width-exact-v1";
+                    result = result with { Info = metadata.ToJsonString() };
                 }
                 await repository.UpsertFileAsync(row with { State = result.State, Detail = result.Detail, Info = result.Info, Segments = result.Segments }, cancellationToken);
                 completed++;
@@ -255,7 +288,45 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
         return new(root, identity, count, failures, seen, files);
     }
 
-    private async Task<ExtractionResult> ProcessAsync(Candidate file, bool code, EmbeddingInfo? info, CancellationToken token)
+    private static bool HasCurrentLexicalRevision(string? info)
+    {
+        if (info is null) return false;
+        using var document = JsonDocument.Parse(info);
+        return document.RootElement.TryGetProperty("lexicalRevision", out var value) && value.GetString() == "chinese-width-exact-v1";
+    }
+
+    private static bool HasCurrentOfficeRevision(string path, bool code, string? info, DocumentExtractionOptions options)
+    {
+        if (code || FilePolicy.Extension(path) is not ("docx" or "pptx" or "xlsx")) return true;
+        if (info is null) return false;
+        using var metadata = JsonDocument.Parse(info);
+        return metadata.RootElement.TryGetProperty("sourceRevision", out var value) && value.GetString() == OfficeDocumentExtractor.Identity(options);
+    }
+
+    private static bool NeedsSourceSnapshot(string path) => FilePolicy.Extension(path) is "pdf" or "pptx" or "docx" or "xlsx" || FilePolicy.Kind(path,false) is "image" or "screenshot";
+    private static bool HasSourceSnapshot(string? info)
+    {
+        if(info is null)return false;using var json=JsonDocument.Parse(info);
+        return json.RootElement.TryGetProperty("sourceSha256V1",out var hash)&&hash.ValueKind==JsonValueKind.String&&hash.GetString() is {Length:64} text&&text.All(Uri.IsHexDigit);
+    }
+    private async Task<ExtractionResult> ProcessAsync(Candidate file, bool code, EmbeddingInfo? info, DocumentExtractionOptions options, bool allowPowerPointAutomation, CancellationToken token)
+    {
+        if(code || !NeedsSourceSnapshot(file.Path))return await ProcessContentAsync(file,code,info,options,allowPowerPointAutomation,token);
+        try
+        {
+            using var source=SafeFile.Open(file.Path);
+            var result=await ProcessContentAsync(file,code,info,options,allowPowerPointAutomation,token);
+            if(result.State is not ("done" or "partial") || result.Info is null)return result;
+            source.Stream!.Position=0;var hash=Convert.ToHexString(await SHA256.HashDataAsync(source.Stream,token)).ToLowerInvariant();
+            var metadata=JsonNode.Parse(result.Info)!.AsObject();metadata["sourceSha256V1"]=hash;
+            return result with {Info=metadata.ToJsonString()};
+        }
+        catch(OperationCanceledException)when(token.IsCancellationRequested){throw;}
+        catch(EmbeddingDependencyException){throw;}
+        catch(Exception e)when(e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        {return new([],"failed","Source snapshot failed: "+e.GetType().Name);}
+    }
+    private async Task<ExtractionResult> ProcessContentAsync(Candidate file, bool code, EmbeddingInfo? info, DocumentExtractionOptions options, bool allowPowerPointAutomation, CancellationToken token)
     {
         try
         {
@@ -267,12 +338,20 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                 return await ProcessNativeMediaAsync(file, info, token);
             }
             if (!extractor.CanExtract(file.Path, code)) return new([], "skipped", "Unsupported extractor type.");
-            var result = await extractor.ExtractAsync(file.Path, code, token);
+            var result = await extractor.ExtractAsync(file.Path, code, options, token);
             token.ThrowIfCancellationRequested();
             if (result.State is not ("done" or "partial" or "skipped" or "failed")) throw new InvalidDataException("Extractor returned an invalid terminal state.");
             if (result.Segments.Count > ContentExtractor.MaxSegments || result.Segments.Sum(s => (long)(s.Excerpt?.Length ?? 0)) > ContentExtractor.MaxCharacters
                 || result.Segments.Any(s => s.Excerpt?.Length > 65536)) throw new InvalidDataException("Extractor exceeded segment/text limits.");
+            if (result.Segments.Any(s => s.Excerpt?.Contains("PRIVATE KEY-----", StringComparison.Ordinal) == true))
+                return new([], "skipped", "Content holds private-key material.");
             var segments = result.Segments.Select(s => s with { Vector = null }).ToArray();
+            if (!code && FilePolicy.Extension(file.Path) == "pptx" && presentationPages is not null && result.State == "skipped" && result.Info is not null)
+            {
+                using var metadata = JsonDocument.Parse(result.Info);
+                if (metadata.RootElement.TryGetProperty("nativeVisualEligible", out var eligible) && eligible.ValueKind == JsonValueKind.True)
+                    result = result with { State = "done", Detail = null };
+            }
             if (result.State is "failed" or "skipped") return result with { Segments = [] };
             var errors = new List<string>();
             var jobs = new List<(int Index, EmbeddingInput Input)>();
@@ -329,7 +408,18 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
             }
             if (errors.Count != 0) return new(segments, succeeded == 0 ? "failed" : "partial", Join(result.Detail, $"{errors.Count} embedding errors: {string.Join("; ", errors.Distinct().Take(3))}"), result.Info);
             if (unavailable) return new(segments, "partial", Join(result.Detail, "Semantic extraction unavailable: no embedding service or required modality capability; keyword content retained."), result.Info);
-            return result with { Segments = segments, State = segments.Length == 0 && result.State == "done" ? "skipped" : result.State };
+            var encoded = result with { Segments = segments, State = segments.Length == 0 && result.State == "done" ? "skipped" : result.State };
+            if (!code && file.Kind == "pdf" && documentPages is not null)
+            {
+                try { return await documentPages.AppendAsync(file.Path, title, encoded, embeddings, info, token); }
+                catch (NativeDocumentEmbeddingException error) { throw new EmbeddingDependencyException(error, error.Message); }
+            }
+            if (!code && FilePolicy.Extension(file.Path) == "pptx" && presentationPages is not null)
+            {
+                try { return await presentationPages.AppendAsync(file.Path, title, encoded, embeddings, info, allowPowerPointAutomation, token); }
+                catch (NativePresentationEmbeddingException error) { throw new EmbeddingDependencyException(error, error.Message); }
+            }
+            return encoded;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (EmbeddingDependencyException) { throw; }

@@ -1,0 +1,54 @@
+{
+  "repository": "https://github.com/huggingface/tokenizers",
+  "officialTag": "v0.23.3",
+  "annotatedTagObject": "9ab7691f497eff905f961aba51a4bb9be3e9555c",
+  "commit": "301277072263fb3830eb66eec7e47adadf76f1dc",
+  "rustCrateVersion": "0.23.2",
+  "wrapperCrateVersion": "0.1.0",
+  "abi": 1,
+  "defaultFeatures": false,
+  "features": [
+    "onig"
+  ],
+  "tagSignatureVerified": false,
+  "sourceIntegrationReview": "independent manual review; old automated audit remains failed after three attempts",
+  "distributionApproved": false,
+  "licenses": [
+    {
+      "path": "licenses/tokenizers-Apache-2.0.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "path": "licenses/daachorse-MIT.txt",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    },
+    {
+      "path": "licenses/daachorse-Apache-2.0.txt",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+    },
+    {
+      "path": "licenses/onig-sys-LICENSE.md",
+      "sha256": "71f321038b088358004bee991635ac09e4c703bec467d3c30c06992c0595f189"
+    },
+    {
+      "path": "licenses/Oniguruma-COPYING.txt",
+      "sha256": "70ba5469ea0bab6e18a32d7009068f996503168d27be57747e08da34337ff26f"
+    },
+    {
+      "path": "licenses/esaxx-rs-LICENSE.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "path": "licenses/unicode-ident-Unicode-3.0.txt",
+      "sha256": "f7db81051789b729fea528a63ec4c938fdcb93d9d61d97dc8cc2e9df6d47f2a1"
+    },
+    {
+      "path": "licenses/unicode-ident-MIT.txt",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    },
+    {
+      "path": "licenses/unicode-ident-Apache-2.0.txt",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+    }
+  ]
+}

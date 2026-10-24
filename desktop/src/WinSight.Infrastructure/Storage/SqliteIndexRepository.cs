@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using WinSight.Core;
 using WinSight.Infrastructure.Search;
@@ -123,6 +124,13 @@ public sealed class SqliteIndexRepository : IIndexRepository
             db.Open();
             // Query-only collation: Windows ordinal path casing without changing the on-disk tokenizer or indexes.
             db.CreateCollation("WINSIGHT_PATH", StringComparer.OrdinalIgnoreCase.Compare);
+            string? lastLiteralJson = null;
+            string[] literals = [];
+            db.CreateFunction<string?, string?, string, long>("WINSIGHT_LITERAL_MASK", (text, name, json) =>
+            {
+                if (lastLiteralJson != json) { literals = JsonSerializer.Deserialize<string[]>(json) ?? throw new InvalidDataException("Missing literal query."); lastLiteralJson = json; }
+                return DocumentSearchQuery.LiteralMask(text, name, literals);
+            }, isDeterministic: true);
             return db;
         }
         catch { db.Dispose(); throw; }
@@ -242,15 +250,17 @@ public sealed class SqliteIndexRepository : IIndexRepository
     {
         var files = ReadHeaders(db, tx, ct, path);
         var byId = files.ToDictionary(f => f.Id);
+        var anchors = files.ToDictionary(f => f.Id, f => ReadAnchors(f.Info));
         string scope = path == null ? "" : " WHERE f.path=$path";
         if (vectorSegmentsOnly) scope += path == null ? " WHERE s.vec IS NOT NULL" : " AND s.vec IS NOT NULL";
         using var segments = Command(db, tx, "SELECT s.file,s.kind,s.modality,s.loc,s.loc_end,s.excerpt," + (vectors ? "s.vec" : "NULL") +
-            " FROM segments s JOIN files f ON f.id=s.file" + scope + " ORDER BY s.id", ("$path", path));
+            ",s.id FROM segments s JOIN files f ON f.id=s.file" + scope + " ORDER BY s.id", ("$path", path));
         using var rows = segments.ExecuteReader();
         while (rows.Read())
         {
             ct.ThrowIfCancellationRequested();
-            ((List<IndexSegment>)byId[rows.GetInt64(0)].Segments).Add(Segment(rows, 1, vectors));
+            var fileId = rows.GetInt64(0);
+            ((List<IndexSegment>)byId[fileId].Segments).Add(Segment(rows, 1, vectors) with { Source = anchors[fileId].GetValueOrDefault(rows.GetInt64(7)) });
         }
         return files;
     }
@@ -260,7 +270,9 @@ public sealed class SqliteIndexRepository : IIndexRepository
         ArgumentNullException.ThrowIfNull(file);
         ArgumentNullException.ThrowIfNull(file.Segments);
         // Own a snapshot of mutable input arrays before crossing the async boundary.
-        file = file with { Segments = file.Segments.Select(s => s with { Vector = s.Vector?.ToArray() }).ToArray() };
+        file = file with { Segments = file.Segments.Select(s => s with { Vector = s.Vector?.ToArray(),
+            Source = s.Source is { } source ? source with { Fields = source.Fields?.ToArray(), Regions = source.Regions?.ToArray() }
+                : s.Excerpt is { } text ? new(new(file.Kind is "image" or "screenshot" ? "image" : "text"), s.Modality == "image" ? "page-visual" : file.Kind is "image" or "screenshot" ? "ocr" : "body", DocumentSearchQuery.FieldsFromText(text)) : null }).ToArray() };
         ValidateFile(file);
         return RunAsync(() =>
         {
@@ -278,26 +290,36 @@ public sealed class SqliteIndexRepository : IIndexRepository
                 string slash = file.Path.Replace('\\', '/');
                 int last = slash.LastIndexOf('/');
                 AddSegment(db, tx, id, new IndexSegment("name", "none", null, null, null), last < 0 ? slash : slash[(last + 1)..], last < 0 ? "" : slash[..last].Replace('/', ' '));
+                var anchors = new Dictionary<long, SourceAnchor>();
                 foreach (var segment in file.Segments.Where(s => s.Kind != "name"))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    AddSegment(db, tx, id, segment, "", segment.Excerpt);
+                    var segmentId = AddSegment(db, tx, id, segment, "", segment.Excerpt);
+                    if (segment.Source is { } source) anchors.Add(segmentId, source);
+                }
+                if (anchors.Count != 0 || file.Info?.Contains("_sourceAnchorsV1", StringComparison.Ordinal) == true)
+                {
+                    var metadata = file.Info is null ? new JsonObject() : JsonNode.Parse(file.Info)!.AsObject();
+                    metadata.Remove("_sourceAnchorsV1");
+                    if (anchors.Count != 0) metadata.Add("_sourceAnchorsV1", JsonSerializer.SerializeToNode(anchors));
+                    Execute(db, tx, "UPDATE files SET info=$info WHERE id=$id", ("$info", metadata.ToJsonString()), ("$id", id));
                 }
             });
             return 0;
         }, cancellationToken);
     }
 
-    private static void AddSegment(SqliteConnection db, SqliteTransaction tx, long id, IndexSegment segment, string name, string? body)
+    private static long AddSegment(SqliteConnection db, SqliteTransaction tx, long id, IndexSegment segment, string name, string? body)
     {
         Execute(db, tx, "INSERT INTO segments(file,kind,modality,loc,loc_end,excerpt,vec) VALUES($file,$kind,$modality,$loc,$end,$excerpt,$vec)",
             ("$file", id), ("$kind", segment.Kind), ("$modality", segment.Vector == null ? "none" : segment.Modality), ("$loc", segment.Location),
             ("$end", segment.LocationEnd), ("$excerpt", segment.Excerpt), ("$vec", segment.Vector == null ? null : Encode(segment.Vector)));
         long segmentId = Convert.ToInt64(Scalar(db, tx, "SELECT last_insert_rowid()"));
-        if (name.Length == 0 && string.IsNullOrEmpty(body)) return;
+        if (name.Length == 0 && string.IsNullOrEmpty(body)) return segmentId;
         string normalized = SearchText.Normalize(body ?? "");
         Execute(db, tx, "INSERT INTO fts(rowid,name,body,original) VALUES($id,$name,$body,$original)", ("$id", segmentId),
             ("$name", SearchText.Normalize(name)), ("$body", normalized), ("$original", normalized == body ? null : body));
+        return segmentId;
     }
 
     public Task DeleteFileAsync(string path, CancellationToken cancellationToken = default)
@@ -367,17 +389,18 @@ public sealed class SqliteIndexRepository : IIndexRepository
     public Task<IReadOnlyList<KeywordMatch>> KeywordSearchAsync(string query, int limit, CancellationToken cancellationToken = default)
     {
         ValidateQuery(query, limit);
-        return RunAsync(() => Read(cancellationToken, (db, tx) => (IReadOnlyList<KeywordMatch>)FindWords(db, tx, query, null, null, limit, cancellationToken)
+        return RunAsync(() => Read(cancellationToken, (db, tx) => (IReadOnlyList<KeywordMatch>)FindWords(db, tx, query, null, null, limit, cancellationToken, fileResults: true)
             .Select(w => new KeywordMatch(w.FileId, w.Rank)).ToArray()), cancellationToken);
     }
 
     internal Task<SearchSnapshot> ReadSearchSnapshotAsync(string query, string? kind, string? root, bool vectors, bool words, int limit, CancellationToken ct,
-        Func<string, bool>? authorize = null) => RunAsync(() => Read(ct, (db, tx) =>
+        Func<string, bool>? authorize = null, Func<string, string?, long, bool>? matchesSource = null,
+        bool allHeaders = false) => RunAsync(() => Read(ct, (db, tx) =>
     {
         long before = Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version"));
         var profile = Scalar(db, tx, "SELECT value FROM meta WHERE key='profile_id'") as string;
         long version = Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version"));
-        var matches = words ? FindWords(db, tx, query, kind, root, Math.Max(100, limit), ct, authorize) : [];
+        var matches = words ? FindWords(db, tx, query, kind, root, Math.Max(100, limit), ct, authorize, matchesSource) : [];
         IReadOnlyList<IndexedFile> files;
         if (vectors)
         {
@@ -389,101 +412,123 @@ public sealed class SqliteIndexRepository : IIndexRepository
                 vectorCache = before == version && Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version")) == version ? (version, files) : null;
             }
         }
-        else files = ReadHeaders(db, tx, ct, ids: matches.Select(w => w.FileId).ToArray());
+        else files = ReadHeaders(db, tx, ct, ids: allHeaders ? null : matches.Select(w => w.FileId).ToArray());
         return new SearchSnapshot(files, matches, profile);
     }), ct);
 
     private static IReadOnlyList<WordEvidence> FindWords(SqliteConnection db, SqliteTransaction tx, string query, string? kind, string? root, int limit, CancellationToken ct,
-        Func<string, bool>? authorize = null)
+        Func<string, bool>? authorize = null, Func<string, string?, long, bool>? matchesSource = null, bool fileResults = false)
     {
         bool code = query.StartsWith("code:", StringComparison.OrdinalIgnoreCase);
         if (code) query = query[5..].Trim();
         var terms = SearchText.Terms(query);
         var identifier = code ? SearchText.Identifier(query) : null;
+        var literals = DocumentSearchQuery.LiteralTokens(query);
+        var literalJson = JsonSerializer.Serialize(literals);
+        long requiredMask = (1L << literals.Length) - 1;
         var patterns = identifier != null ? new[] { SearchText.Quote(string.Join(' ', identifier)) } : terms.Select(t => SearchText.Quote(t) + (SearchText.Inflects(t) ? "*" : "")).ToArray();
-        for (int i = 0; identifier == null && i < terms.Length; i++)
+        for (int i = 0; literals.Length == 0 && identifier == null && i < terms.Length; i++)
             if (terms[i].EnumerateRunes().Count() >= 3 && !patterns[i].EndsWith('*') &&
                 Scalar(db, tx, "SELECT 1 FROM fts WHERE fts MATCH $q LIMIT 1", ("$q", patterns[i])) == null) patterns[i] += "*";
         if (patterns.Length == 0) return [];
         string scope = " AND ($kind IS NULL OR f.kind=$kind) AND ($root IS NULL OR replace(f.path,char(92),'/')=$root COLLATE WINSIGHT_PATH OR substr(replace(f.path,char(92),'/'),1,length($prefix))=$prefix COLLATE WINSIGHT_PATH)";
+        string maskSql = "CASE WHEN $literals='[]' THEN 0 ELSE WINSIGHT_LITERAL_MASK(coalesce(fts.original,fts.body),f.path,$literals) END";
         string? normalizedRoot = root?.Replace('\\', '/').TrimEnd('/');
-        var candidates = new Dictionary<long, (long SegmentId, double Rank, bool Fts)>();
-        void CollectCandidates(SqliteDataReader rows, bool fts)
+        var candidates = new Dictionary<(long File, string Unit), (long Segment, double Rank, bool Fts, long Mask)>();
+        var segmentUnits = new Dictionary<long, (long File, string Unit)>();
+        var sources = new Dictionary<long, IReadOnlyDictionary<long, SourceAnchor>>();
+        void Collect(SqliteDataReader rows, bool fts)
         {
             while (rows.Read())
             {
                 ct.ThrowIfCancellationRequested();
-                long id = rows.GetInt64(0);
-                if (!candidates.ContainsKey(id) && (authorize == null || authorize(rows.GetString(3))))
-                    candidates.Add(id, (rows.GetInt64(1), rows.GetDouble(2), fts));
+                long file = rows.GetInt64(0), segment = rows.GetInt64(1), mask = rows.GetInt64(8);
+                var path = rows.GetString(3);
+                if (authorize != null && !authorize(path) || matchesSource != null && !matchesSource(path, Text(rows, 4), segment)) continue;
+                if (!sources.TryGetValue(file, out var anchors)) sources[file] = anchors = ReadAnchors(Text(rows, 4));
+                var source = anchors.GetValueOrDefault(segment);
+                var key = (file, SearchText.SourceUnit(new(rows.GetString(5), "none", Number(rows, 6), Number(rows, 7), null, Source: source)));
+                segmentUnits[segment] = key;
+                var rank = rows.GetDouble(2);
+                if (candidates.TryGetValue(key, out var old))
+                {
+                    bool better = fts && (!old.Fts || rank < old.Rank);
+                    candidates[key] = (better ? segment : old.Segment, better ? rank : old.Rank, old.Fts || fts, old.Mask | mask);
+                }
+                else candidates.Add(key, (segment, rank, fts, mask));
             }
         }
-        // WS-01/WS-R01: rank and merge file metadata before limiting; never hydrate every matching excerpt.
-        using (var cmd = Command(db, tx, "SELECT s.file,s.id,bm25(fts,3.0,1.0),f.path FROM fts " +
+        using (var cmd = Command(db, tx, "SELECT s.file,s.id,bm25(fts,3.0,1.0),f.path,f.info,s.kind,s.loc,s.loc_end," + maskSql + " FROM fts " +
             "JOIN segments s ON s.id=fts.rowid JOIN files f ON f.id=s.file WHERE fts MATCH $q" + scope + " ORDER BY bm25(fts,3.0,1.0),s.id",
-            ("$q", string.Join(" OR ", patterns)), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/")))
-        using (var rows = cmd.ExecuteReader()) CollectCandidates(rows, true);
+            ("$literals", literalJson), ("$q", string.Join(" OR ", patterns)), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/")))
+        using (var rows = cmd.ExecuteReader()) Collect(rows, true);
         var cjk = identifier == null ? terms.Where(SearchText.ContainsCjk).ToArray() : [];
         if (cjk.Length > 0)
         {
-            // The connection-local vocabulary preserves both native and read-only legacy schema5.
             Execute(db, tx, "CREATE VIRTUAL TABLE IF NOT EXISTS temp.winsight_terms USING fts5vocab(main,fts,instance)");
-            using var cmd = Command(db, tx, "SELECT DISTINCT s.file,s.id,0.0,f.path FROM temp.winsight_terms v " +
-                "JOIN segments s ON s.id=v.doc JOIN files f ON f.id=s.file WHERE v.col IN ('name','body') AND EXISTS (SELECT 1 FROM json_each($cjk) q WHERE instr(v.term,q.value)>0)" + scope + " ORDER BY s.id",
-                ("$cjk", JsonSerializer.Serialize(cjk)), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
-            using var rows = cmd.ExecuteReader(); CollectCandidates(rows, false);
+            using var cmd = Command(db, tx, "SELECT DISTINCT s.file,s.id,0.0,f.path,f.info,s.kind,s.loc,s.loc_end," + maskSql + " FROM temp.winsight_terms v " +
+                "JOIN segments s ON s.id=v.doc JOIN fts ON fts.rowid=s.id JOIN files f ON f.id=s.file WHERE v.col IN ('name','body') AND EXISTS (SELECT 1 FROM json_each($cjk) q WHERE instr(v.term,q.value)>0)" + scope + " ORDER BY s.id",
+                ("$literals", literalJson), ("$cjk", JsonSerializer.Serialize(cjk)), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
+            using var rows = cmd.ExecuteReader(); Collect(rows, false);
         }
-        var shares = new Dictionary<long, double>();
+        var shares = new Dictionary<(long File, string Unit), double>();
         for (int i = 0; i < patterns.Length; i++)
         {
             ct.ThrowIfCancellationRequested();
-            var matched = new HashSet<long>();
-            using (var cmd = Command(db, tx, "SELECT DISTINCT s.file FROM fts JOIN segments s ON s.id=fts.rowid JOIN files f ON f.id=s.file WHERE fts MATCH $q" + scope,
+            var matched = new HashSet<(long File, string Unit)>();
+            void Cover(SqliteDataReader rows)
+            {
+                while (rows.Read()) { ct.ThrowIfCancellationRequested(); if (segmentUnits.TryGetValue(rows.GetInt64(0), out var key)) matched.Add(key); }
+            }
+            using (var cmd = Command(db, tx, "SELECT DISTINCT s.id FROM fts JOIN segments s ON s.id=fts.rowid JOIN files f ON f.id=s.file WHERE fts MATCH $q" + scope,
                 ("$q", patterns[i]), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/")))
-            using (var rows = cmd.ExecuteReader())
-                while (rows.Read()) { ct.ThrowIfCancellationRequested(); if (candidates.ContainsKey(rows.GetInt64(0))) matched.Add(rows.GetInt64(0)); }
+            using (var rows = cmd.ExecuteReader()) Cover(rows);
             if (identifier == null && SearchText.ContainsCjk(terms[i]))
             {
-                using var cmd = Command(db, tx, "SELECT DISTINCT s.file FROM temp.winsight_terms v JOIN segments s ON s.id=v.doc JOIN files f ON f.id=s.file " +
+                using var cmd = Command(db, tx, "SELECT DISTINCT s.id FROM temp.winsight_terms v JOIN segments s ON s.id=v.doc JOIN files f ON f.id=s.file " +
                     "WHERE v.col IN ('name','body') AND instr(v.term,$term)>0" + scope,
                     ("$term", terms[i]), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
-                using var rows = cmd.ExecuteReader();
-                while (rows.Read()) { ct.ThrowIfCancellationRequested(); if (candidates.ContainsKey(rows.GetInt64(0))) matched.Add(rows.GetInt64(0)); }
+                using var rows = cmd.ExecuteReader(); Cover(rows);
             }
-            foreach (var id in matched) shares[id] = shares.GetValueOrDefault(id) + 1.0 / patterns.Length;
+            foreach (var key in matched) shares[key] = shares.GetValueOrDefault(key) + 1.0 / patterns.Length;
         }
-        var selected = candidates.OrderByDescending(c => shares.GetValueOrDefault(c.Key))
-            .ThenBy(c => c.Value.Rank).ThenBy(c => c.Key).Take(limit).ToArray();
+        var ordered = candidates.Where(c => c.Value.Mask == requiredMask).OrderByDescending(c => shares.GetValueOrDefault(c.Key))
+            .ThenBy(c => c.Value.Rank).ThenBy(c => c.Key.File).ThenBy(c => c.Key.Unit, StringComparer.Ordinal);
+        var selected = (fileResults ? ordered.GroupBy(c => c.Key.File).Select(g => g.First()) : ordered).Take(limit).ToArray();
+        var selectedBySegment = selected.ToDictionary(c => c.Value.Segment);
         var evidence = new Dictionary<long, WordEvidence>();
-        var ordinaryIds = selected.Where(c => c.Value.Fts).Select(c => c.Value.SegmentId).ToArray();
-        if (ordinaryIds.Length > 0)
+        var ordinary = selected.Where(c => c.Value.Fts).Select(c => c.Value.Segment).ToArray();
+        if (ordinary.Length > 0)
         {
-            using var cmd = Command(db, tx, "SELECT s.file,bm25(fts,3.0,1.0),s.kind,s.modality,s.loc,s.loc_end,s.excerpt,snippet(fts,1,'«','»','…',12) " +
+            using var cmd = Command(db, tx, "SELECT s.id,s.file,bm25(fts,3.0,1.0),s.kind,s.modality,s.loc,s.loc_end,s.excerpt,snippet(fts,1,'«','»','…',12) " +
                 "FROM fts JOIN segments s ON s.id=fts.rowid WHERE fts MATCH $q AND s.id IN (SELECT value FROM json_each($ids))",
-                ("$q", string.Join(" OR ", patterns)), ("$ids", JsonSerializer.Serialize(ordinaryIds)));
+                ("$q", string.Join(" OR ", patterns)), ("$ids", JsonSerializer.Serialize(ordinary)));
             using var rows = cmd.ExecuteReader();
             while (rows.Read())
             {
                 ct.ThrowIfCancellationRequested();
-                long id = rows.GetInt64(0);
-                evidence.Add(id, new WordEvidence(id, rows.GetDouble(1), shares.GetValueOrDefault(id), Segment(rows, 2, false), Text(rows, 7)));
+                long id = rows.GetInt64(0), file = rows.GetInt64(1);
+                var selectedRow = selectedBySegment[id];
+                var segment = Segment(rows, 3, false) with { Source = sources[file].GetValueOrDefault(id) };
+                evidence.Add(id, new(file, rows.GetDouble(2), shares.GetValueOrDefault(selectedRow.Key), segment, Text(rows, 8), true));
             }
         }
-        var cjkIds = selected.Where(c => !c.Value.Fts).Select(c => c.Value.SegmentId).ToArray();
+        var cjkIds = selected.Where(c => !c.Value.Fts).Select(c => c.Value.Segment).ToArray();
         if (cjkIds.Length > 0)
         {
-            using var cmd = Command(db, tx, "SELECT file,kind,modality,loc,loc_end,excerpt FROM segments WHERE id IN (SELECT value FROM json_each($ids))",
-                ("$ids", JsonSerializer.Serialize(cjkIds)));
+            using var cmd = Command(db, tx, "SELECT id,file,kind,modality,loc,loc_end,excerpt FROM segments WHERE id IN (SELECT value FROM json_each($ids))", ("$ids", JsonSerializer.Serialize(cjkIds)));
             using var rows = cmd.ExecuteReader();
             while (rows.Read())
             {
                 ct.ThrowIfCancellationRequested();
-                long id = rows.GetInt64(0);
-                evidence.Add(id, new WordEvidence(id, 0, shares.GetValueOrDefault(id), Segment(rows, 1, false), null));
+                long id = rows.GetInt64(0), file = rows.GetInt64(1);
+                var selectedRow = selectedBySegment[id];
+                var segment = Segment(rows, 2, false) with { Source = sources[file].GetValueOrDefault(id) };
+                evidence.Add(id, new(file, 0, shares.GetValueOrDefault(selectedRow.Key), segment, null, true));
             }
         }
-        return selected.Select(c => evidence.TryGetValue(c.Key, out var word) ? word
-            : throw new InvalidDataException("Selected keyword segment disappeared from its SQLite snapshot.")).ToArray();
+        return selected.Select(c => evidence.TryGetValue(c.Value.Segment, out var word) ? word
+            : throw new InvalidDataException("Selected keyword source disappeared from its SQLite snapshot.")).ToArray();
     }
 
     internal static void ValidateQuery(string query, int limit)
@@ -514,6 +559,53 @@ public sealed class SqliteIndexRepository : IIndexRepository
             if (s.Modality is not ("none" or "text" or "image" or "audio")) throw new InvalidDataException("Unknown modality.");
             if (s.Location is { } loc && (!double.IsFinite(loc) || loc < 0) || s.LocationEnd is { } end && (!double.IsFinite(end) || end < 0 || end < s.Location)) throw new InvalidDataException("Invalid segment location.");
             if (s.Vector != null) { VectorContract.Validate(s.Vector); if (s.Modality == "none") throw new InvalidDataException("A vector must declare its modality."); }
+            if (s.Source is { } source) ValidateAnchor(source);
+        }
+    }
+
+    internal static IReadOnlyDictionary<long, SourceAnchor> ReadAnchors(string? info)
+    {
+        if (info is null) return new Dictionary<long, SourceAnchor>();
+        using var document = JsonDocument.Parse(info);
+        if (document.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidDataException("File info must be an object.");
+        if (!document.RootElement.TryGetProperty("_sourceAnchorsV1", out var value)) return new Dictionary<long, SourceAnchor>();
+        if (value.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Malformed source-anchor metadata.");
+        var result = new Dictionary<long, SourceAnchor>();
+        foreach (var property in value.EnumerateObject())
+        {
+            if (result.Count >= 5000 || !long.TryParse(property.Name, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var id) || id <= 0 || result.ContainsKey(id))
+                throw new InvalidDataException("Invalid source-anchor key/count.");
+            var source = property.Value.Deserialize<SourceAnchor>(MetadataJson) ?? throw new InvalidDataException("Missing source anchor.");
+            ValidateAnchor(source);
+            result.Add(id, source);
+        }
+        return result;
+    }
+
+    private static void ValidateAnchor(SourceAnchor source)
+    {
+        var location = source.Location ?? throw new InvalidDataException("Missing source location.");
+        if (source.Channel is not ("body" or "notes" or "table" or "ocr" or "page-visual" or "metadata"))
+            throw new InvalidDataException("Unknown source channel.");
+        if (location.Type is not ("paragraph" or "slide" or "sheet" or "pdf-page" or "image" or "text")
+            || location.Page is < 1 or > 5000 || location.Paragraph is < 1
+            || location.Sheet?.Length > 31 || location.Range?.Length > 32 || location.Part?.Length > 512
+            || location.Type is "slide" or "pdf-page" && location.Page is null
+            || location.Type == "paragraph" && location.Paragraph is null
+            || location.Type == "sheet" && (string.IsNullOrWhiteSpace(location.Sheet) || string.IsNullOrWhiteSpace(location.Range)))
+            throw new InvalidDataException("Invalid source locator.");
+        if (source.Fields?.Count > 64 || source.Fields?.Any(f => f is null || string.IsNullOrWhiteSpace(f.Name) || f.Name.Length > 64 || f.Value is null || f.Value.Length > 256 || f.Value.Contains('\0')) == true)
+            throw new InvalidDataException("Invalid structured source fields.");
+        int lastRegion = -1;
+        if (source.Regions?.Count > 96 || source.Regions?.Sum(r => r?.Text?.Length ?? 0) > 8000) throw new InvalidDataException("OCR region count/text exceeds its bound.");
+        foreach (var region in source.Regions ?? [])
+        {
+            if (region is null || region.Line <= lastRegion || region.Line > 5000 || !double.IsFinite(region.Left) || !double.IsFinite(region.Top)
+                || !double.IsFinite(region.Width) || !double.IsFinite(region.Height) || region.Left < 0 || region.Top < 0
+                || region.Text?.Contains('\0') == true || region.Width <= 0 || region.Height <= 0 || region.Left + region.Width > 1 + 1e-9 || region.Top + region.Height > 1 + 1e-9)
+                throw new InvalidDataException("Invalid OCR source region.");
+            lastRegion = region.Line;
         }
     }
 
@@ -571,5 +663,5 @@ public sealed class SqliteIndexRepository : IIndexRepository
 }
 
 internal enum IndexInitializationStage { SchemaCreated, BeforePublish }
-internal sealed record WordEvidence(long FileId, double Rank, double Coverage, IndexSegment Segment, string? Snippet);
+internal sealed record WordEvidence(long FileId, double Rank, double Coverage, IndexSegment Segment, string? Snippet, bool ExactLiteralsVerified = false);
 internal sealed record SearchSnapshot(IReadOnlyList<IndexedFile> Files, IReadOnlyList<WordEvidence> Words, string? Profile);

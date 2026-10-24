@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "sourceCommit": "400c5b501e664f7aaaf2c2ec5e1c270cf0425a87",
+  "scope": "Preserved reference inputs only; not evidence that all media/model/legacy parity gates passed. No private files or downloaded assets.",
+  "files": [
+    {
+      "source": "Tests/WinSightKitTests/Pictures/pattern-o6.heic",
+      "path": "desktop/tests/Fixtures/Media/Pictures/pattern-o6.heic",
+      "bytes": 1199,
+      "sha256": "17eead1c262ba24ef361997a448e52606c1d5d8f0c4d7589bd337564b590436c"
+    },
+    {
+      "source": "Tests/WinSightKitTests/Pictures/pattern-o6.jpg",
+      "path": "desktop/tests/Fixtures/Media/Pictures/pattern-o6.jpg",
+      "bytes": 3777,
+      "sha256": "09c1cc327a1756ff697e77559bf0ba6da0187e6a03b60c2e2a5f9d6b5c88884a"
+    },
+    {
+      "source": "Tests/WinSightKitTests/Pictures/pattern-o6.tiff",
+      "path": "desktop/tests/Fixtures/Media/Pictures/pattern-o6.tiff",
+      "bytes": 5888,
+      "sha256": "57bc71d50e4460a4821099d71ee43884001f9a7514f8abde201543f7204a8c98"
+    },
+    {
+      "source": "Tests/WinSightKitTests/Pictures/pattern-o6.webp",
+      "path": "desktop/tests/Fixtures/Media/Pictures/pattern-o6.webp",
+      "bytes": 838,
+      "sha256": "9efb753a0c6d2627bd4b8654d7feeb1357cbb96bf0c1aa85739cef382390cfb5"
+    },
+    {
+      "source": "Tests/WinSightKitTests/Pictures/pattern.avif",
+      "path": "desktop/tests/Fixtures/Media/Pictures/pattern.avif",
+      "bytes": 1106,
+      "sha256": "e03dc4540adc9a2383c8d89f87bcc1839c4ec99914d307bb6b27b47ad725cbe8"
+    },
+    {
+      "source": "Tests/WinSightKitTests/Videos/shots.ts",
+      "path": "desktop/tests/Fixtures/Media/Videos/shots.ts",
+      "bytes": 13724,
+      "sha256": "d83cb8f6ddd24753a01c1b644588626039e358ed00fab67b33da2f558ed0a1de"
+    },
+    {
+      "source": "Tests/WindowsMLRuntimeTests/Fixtures/photo.jpg",
+      "path": "desktop/tests/Fixtures/Multimodal/photo.jpg",
+      "bytes": 169453,
+      "sha256": "243df6bca3dfce7888ba872d9a774b7d030f5f6d4c5f92bd11d0f3402c026133"
+    },
+    {
+      "source": "Tests/WindowsMLRuntimeTests/Fixtures/screen.png",
+      "path": "desktop/tests/Fixtures/Multimodal/screen.png",
+      "bytes": 6406,
+      "sha256": "a8a0c831fe4746d00c95e3ab436d53e4cc9046a774fe4f0f6edb73d1a7d55f9b"
+    },
+    {
+      "source": "Tests/WindowsMLRuntimeTests/Fixtures/speech.wav",
+      "path": "desktop/tests/Fixtures/Multimodal/speech.wav",
+      "bytes": 128044,
+      "sha256": "bfbc029af6c0bacdbaccfa6c695d6772373453249386fa6a62a7b02a31d33e1f"
+    }
+  ]
+}

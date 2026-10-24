@@ -12,6 +12,7 @@ param(
     [ValidateRange(1,160)][int]$DeadlineSeconds = 150,
     [switch]$AppOnlyPreview,
     [string]$ModelDirectory,
+    [string]$OcrModelDirectory,
     [string]$Configuration = 'Release',
     [string]$StageDirectory
 )
@@ -252,6 +253,17 @@ if (-not $AppOnlyPreview) {
     if (-not $ModelDirectory -or -not [IO.Path]::IsPathFullyQualified($ModelDirectory)) {
         throw 'A full package requires an explicitly supplied absolute -ModelDirectory; no private model cache is discovered.'
     }
+    if (-not $OcrModelDirectory -or -not [IO.Path]::IsPathFullyQualified($OcrModelDirectory)) {
+        throw 'A full candidate also requires an explicit absolute -OcrModelDirectory for the four pinned isolated OCR assets.'
+    }
+    $ocrModelManifest = Get-Content -Raw -LiteralPath (Join-Path $root 'inference/WinSight.OcrHost/model-manifest.json') | ConvertFrom-Json
+    foreach ($pin in $ocrModelManifest.files) {
+        $asset = Join-Path $OcrModelDirectory $pin.path
+        if ((Get-Item -LiteralPath $asset).Length -ne $pin.bytes -or
+            (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.sha256) {
+            throw "Pinned OCR asset mismatch: $($pin.path)"
+        }
+    }
     $modelManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
     foreach ($file in $modelManifest.files) {
         $path = Join-Path $ModelDirectory $file.path
@@ -283,6 +295,16 @@ try {
         & dotnet publish (Join-Path $root 'inference/WinSight.InferenceHost/WinSight.InferenceHost.csproj') `
             --configuration $Configuration --runtime win-x64 --self-contained true --output $inference *> (Join-Path $logs 'inference.publish.log')
         if ($LASTEXITCODE -ne 0) { throw 'Inference publish failed; stage is incomplete.' }
+        $ocrOut = Join-Path $inference 'ocr'
+        & dotnet publish (Join-Path $root 'inference/WinSight.OcrHost/WinSight.OcrHost.csproj') `
+            --configuration $Configuration --runtime win-x64 --self-contained true "-p:OcrModelRoot=$OcrModelDirectory" --output $ocrOut *> (Join-Path $logs 'ocr.publish.log')
+        if ($LASTEXITCODE -ne 0) { throw 'Isolated OCR publish failed; stage is incomplete.' }
+        foreach ($pin in $ocrModelManifest.files) {
+            $published = Join-Path $ocrOut $pin.path
+            if ((Get-FileHash -LiteralPath $published -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.sha256) {
+                throw "Published OCR asset differs: $($pin.path)"
+            }
+        }
         foreach ($file in $modelManifest.files) {
             $target = Join-Path (Join-Path $stage 'app/models') $file.path
             New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force | Out-Null
@@ -291,6 +313,12 @@ try {
     }
     Copy-Item (Join-Path $desktop 'THIRD-PARTY-NOTICES.txt') (Join-Path $stage 'app/THIRD-PARTY-NOTICES.txt')
     Copy-Item (Join-Path $desktop 'licenses') (Join-Path $stage 'app/licenses') -Recurse
+    if (-not $AppOnlyPreview) {
+        $tokenizerNotices = Join-Path $stage 'app/licenses/tokenizer'
+        New-Item -ItemType Directory -Path $tokenizerNotices -Force | Out-Null
+        Copy-Item (Join-Path $root 'native/winsight-tokenizer/licenses') (Join-Path $tokenizerNotices 'texts') -Recurse
+        Copy-Item (Join-Path $root 'native/winsight-tokenizer/source-provenance.json') $tokenizerNotices
+    }
     $files = @(Get-ChildItem $stage -Recurse -File | Where-Object { $_.FullName -notlike "$logs*" } | ForEach-Object {
         @{ path = [IO.Path]::GetRelativePath($stage, $_.FullName).Replace('\', '/'); bytes = $_.Length;
            sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }

@@ -15,7 +15,7 @@ public sealed record DesktopOptions(string DataDirectory, string? ApplicationDir
     internal Func<bool>? IsOnAcPower { get; init; }
 }
 
-public sealed class DesktopBackend : IDesktopBackend
+public sealed partial class DesktopBackend : IDesktopBackend
 {
     private readonly JsonSettingsStore settingsStore;
     private readonly SemaphoreSlim lifecycle = new(1, 1);
@@ -140,7 +140,8 @@ public sealed class DesktopBackend : IDesktopBackend
                 {
                     Excluded = (request.Excluded ?? []).Concat(request.Code ? settings.CodeSkipped : settings.Skipped)
                         .Append(dataDirectory).Append(IndexDirectory).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
-                    SkipTypes = (request.SkipTypes ?? []).Concat(settings.SkipTypes).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+                    SkipTypes = (request.SkipTypes ?? []).Concat(settings.SkipTypes).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    Documents = request.Documents ?? new DocumentExtractionOptions(settings.IncludeWordComments, settings.IncludeWordHeadersFooters)
                 };
             }
             finally { lifecycle.Release(); }
@@ -160,9 +161,8 @@ public sealed class DesktopBackend : IDesktopBackend
                         WorkspaceRoot = workspace
                     });
                 }
-                var service = mediaClient is null
-                    ? new IndexingService(repository, new ContentExtractor(mediaClient), model)
-                    : new IndexingService(repository, new ContentExtractor(mediaClient), model, new NativeMediaSamplingService(mediaClient));
+                var service = new IndexingService(repository, new ContentExtractor(mediaClient), model,
+                    mediaClient is null ? null : new NativeMediaSamplingService(mediaClient), new NativeDocumentPages(mediaClient), new NativePresentationPages(mediaClient));
                 await service.IndexAsync(approved, progress, token);
             }
             catch (Exception error)
@@ -287,6 +287,8 @@ public sealed class DesktopBackend : IDesktopBackend
     private async Task ReleaseResourcesAsync()
     {
         var failures = new List<Exception>();
+        try { await StopSourceOperationsAsync(); }
+        catch(Exception error) { failures.Add(error); }
         foreach (var store in repositories)
         {
             try { await store.DisposeAsync(); }

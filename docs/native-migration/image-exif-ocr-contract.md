@@ -1,4 +1,6 @@
-# Native image EXIF/OCR contract
+# Native image EXIF/OCR contract — historical v1
+
+> The source candidate now uses [RapidOCR protocol2](rapidocr-candidate-contract.md), with scoped38-case image integration passed; full upgrade qualification remains BLOCKED. The Windows OCR behavior/evidence below describes the earlier v1 snapshot only; its35 passes are not new-engine acceptance.
 
 ## Scope and owners
 

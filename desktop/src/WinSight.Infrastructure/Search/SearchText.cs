@@ -1,5 +1,9 @@
 using System.Globalization;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
+using WinSight.Core;
 using System.Text.RegularExpressions;
 
 namespace WinSight.Infrastructure.Search;
@@ -26,8 +30,11 @@ internal static class SearchText
 
     internal static string Normalize(string text)
     {
+        text = text.Normalize(NormalizationForm.FormKC);
+        if (OperatingSystem.IsWindows() && ContainsCjk(text))
+            text = SimplifyChinese(text);
         var output = new StringBuilder();
-        foreach (var rune in text.Normalize(NormalizationForm.FormKC).EnumerateRunes())
+        foreach (var rune in text.EnumerateRunes())
         {
             int n = rune.Value;
             if (n == 0x200B) output.Append(' ');
@@ -40,27 +47,73 @@ internal static class SearchText
         return output.ToString();
     }
 
+    private static string SimplifyChinese(string value)
+    {
+        const uint simplifiedChinese = 0x02000000;
+        int length = LCMapStringEx("zh-CN", simplifiedChinese, value, value.Length, null, 0, 0, 0, 0);
+        if (length <= 0) throw new Win32Exception(Marshal.GetLastPInvokeError(), "Chinese normalization length failed.");
+        var buffer = new char[length];
+        int written = LCMapStringEx("zh-CN", simplifiedChinese, value, value.Length, buffer, length, 0, 0, 0);
+        if (written <= 0 || written > length) throw new Win32Exception(Marshal.GetLastPInvokeError(), "Chinese normalization failed.");
+        return new string(buffer, 0, written);
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern int LCMapStringEx(string localeName, uint flags, string source, int sourceLength,
+        [Out] char[]? destination, int destinationLength, nint version, nint reserved, nint sortHandle);
+
     internal static string[] Words(string text)
     {
         var words = new List<string>();
         var word = new StringBuilder();
+        bool? previousCjk = null;
         foreach (var rune in Normalize(text).ToLowerInvariant().EnumerateRunes())
         {
             var category = Rune.GetUnicodeCategory(rune);
             if (Rune.IsLetterOrDigit(rune) || category is UnicodeCategory.NonSpacingMark or
-                UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark) word.Append(rune.ToString());
-            else if (word.Length > 0) { words.Add(word.ToString()); word.Clear(); }
+                UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark)
+            {
+                bool cjk = ContainsCjk(rune.ToString());
+                if (Rune.IsLetterOrDigit(rune) && previousCjk is { } previous && previous != cjk && word.Length > 0)
+                { words.Add(word.ToString()); word.Clear(); }
+                word.Append(rune.ToString());
+                if (Rune.IsLetterOrDigit(rune)) previousCjk = cjk;
+            }
+            else if (word.Length > 0) { words.Add(word.ToString()); word.Clear(); previousCjk = null; }
         }
         if (word.Length > 0) words.Add(word.ToString());
         return words.ToArray();
     }
 
+    internal static string SourceUnit(IndexSegment segment) => segment.Source is { } source
+        ? source.Location.Type is "text" or "image" ? "file" : JsonSerializer.Serialize(source.Location)
+        : segment.Kind == "name" || segment.Kind == "chunk" && segment.Location is null ? "file"
+        : $"{segment.Kind}:{segment.Location}:{segment.LocationEnd}";
+
     internal static bool ContainsCjk(string text) => text.EnumerateRunes().Any(r =>
         r.Value is >= 0x3400 and <= 0x9fff or >= 0xf900 and <= 0xfaff or >= 0x20000 and <= 0x323af
             or >= 0x3040 and <= 0x30ff or >= 0xac00 and <= 0xd7af);
 
-    internal static string[] Terms(string query) => Words(query)
-        .Where(w => w.EnumerateRunes().Count() >= 2 && !Stopwords.Contains(w)).Distinct(StringComparer.Ordinal).ToArray();
+    internal static string[] Terms(string query)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var word in Words(query).Where(w => (w.EnumerateRunes().Count() >= 2 || ContainsCjk(w) || w.All(char.IsDigit)) && !Stopwords.Contains(w)))
+        {
+            if (seen.Add(word)) result.Add(word);
+            if (ContainsCjk(word))
+            {
+                var runes = word.EnumerateRunes().ToArray();
+                for (int i = 0; i + 1 < runes.Length && result.Count < 64; i++)
+                {
+                    var term = runes[i].ToString() + runes[i + 1];
+                    if (seen.Add(term)) result.Add(term);
+                }
+            }
+            if (result.Count >= 64) break;
+        }
+        return result.ToArray();
+    }
 
     internal static bool Inflects(string word) => word.EnumerateRunes().Any(r => r.Value is >= 0x0900 and <= 0x0DFF or >= 0x0600 and <= 0x06FF);
     internal static string Quote(string word) => "\"" + word.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";

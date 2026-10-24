@@ -1,13 +1,17 @@
 # WinSight native migration execution contract
 
-Status: in progress. This document is not a release or cutover receipt.
+Status: original full-parity migration remains incomplete. This document is not a release or cutover receipt.
+
+## 2026-10-23 source-only retirement decision
+
+The owner explicitly approved native-only maintenance and abandonment of the old Swift/Tauri program and CLI/JSONL compatibility. [legacy-retirement.md](legacy-retirement.md) supersedes only the old requirement to keep those source/build paths operational. Shared assets, reference inputs, licenses and native tokenizer remain. This is not proof that the original 47-command parity contract, independent full-product review, NM-P5 or NM-P6 passed. The original stage evidence below remains historical. No production data migration, toolchain uninstall, new physical installation or external client reconfiguration is authorized by this source cleanup.
 
 ## Scope and decisions
 
 - User authorized P0–P6 on the staged WinUI 3/.NET migration proposal. Route `/forge`, L3, Refactor.
 - The implementation baseline is the CURRENT inner `WinSight/` checkout, not upstream HEAD and not the deleted outer .NET scaffold.
 - Preserve existing dirty changes. No staging, commits, reset, push, production install or access to personal indexes/settings/models during this task.
-- New source lives under `desktop/`. During validation it is explicitly a NativePreview, using a separate data directory. Existing Swift/Tauri remains operational until cutover gates pass.
+- New source lives under `desktop/`. During validation it is explicitly a NativePreview, using a separate data directory. The original keep-Swift/Tauri-operational condition is superseded by the explicit source-only retirement decision above; full-parity acceptance remains unpassed.
 - Target: WinUI 3 + .NET 10; Core contracts, Infrastructure, App, existing managed inference host. No HTML/WebView interface or Swift/Tauri dependency in the candidate.
 - Keep the existing managed inference subprocess initially. This intentionally defers the older architecture guide's single-process consolidation.
 - Keep the tokenizer's native Rust C ABI. Removing Tauri does not remove an independently required tokenizer.
@@ -43,10 +47,10 @@ Recovery is file-scoped: compare current bytes with the task diff, restore only 
 | NM-P2 | Search slice | Synthetic index -> real search -> result -> safety-checked open/reveal; stale result/cancel/error tests; model-backed evidence separately identified |
 | NM-P3 | Engine parity | Storage/search/index/extraction/media/code/profile tests and differential fixtures vs protected source contracts |
 | NM-P4 | Integration | Atomic config save/reload, authorized folders, watcher convergence/deletion safety, indexing schedule, startup/editor/clipboard/drag behavior |
-| NM-P5 | Retirement | All required parity gates and independent review pass; no Swift/Tauri dependencies in candidate build or payload; then remove old production paths and callers |
+| NM-P5 | Original full-parity retirement | All required parity gates and independent full-product review pass; still unaccepted. Separate source-only abandonment removes old paths without claiming this gate passed |
 | NM-P6 | Distribution | Self-contained .NET and App SDK publish, correct inference/native/model/licenses payload, dependency audit, clean Windows install/upgrade/uninstall and recovery |
 
-A build, a running process, a static check or a test count cannot alone satisfy the behavioral gates. Do not mark NM-P5/NM-P6 complete if models/media/installation/independent review are missing. Preserve the previous chain rather than delete it to produce a misleading dependency-free result.
+A build, a running process, a static check or a test count cannot alone satisfy the behavioral gates. Do not mark NM-P5/NM-P6 complete if models/media/installation/independent review are missing. Do not use source-only retirement to manufacture full-parity or release acceptance. Recoverable historical source is at commit `400c5b501e664f7aaaf2c2ec5e1c270cf0425a87`; its executable/protocol compatibility is deliberately no longer offered.
 
 ## Verification constraints
 

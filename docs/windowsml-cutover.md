@@ -1,5 +1,8 @@
 # Windows ML 默认后端切换（源码阶段）
 
+> 退役范围说明（2026-10-23）：本页保留历史设计、迁移依据或行为对照。涉及 Swift/Tauri、旧 Vendor、旧 CLI 与旧生成脚本的路径／命令只供回查，不再是当前可执行开发入口。原始源码位于 Git 提交 `400c5b501e664f7aaaf2c2ec5e1c270cf0425a87`；当前主线见仓库 README 和 `docs/native-migration/legacy-retirement.md`。原验收缺口不会因源码退役自动关闭。
+
+
 > 后续设备策略请求已取代本记录的 CPU-only 限定；当前后台候选准备和实际模型资格门见 [windowsml-provider-policy.md](windowsml-provider-policy.md)。
 
 本轮授权：移除生产旧后端、移除实验性索引目录限制、默认启用新链路。延续“代码先集成，不进行运行验收”：不构建/运行应用或模型，不安装工具链，不读取、迁移或清空真实索引及用户模型目录。

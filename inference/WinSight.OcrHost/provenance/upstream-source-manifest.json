@@ -1,0 +1,114 @@
+{
+  "repository": "https://github.com/BobLd/RapidOcrNet",
+  "commit": "708cae2fcb88720e1d891a81b5ee3e8b2bcc139e",
+  "archiveSha256": "77c264e4c57104745926f2cecfc53c7d9d5c470786848a87316ffab578ab20ac",
+  "selectionOnly": true,
+  "upstreamScriptsExecuted": false,
+  "files": [
+    {
+      "path": "LICENSE.txt",
+      "bytes": 11357,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "path": "RapidOcrNet/CalRecBoxes.cs",
+      "bytes": 14537,
+      "sha256": "8d894dae8df62792afc0892291c283726bf036cef2b6a616c362e211d25dd296"
+    },
+    {
+      "path": "RapidOcrNet/GeometryExtensions.cs",
+      "bytes": 10034,
+      "sha256": "22b617db3ae63aa2eedf9eaa4841adaed3cbfe41372a550f4502c0f9e366fa26"
+    },
+    {
+      "path": "RapidOcrNet/models/v5/ppocrv5_latin_dict.txt",
+      "bytes": 1634,
+      "sha256": "3c0a8a79b612653c25f765271714f71281e4e955962c153e272b7b8c1d2b13ff"
+    },
+    {
+      "path": "RapidOcrNet/models/v6/ppocrv6_dict.txt",
+      "bytes": 74947,
+      "sha256": "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"
+    },
+    {
+      "path": "RapidOcrNet/models/v6/ppocrv6_tiny_dict.txt",
+      "bytes": 27156,
+      "sha256": "c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd"
+    },
+    {
+      "path": "RapidOcrNet/OcrResult.cs",
+      "bytes": 5941,
+      "sha256": "d3a3908523763d58c6fe1132859507da3cc9b6e426ec1f25fefc79c83d5c1d07"
+    },
+    {
+      "path": "RapidOcrNet/OcrUtils.cs",
+      "bytes": 20098,
+      "sha256": "72e4f61070e2b4b02dcd48b07d71817f0a7464676db564aa967771d301bc0d0c"
+    },
+    {
+      "path": "RapidOcrNet/OrtRun.cs",
+      "bytes": 3712,
+      "sha256": "a9beccb0344b314da8eb436cb037780d0f55a88706ba0bc397d217aa3a30c36e"
+    },
+    {
+      "path": "RapidOcrNet/PContour.cs",
+      "bytes": 20390,
+      "sha256": "e36c461854b7af2e4efafb690bb7482c0da949b422b6ddc0085f013dc3c0cb87"
+    },
+    {
+      "path": "RapidOcrNet/RapidOcr.Async.cs",
+      "bytes": 3944,
+      "sha256": "8ded163e7fedb21c666b99a7af7d027db9406e1348fd13803afe8c9899fd04c9"
+    },
+    {
+      "path": "RapidOcrNet/RapidOcr.cs",
+      "bytes": 25848,
+      "sha256": "0d1c32c5b1fcce8bcd67c9a342b52c7bc2580c2f8b105958d034543dd33fc49a"
+    },
+    {
+      "path": "RapidOcrNet/RapidOcrModelSet.cs",
+      "bytes": 4239,
+      "sha256": "fa67a96fa5a840802ad197bd6699c5b49a9514cdf96c4a0e41db0f74564ce2c2"
+    },
+    {
+      "path": "RapidOcrNet/RapidOcrNet.csproj",
+      "bytes": 4051,
+      "sha256": "cc4b0e8da002c51d5a59dcfbb6d8c04b6c5fc161b2a2fe58ebf765f70b7339cd"
+    },
+    {
+      "path": "RapidOcrNet/RapidOcrNet.targets",
+      "bytes": 413,
+      "sha256": "f2b271589d9b3ccdefc5fc5290c3e423fc1b7fa2f926ea3e251def5bd1b8b90d"
+    },
+    {
+      "path": "RapidOcrNet/RapidOcrOptions.cs",
+      "bytes": 7264,
+      "sha256": "abf5976778f3fbd331b67bcbd7813f6865b0975bd200689376e6b0ea7c513eec"
+    },
+    {
+      "path": "RapidOcrNet/ScaleParam.cs",
+      "bytes": 3785,
+      "sha256": "0bd6c881f335e4dbe18646c2b19255c0b3fec25045dc110b892dec62f2a53b53"
+    },
+    {
+      "path": "RapidOcrNet/TextClassifier.cs",
+      "bytes": 8128,
+      "sha256": "6a952783269f0a50685f38e4ec9511250022101d78b13816115d394e1a41bc7f"
+    },
+    {
+      "path": "RapidOcrNet/TextDetector.cs",
+      "bytes": 19649,
+      "sha256": "340c8078015b5291e946399cc7a3bfe98427a05622a4d32d93e15a2b738ae308"
+    },
+    {
+      "path": "RapidOcrNet/TextRecognizer.cs",
+      "bytes": 11501,
+      "sha256": "26adf3b6fab406bd7c9bd56ee7fa0cd46ad8f5e3adbfc2756a1b6da3d7e25076"
+    },
+    {
+      "path": "RapidOcrNet/ValueStopwatch.cs",
+      "bytes": 1453,
+      "sha256": "4647b54fe1f3762f1bf3bd30327bf88a313ffc713dca2182f60f061793d8d5f8"
+    }
+  ]
+}

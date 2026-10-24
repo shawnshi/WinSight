@@ -10,7 +10,8 @@ name = "winsight_tokenizer"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-tokenizers = { version = "=0.23.1", default-features = false, features = ["onig"] }
+# Official v0.23.3 tag contains Rust crate 0.23.2; pin source, not a nonexistent 0.23.3 crate.
+tokenizers = { git = "https://github.com/huggingface/tokenizers.git", rev = "301277072263fb3830eb66eec7e47adadf76f1dc", version = "=0.23.2", default-features = false, features = ["onig"] }
 
 [profile.release]
 panic = "unwind"

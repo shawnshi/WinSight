@@ -6,5 +6,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- The exact SDK pin selects the RC2 runtime. A global RuntimeFrameworkVersion also overrides Windows SDK targeting references. -->
+    <RollForward>Disable</RollForward>
   </PropertyGroup>
 </Project>

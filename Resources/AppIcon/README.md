@@ -1,7 +1,7 @@
-# WinSight tray assets
+# WinSight shared icon source
 
-The canonical supplied icon is `shell/src-tauri/icons/WinSight.ico`, copied byte-for-byte from the user's `WinSight.ico`. The old DigUp artwork is not used.
+`WinSight.ico` is the byte-preserved canonical multi-resolution icon migrated from the retired Tauri tree at commit `400c5b501e664f7aaaf2c2ec5e1c270cf0425a87`.
 
-`tray.png`, `tray-dim.png` and `tray-paused.png` are 64×64 RGBA images embedded by `shell/src-tauri/src/tray_icon.rs`. Normal is the supplied ICO's 64-pixel frame; dimmed supports the progress sweep; paused adds a small pause badge without changing the normal application icon.
+The PNG and tray files are existing derivatives, not a redesign. Their recorded SHA-256 values remain in [the asset manifest](../../docs/winsight-icon-assets.json). `docs/logo.png` remains the documentation image. Moving these files does not claim that the native application now uses a new icon resource.
 
-Run `python scripts/prepare-icons.py` from the project root to regenerate the tray, window, setup and documentation PNGs. Pillow is needed only for this optional regeneration step, not for building or running WinSight. Regeneration does not modify the supplied ICO. Asset hashes are recorded in `docs/winsight-icon-assets.json`.
+Optional regeneration uses [prepare-icons.py](../../scripts/prepare-icons.py) and Pillow. It writes only this shared asset directory, `docs/logo.png` and the asset manifest; it never recreates the retired shell tree. Normal native source checks need no image generation or Pillow.

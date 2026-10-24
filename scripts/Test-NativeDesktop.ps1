@@ -37,7 +37,7 @@ try {
         $arguments = @('run', '--project', $project, '--configuration', $Configuration)
         if ($SkipRestore) { $arguments += '--no-restore' }
         if ($name -eq 'WinSight.Pause.Tests') {
-            $fakeHost = Join-Path $desktop "tests/WinSight.Inference.Tests/FakeHost/bin/$Configuration/net10.0/FakeHost.exe"
+            $fakeHost = Join-Path $desktop "tests/WinSight.Inference.Tests/FakeHost/bin/$Configuration/net11.0/FakeHost.exe"
             if (-not (Test-Path $fakeHost)) { throw "Required explicit synthetic host missing after inference suite: $fakeHost" }
             $fixtures = Join-Path $output ('pause-' + [Guid]::NewGuid().ToString('N'))
             $arguments += @('--', $fakeHost, $fixtures)

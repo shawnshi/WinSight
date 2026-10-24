@@ -1,6 +1,8 @@
 # Text files keep LF line endings on every system (Git for Windows checks text out with CRLF by default): llama.cpp's
 # patch has to match its LF source, and the build scripts run in bash.
 * text=auto eol=lf
+# OCR profile identity hashes the embedded bytes, including the approved CRLF payload.
+/inference/WinSight.OcrHost/model-manifest.json -text
 # Preserve the inherited third-party notice verbatim, including its original spaces.
 # Its SHA-256 is checked against the upstream source during publication validation.
 licenses/DigUp-Acknowledgements.txt -whitespace

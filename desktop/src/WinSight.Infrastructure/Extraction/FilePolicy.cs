@@ -2,7 +2,7 @@ namespace WinSight.Infrastructure.Extraction;
 
 internal static class FilePolicy
 {
-    internal static readonly HashSet<string> Documents = Set("txt text md markdown rtf docx doc odt html htm");
+    internal static readonly HashSet<string> Documents = Set("txt text md markdown rtf docx doc odt html htm pptx xlsx");
     internal static readonly HashSet<string> Images = Set("jpg jpeg jpe jfif png gif bmp tif tiff webp heic heif avif psd tga pnm ppm pgm cr2 nef arw dng raf orf rw2");
     internal static readonly HashSet<string> Audio = Set("mp3 m4a m4b aac wav wave flac ogg oga opus aiff aif wma amr caf mka");
     internal static readonly HashSet<string> Video = Set("mp4 m4v mov mkv webm avi wmv flv 3gp 3g2 mpg mpeg m2v ogv mxf m2ts");

@@ -54,6 +54,42 @@ public sealed class NativeMediaProcessClient : IAsyncDisposable
             return MediaTaskFiles.CreateInspect(hostPath, workspacePath, sourcePath, "image");
         }, (_, output, _) => NativeImageInspection.Parse(output, sourcePath), cancellationToken);
 
+    public Task<NativePdfPageLease> RenderPdfPageAsync(NativePdfPageRequest request, CancellationToken cancellationToken = default) =>
+        ExecuteAsync(NativeMediaOperation.RenderPdfPage, () => { ArgumentNullException.ThrowIfNull(request); request.Validate(); },
+            () =>
+            {
+                request = request with { SourcePath = MediaTaskFiles.LocalPath(request.SourcePath) };
+                return MediaTaskFiles.CreatePdfPage(hostPath, workspacePath, request);
+            }, (files, payload, token) => NativePdfPageLease.Parse(payload, request, files, token), cancellationToken);
+
+    public Task<NativePresentationLease> RenderPresentationAsync(NativePresentationRequest request, CancellationToken cancellationToken = default) =>
+        ExecuteAsync(NativeMediaOperation.RenderPresentation, () => { ArgumentNullException.ThrowIfNull(request); request.Validate(); },
+            () =>
+            {
+                request = request with { SourcePath = MediaTaskFiles.LocalPath(request.SourcePath) };
+                return MediaTaskFiles.CreatePresentation(hostPath, workspacePath, request);
+            }, (files, payload, token) => NativePresentationLease.Parse(payload, request, files, token), cancellationToken);
+
+    public Task<NativePresentationLease> RenderPresentationPageAsync(NativePresentationPageRequest request,CancellationToken token=default) =>
+        ExecuteAsync(NativeMediaOperation.RenderPresentationPage,()=>{ArgumentNullException.ThrowIfNull(request);request.Validate();},()=>
+        {
+            request=request with{SourcePath=MediaTaskFiles.LocalPath(request.SourcePath)};
+            return MediaTaskFiles.CreatePresentationPage(hostPath,workspacePath,request);
+        },(files,payload,ct)=>NativePresentationLease.ParsePage(payload,request,files,ct),token);
+    public Task<NativeRasterPreviewLease> RenderRasterPreviewAsync(NativeRasterPreviewRequest request,CancellationToken token=default) =>
+        ExecuteAsync(NativeMediaOperation.RenderRasterPreview,()=>{ArgumentNullException.ThrowIfNull(request);request.Validate();},()=>
+        {
+            request=request with{SourcePath=MediaTaskFiles.LocalPath(request.SourcePath)};
+            return MediaTaskFiles.CreateRasterPreview(hostPath,workspacePath,request);
+        },(files,payload,ct)=>NativeRasterPreviewLease.Parse(payload,request,files,ct),token);
+
+    public Task<NativeOfficeNavigationResult> NavigateOfficeAsync(NativeOfficeNavigationRequest request,CancellationToken token=default) =>
+        ExecuteAsync(NativeMediaOperation.OfficeNavigation,()=>{ArgumentNullException.ThrowIfNull(request);request.Validate();},()=>
+        {
+            request=request with{SourcePath=MediaTaskFiles.LocalPath(request.SourcePath)};
+            return MediaTaskFiles.CreateOfficeNavigation(hostPath,workspacePath,request);
+        },(files,payload,ct)=>{var result=NativeOfficeNavigationResult.Parse(payload,request);ct.ThrowIfCancellationRequested();files.AcknowledgeNavigation();return result;},token);
+
     private Task<NativeMediaArtifactLease> ExtractAsync(NativeMediaProcessRequest request, NativeMediaOperation operation,
         CancellationToken cancellationToken) => ExecuteAsync(operation, () =>
         {
@@ -111,15 +147,30 @@ public sealed class NativeMediaProcessClient : IAsyncDisposable
                 forceUnconfirmedTerminationForTesting, operation);
             var result = await process.RunAsync(maxOutputBytes, terminationTimeout, linked.Token).ConfigureAwait(false);
             process.Dispose(); process = null;
-            linked.Token.ThrowIfCancellationRequested();
+            // Successful, settled Office handoff is already committed remotely. A late local cancel must not hide it.
+            // Nonzero/unknown results and all other operations retain their cancellation/retention behavior.
+            bool officeCommitted=operation==NativeMediaOperation.OfficeNavigation&&result.ExitCode==0;
+            if(!officeCommitted)linked.Token.ThrowIfCancellationRequested();
             if (result.ExitCode != 0)
                 throw new IOException($"Native media worker exited with code {result.ExitCode}. stderr: {result.Error}");
-            var value = consume(files, result.Output, linked.Token);
+            var value = consume(files, result.Output, officeCommitted?CancellationToken.None:linked.Token);
+            if(operation==NativeMediaOperation.OfficeNavigation)
+            {
+                // A verified user handoff is committed, not an operation to roll back on a late cancel.
+                try{files.Cleanup();}
+                catch(Exception cleanup)when(cleanup is IOException or UnauthorizedAccessException)
+                {
+                    string warning=$"Office handoff completed; cleanup failed, protections retained: {files.TaskDirectory}. Do not reopen automatically. {cleanup.Message}";
+                    MediaRetention.Keep(files);files=null;
+                    return (T)(object)(((NativeOfficeNavigationResult)(object)value!) with{CleanupWarning=warning});
+                }
+                files=null;return value;
+            }
             linked.Token.ThrowIfCancellationRequested();
             lock (gate)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
-                if (operation is NativeMediaOperation.Inspect or NativeMediaOperation.InspectImage) files.Cleanup();
+                if (operation is NativeMediaOperation.Inspect or NativeMediaOperation.InspectImage or NativeMediaOperation.OfficeNavigation) files.Cleanup();
                 files = null;
                 return value;
             }

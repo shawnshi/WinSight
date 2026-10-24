@@ -3,7 +3,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $app = Join-Path $root '.dev/native-migration/release/app'
-$fake = Join-Path $root 'desktop/tests/WinSight.Inference.Tests/FakeHost/bin/Debug/net10.0/FakeHost.exe'
+$fake = Join-Path $root 'desktop/tests/WinSight.Inference.Tests/FakeHost/bin/Debug/net11.0/FakeHost.exe'
 if (-not (Test-Path $fake)) { throw 'Build the explicitly test-only fake host first; no real-model fallback is allowed.' }
 $fixture = Join-Path $root ('.dev/native-migration/search-slice-' + [Guid]::NewGuid().ToString('N'))
 $data = Join-Path $fixture 'data'

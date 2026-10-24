@@ -4,13 +4,21 @@ public enum SearchMode { Hybrid, Keyword, Semantic }
 public enum IndexingControlState { Running, Pausing, Paused }
 public sealed class IndexingPausedException() : InvalidOperationException("Indexing is paused or pausing.");
 public sealed record SearchRequest(string Query, int Limit = 50, SearchMode Mode = SearchMode.Hybrid,
-    string? Kind = null, string? Root = null);
+    string? Kind = null, string? Root = null, IReadOnlyList<SearchField>? Filters = null);
 public sealed record SearchHit(long FileId, string Path, string Kind, double Score, string MatchType,
-    string? Excerpt = null, double? Location = null, double? LocationEnd = null, string? SegmentKind = null);
+    string? Excerpt = null, double? Location = null, double? LocationEnd = null, string? SegmentKind = null,
+    SourceAnchor? Source = null, IReadOnlyList<string>? Channels = null);
 public sealed record SearchResponse(IReadOnlyList<SearchHit> Hits, TimeSpan Elapsed,
     bool SemanticAvailable, string? Notice = null);
 public sealed record IndexSegment(string Kind, string Modality, double? Location, double? LocationEnd,
-    string? Excerpt, float[]? Vector = null);
+    string? Excerpt, float[]? Vector = null, SourceAnchor? Source = null);
+public sealed record SearchField(string Name, string Value);
+public sealed record SourceLocation(string Type, int? Page = null, int? Paragraph = null,
+    string? Sheet = null, string? Range = null, string? Part = null);
+public sealed record OcrTextRegion(int Line, double Left, double Top, double Width, double Height, string? Text = null);
+public sealed record SourceAnchor(SourceLocation Location, string Channel = "body",
+    IReadOnlyList<SearchField>? Fields = null, IReadOnlyList<OcrTextRegion>? Regions = null);
+public sealed record DocumentExtractionOptions(bool IncludeWordComments = false, bool IncludeWordHeadersFooters = false);
 public sealed record IndexedFile(long Id, string Path, string Kind, long Size, double ModifiedTime,
     string State, string? Detail, string? Info, IReadOnlyList<IndexSegment> Segments);
 public sealed record KeywordMatch(long FileId, double Rank);
@@ -18,7 +26,7 @@ public sealed record IndexProgress(string Phase, string? Path, int Completed, in
     string? Detail = null);
 public sealed record IndexRequest(IReadOnlyList<string> Roots, IReadOnlyList<string>? Excluded = null,
     IReadOnlyList<string>? SkipTypes = null, bool Code = false, bool Force = false,
-    long MaxFileBytes = 32 * 1024 * 1024);
+    long MaxFileBytes = 32 * 1024 * 1024, DocumentExtractionOptions? Documents = null, bool AllowPowerPointAutomation = false);
 public sealed record EngineStatus(int Files, int Done, int Pending, int Partial, int Failed,
     string IndexPath, string? Detail = null, IndexingControlState IndexingState = IndexingControlState.Running);
 public sealed record EmbeddingInput(string Operation, string Value, int Budget = 280);
@@ -62,6 +70,8 @@ public interface IContentExtractor
 {
     bool CanExtract(string path, bool code);
     Task<ExtractionResult> ExtractAsync(string path, bool code, CancellationToken cancellationToken = default);
+    Task<ExtractionResult> ExtractAsync(string path, bool code, DocumentExtractionOptions options,
+        CancellationToken cancellationToken = default) => ExtractAsync(path, code, cancellationToken);
 }
 
 public sealed class AppSettings
@@ -74,6 +84,8 @@ public sealed class AppSettings
     public List<string> CodeFolders { get; set; } = [];
     public List<string> CodeSkipped { get; set; } = [];
     public string CodeEditor { get; set; } = "default";
+    public bool IncludeWordComments { get; set; }
+    public bool IncludeWordHeadersFooters { get; set; }
     public string Hotkey { get; set; } = "Control+Shift+Space";
     public bool SetUp { get; set; }
     public bool BackgroundIndexingEnabled { get; set; }
@@ -105,6 +117,19 @@ public interface ISettingsStore
     Task SaveAsync(AppSettings settings, CancellationToken cancellationToken = default);
 }
 
+public interface ISourcePreview : IAsyncDisposable
+{
+    string Excerpt { get; }
+    SourceAnchor? Source { get; }
+    string? RasterPath { get; }
+    int PixelWidth { get; }
+    int PixelHeight { get; }
+    string Notice { get; }
+    bool SourceCurrent { get; }
+    bool CanNavigate { get; }
+}
+public sealed record SourceNavigationResult(bool Exact, string Message, int? ProcessId = null);
+
 public interface IDesktopBackend : IAsyncDisposable
 {
     Task<AppSettings> LoadSettingsAsync(CancellationToken cancellationToken = default);
@@ -115,6 +140,10 @@ public interface IDesktopBackend : IAsyncDisposable
     Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default);
     Task SetIndexingPausedAsync(bool paused, CancellationToken cancellationToken = default);
     Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancellationToken = default);
+    Task<ISourcePreview> PreviewSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>
+        Task.FromException<ISourcePreview>(new NotSupportedException("Source preview is unavailable in this backend."));
+    Task<SourceNavigationResult> NavigateSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>
+        Task.FromException<SourceNavigationResult>(new NotSupportedException("Precise source navigation is unavailable in this backend."));
 }
 
 public static class VectorContract

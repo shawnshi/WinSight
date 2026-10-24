@@ -46,7 +46,7 @@ public static class PauseHarnessRunner
                 return Status(tempDir, backend.IndexingState);
             };
             var pause = vm.ToggleIndexingPauseAsync();
-            Require(backend.RecordedPauseRequests.SequenceEqual([true]), "Missing actual pause API call");
+            Require(backend.RecordedPauseRequests.SequenceEqual(new bool[]{true}), "Missing actual pause API call");
             Require(backend.IndexingState == IndexingControlState.Pausing, "Synthetic state must be Pausing while draining");
             Require(vm.PauseActionText == "Pausing…" && !vm.CanToggleIndexingPause && !vm.CanIndexNow, "Busy controls");
             Require(vm.IndexingState != IndexingControlState.Paused && vm.IndexingStateText != "Indexing paused", "Premature paused state");
@@ -66,7 +66,7 @@ public static class PauseHarnessRunner
             backend.PauseControlHandler = null;
             backend.StatusHandler = null;
             await vm.ToggleIndexingPauseAsync();
-            Require(backend.RecordedPauseRequests.SequenceEqual([true, false]) && vm.CanIndexNow, "Missing actual resume API call");
+            Require(backend.RecordedPauseRequests.SequenceEqual(new bool[]{true, false}) && vm.CanIndexNow, "Missing actual resume API call");
             var after = await backend.LoadSettingsAsync();
             Require(backend.SaveSettingsCount == 0 && before.Revision == after.Revision
                 && before.BackgroundIndexingEnabled == after.BackgroundIndexingEnabled, "Pause must not save background settings");
@@ -159,7 +159,7 @@ public static class PauseHarnessRunner
             settings.Theme = "Dark";
             await settings.SaveAsync();
             await vm.RefreshStatusAsync();
-            Require(vm.IndexingState == IndexingControlState.Paused && backend.RecordedPauseRequests.SequenceEqual([true]), "Settings save resumed engine");
+            Require(vm.IndexingState == IndexingControlState.Paused && backend.RecordedPauseRequests.SequenceEqual(new bool[]{true}), "Settings save resumed engine");
             var count = backend.IndexCallCount;
             await vm.TriggerIndexNowAsync();
             Require(backend.IndexCallCount == count, "Paused manual index dispatched");
@@ -181,7 +181,7 @@ public static class PauseHarnessRunner
                 && !tray.IsPauseMenuEnabled && !tray.IsIndexNowMenuEnabled, "Tray/main pending state diverged");
             await tray.ToggleIndexingPauseAsync();
             await vm.ToggleIndexingPauseAsync();
-            Require(backend.RecordedPauseRequests.SequenceEqual([true, false]), "Duplicate main/tray API calls");
+            Require(backend.RecordedPauseRequests.SequenceEqual(new bool[]{true, false}), "Duplicate main/tray API calls");
             control.SetResult();
             await resume.WaitAsync(TimeSpan.FromSeconds(5));
             Require(vm.CanIndexNow && tray.IsIndexNowMenuEnabled && tray.PauseMenuText == vm.PauseActionText, "Tray/main resume mismatch");
@@ -237,7 +237,7 @@ public static class PauseHarnessRunner
                     backend.PauseControlHandler = null;
                     await tray.ToggleIndexingPauseAsync();
                     Require(state.Text == "Indexing allowed" && (string)button.Content == "Pause indexing" && index.IsEnabled
-                        && tray.IsIndexNowMenuEnabled && backend.RecordedPauseRequests.SequenceEqual([true, false]), "Tray resume did not update actual main button");
+                        && tray.IsIndexNowMenuEnabled && backend.RecordedPauseRequests.SequenceEqual(new bool[]{true, false}), "Tray resume did not update actual main button");
                     Require(backend.SaveSettingsCount == 0, "Rendered pause saved settings");
                 }
                 finally

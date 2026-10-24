@@ -12,6 +12,8 @@ internal sealed class MediaTaskFiles
 {
     private SafeFile? source, host, workspace, task, request, output, artifact;
     private string? requestIdentity, taskIdentity, outputIdentity, artifactIdentity;
+    private bool presentation,navigation,navigationAcknowledged;
+    private readonly List<(string Path, SafeFile Pin, string Identity)> presentationFiles = [];
     internal string TaskDirectory { get; private set; } = string.Empty;
     internal string RequestPath => Path.Combine(TaskDirectory, "request.json");
     internal string OutputDirectory => Path.Combine(TaskDirectory, "output");
@@ -30,6 +32,55 @@ internal sealed class MediaTaskFiles
                     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
                 });
         });
+
+    internal static MediaTaskFiles CreatePdfPage(string hostPath, string workspacePath, NativePdfPageRequest input) =>
+        CreateOwned(hostPath, workspacePath, input.SourcePath, files =>
+        {
+            files.ArtifactPath = Path.Combine(files.OutputDirectory, "page.png");
+            return JsonSerializer.SerializeToUtf8Bytes(new { protocol = 1, inputPath = input.SourcePath,
+                outputDirectory = files.OutputDirectory, pageNumber = input.PageNumber, maxEdge = input.MaxEdge });
+        });
+
+    internal static MediaTaskFiles CreatePresentation(string hostPath, string workspacePath, NativePresentationRequest input) =>
+        CreateOwned(hostPath, workspacePath, input.SourcePath, files =>
+        {
+            files.presentation = true;
+            return JsonSerializer.SerializeToUtf8Bytes(new { protocol = 1, inputPath = input.SourcePath,
+                outputDirectory = files.OutputDirectory, maxSlides = input.MaxSlides, maxEdge = input.MaxEdge });
+        });
+
+    internal static MediaTaskFiles CreatePresentationPage(string hostPath,string workspacePath,NativePresentationPageRequest input) =>
+        CreateOwned(hostPath,workspacePath,input.SourcePath,files=>
+        {
+            files.presentation=true;
+            return JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,inputPath=input.SourcePath,outputDirectory=files.OutputDirectory,pageNumber=input.PageNumber,maxEdge=input.MaxEdge});
+        });
+    internal static MediaTaskFiles CreateRasterPreview(string hostPath,string workspacePath,NativeRasterPreviewRequest input) =>
+        CreateOwned(hostPath,workspacePath,input.SourcePath,files=>
+        {
+            files.ArtifactPath=Path.Combine(files.OutputDirectory,"page.png");
+            return JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,inputPath=input.SourcePath,outputDirectory=files.OutputDirectory,maxEdge=input.MaxEdge});
+        });
+
+    internal static MediaTaskFiles CreateOfficeNavigation(string hostPath,string workspacePath,NativeOfficeNavigationRequest input) =>
+        CreateOwned(hostPath,workspacePath,input.SourcePath,files=>
+        {
+            files.presentation=true;files.navigation=true;
+            return JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,inputPath=input.SourcePath,outputDirectory=files.OutputDirectory,sourceSha256=input.SourceSha256,location=input.Location},new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        });
+    internal void AcknowledgeNavigation()=>navigationAcknowledged=true;
+
+    internal void PinPresentationFile(string filename)
+    {
+        if (!presentation || filename is not ("input.pptx" or "raw.png" or "page.png" or "bootstrap.docx" or "bootstrap.xlsx" or "handoff.json") && !Enumerable.Range(1,32).Any(n => filename == $"slide-{n:0000}.png"))
+            throw new InvalidDataException("Not an owned presentation artifact.");
+        if (presentationFiles.Any(p => string.Equals(Path.GetFileName(p.Path), filename, StringComparison.Ordinal))) return;
+        if (output is null) { output = SafeFile.Open(OutputDirectory, directory:true); outputIdentity = output.Identity; }
+        var path = Path.Combine(OutputDirectory, filename);
+        var pin = SafeFile.Open(path);
+        presentationFiles.Add((path, pin, pin.Identity));
+    }
+    internal FileStream PresentationStream(string filename) => presentationFiles.Single(p => Path.GetFileName(p.Path) == filename).Pin.Stream!;
 
     internal static MediaTaskFiles CreateInspect(string hostPath, string workspacePath, string sourcePath, string kind) =>
         CreateOwned(hostPath, workspacePath, sourcePath, _ =>
@@ -93,14 +144,27 @@ internal sealed class MediaTaskFiles
             if (TaskDirectory.Length != 0)
             {
                 if (task is null) throw new IOException("Task directory was created but could not be pinned; retained without deletion.");
-                if (ArtifactPath.Length != 0 && output is null && Exists(OutputDirectory))
+                if (presentation && Exists(OutputDirectory))
+                {
+                    if(navigation&&!navigationAcknowledged&&Exists(Path.Combine(OutputDirectory,"handoff.json")))
+                        throw new IOException("Office handoff may have completed; receipt and protections retained. Do not retry automatically.");
+                    // Only these fixed owned leaves can be adopted after confirmed worker settlement.
+                    foreach (var name in Enumerable.Range(1,32).Select(n => $"slide-{n:0000}.png").Prepend("input.pptx").Prepend("raw.png").Prepend("page.png").Prepend("bootstrap.docx").Prepend("bootstrap.xlsx").Prepend("handoff.json"))
+                        if (Exists(Path.Combine(OutputDirectory,name))) PinPresentationFile(name);
+                    while (presentationFiles.Count != 0)
+                    {
+                        var leaf = presentationFiles[^1]; leaf.Pin.Dispose();
+                        DeleteOwned(leaf.Path, leaf.Identity, directory:false); presentationFiles.RemoveAt(presentationFiles.Count-1);
+                    }
+                }
+                if ((presentation || ArtifactPath.Length != 0) && output is null && Exists(OutputDirectory))
                 {
                     output = SafeFile.Open(OutputDirectory, directory: true);
                     outputIdentity = output.Identity;
                 }
                 if (output is not null)
                 {
-                    if (artifact is null && Exists(ArtifactPath))
+                    if (!presentation && artifact is null && Exists(ArtifactPath))
                     {
                         artifact = SafeFile.Open(ArtifactPath);
                         artifactIdentity = artifact.Identity;

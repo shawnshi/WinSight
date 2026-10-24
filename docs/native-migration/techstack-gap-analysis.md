@@ -1,5 +1,8 @@
 # techstack.md 与当前 Windows 原生实现对照
 
+> 退役范围说明（2026-10-23）：本页保留历史设计、迁移依据或行为对照。涉及 Swift/Tauri、旧 Vendor、旧 CLI 与旧生成脚本的路径／命令只供回查，不再是当前可执行开发入口。原始源码位于 Git 提交 `400c5b501e664f7aaaf2c2ec5e1c270cf0425a87`；当前主线见仓库 README 和 `docs/native-migration/legacy-retirement.md`。原验收缺口不会因源码退役自动关闭。
+
+
 结论：**原生候选的主框架已经完成替换；优先补音视频提取和原生发布链，不按 NuGet 清单重写正确实现。**旧 Swift/Tauri 发布链仍存在，候选运行成功不等于产品入口已切换。原始 `techstack.md` 保留不改。
 
 分析基线：`.dev/native-migration/native-stack-gap/baseline/manifest.json`；输入文档 SHA-256：`ECF288BA9D18EDD4668EF06997D4A9FCD93EAA2933000A2457BF303DFB7DC774`。两路只读审计覆盖桌面/部署和引擎/存储；主代理补查服务方法体、数据库 tokenizer 和实际 workflow。源码事实不等于运行时验收，未经读取的旧协议能力不作“全仓不存在”断言。

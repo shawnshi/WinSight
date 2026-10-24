@@ -220,12 +220,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             // Never pass Code=true on doc roots!
             if (settings.Folders.Count > 0)
             {
-                StatusMessage = "Indexing document roots...";
+                StatusMessage = "Indexing documents; keep PowerPoint closed until this manual run finishes.";
                 var docRequest = new IndexRequest(
                     Roots: settings.Folders,
                     Excluded: settings.Skipped,
                     SkipTypes: settings.SkipTypes,
-                    Code: false);
+                    Code: false,
+                    AllowPowerPointAutomation: true);
 
                 await backend.IndexAsync(docRequest, progress, ct);
             }

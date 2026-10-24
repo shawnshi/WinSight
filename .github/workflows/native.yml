@@ -45,7 +45,7 @@ jobs:
         timeout-minutes: 2
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
-          dotnet-version: '10.0.113'
+          dotnet-version: '11.0.100-rc.2.26504.105'
           cache: false
       - name: Validate deterministic CI script behavior
         run: ./scripts/native-ci/Invoke-NativeCIContract.ps1 -Suite Original

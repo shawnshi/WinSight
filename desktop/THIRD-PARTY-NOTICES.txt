@@ -14,6 +14,14 @@ The package metadata audit, signature verification and vulnerability query are
 separate development receipts under .dev/native-migration/verification.
 Their passing scope does not complete distribution licensing or full parity.
 
+The isolated OCR source candidate includes RapidOcrNet.WinSight 4.2.0-winsight.1,
+based on BobLd/RapidOcrNet commit 708cae2fcb88720e1d891a81b5ee3e8b2bcc139e.
+Apache-2.0 headers/license and a three-error-path patch are retained under
+inference/WinSight.OcrHost/vendor and provenance. It is not stock RapidOcrNet4.2.0.
+Its Clipper2 2.0.0 package supplies the Boost Software License1.0; SkiaSharp3.119.1
+and ORT/Managed1.29.0 have their own complete package/native notice obligations.
+These statements do not approve model distribution or close the vulnerability gate.
+
 Before distribution, collect and review all NuGet/runtime/native tokenizer,
 model, dictionary and media-library license texts/notices in the staged payload.
 Model manifest identity and hashes alone are not model distribution permission.

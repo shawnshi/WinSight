@@ -1,0 +1,77 @@
+[
+  {
+    "file": "CalRecBoxes.cs",
+    "sha256": "8d894dae8df62792afc0892291c283726bf036cef2b6a616c362e211d25dd296",
+    "modified": false
+  },
+  {
+    "file": "GeometryExtensions.cs",
+    "sha256": "22b617db3ae63aa2eedf9eaa4841adaed3cbfe41372a550f4502c0f9e366fa26",
+    "modified": false
+  },
+  {
+    "file": "OcrResult.cs",
+    "sha256": "d3a3908523763d58c6fe1132859507da3cc9b6e426ec1f25fefc79c83d5c1d07",
+    "modified": false
+  },
+  {
+    "file": "OcrUtils.cs",
+    "sha256": "72e4f61070e2b4b02dcd48b07d71817f0a7464676db564aa967771d301bc0d0c",
+    "modified": false
+  },
+  {
+    "file": "OrtRun.cs",
+    "sha256": "a9beccb0344b314da8eb436cb037780d0f55a88706ba0bc397d217aa3a30c36e",
+    "modified": false
+  },
+  {
+    "file": "PContour.cs",
+    "sha256": "e36c461854b7af2e4efafb690bb7482c0da949b422b6ddc0085f013dc3c0cb87",
+    "modified": false
+  },
+  {
+    "file": "RapidOcr.Async.cs",
+    "sha256": "8ded163e7fedb21c666b99a7af7d027db9406e1348fd13803afe8c9899fd04c9",
+    "modified": false
+  },
+  {
+    "file": "RapidOcr.cs",
+    "sha256": "0d1c32c5b1fcce8bcd67c9a342b52c7bc2580c2f8b105958d034543dd33fc49a",
+    "modified": false
+  },
+  {
+    "file": "RapidOcrModelSet.cs",
+    "sha256": "fa67a96fa5a840802ad197bd6699c5b49a9514cdf96c4a0e41db0f74564ce2c2",
+    "modified": false
+  },
+  {
+    "file": "RapidOcrOptions.cs",
+    "sha256": "abf5976778f3fbd331b67bcbd7813f6865b0975bd200689376e6b0ea7c513eec",
+    "modified": false
+  },
+  {
+    "file": "ScaleParam.cs",
+    "sha256": "0bd6c881f335e4dbe18646c2b19255c0b3fec25045dc110b892dec62f2a53b53",
+    "modified": false
+  },
+  {
+    "file": "TextClassifier.cs",
+    "sha256": "dfd0814506e368572f9aa204110b417c48934c2bcda8078091280fcd302c89dd",
+    "modified": true
+  },
+  {
+    "file": "TextDetector.cs",
+    "sha256": "9255a837ea55f9269cc9b0325b4b9d6f6110dfefd2301a71d13d612d093571f6",
+    "modified": true
+  },
+  {
+    "file": "TextRecognizer.cs",
+    "sha256": "91e8378e09490ec9d73b2e1832f922c55410d3e16df5005c83c6e42cfddc2194",
+    "modified": true
+  },
+  {
+    "file": "ValueStopwatch.cs",
+    "sha256": "4647b54fe1f3762f1bf3bd30327bf88a313ffc713dca2182f60f061793d8d5f8",
+    "modified": false
+  }
+]

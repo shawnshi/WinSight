@@ -1,5 +1,8 @@
 # WinSight rename and supplied icon
 
+> 退役范围说明（2026-10-23）：本页保留历史设计、迁移依据或行为对照。涉及 Swift/Tauri、旧 Vendor、旧 CLI 与旧生成脚本的路径／命令只供回查，不再是当前可执行开发入口。原始源码位于 Git 提交 `400c5b501e664f7aaaf2c2ec5e1c270cf0425a87`；当前主线见仓库 README 和 `docs/native-migration/legacy-retirement.md`。原验收缺口不会因源码退役自动关闭。
+
+
 ## Scope
 
 User request: rename the project to WinSight and use the supplied `WinSight.ico` as its icon.

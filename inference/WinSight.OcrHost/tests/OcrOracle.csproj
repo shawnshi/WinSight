@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0-windows10.0.26100.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RollForward>Disable</RollForward>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <NuGetAudit>false</NuGetAudit>
+    <ParentOcrCallerSource Condition="'$(ParentOcrCallerSource)' == ''">$(MSBuildProjectDirectory)/../../WinSight.InferenceHost/IsolatedOcr.cs</ParentOcrCallerSource>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(ParentOcrCallerSource)" Link="ParentCaller/IsolatedOcr.cs" />
+    <Compile Include="../../OcrIdentity.cs" Link="ParentCaller/OcrIdentity.cs" />
+    <EmbeddedResource Include="../model-manifest.json" LogicalName="WinSight.OcrHost.model-manifest.json" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseUpstream)' != 'true'">
+    <ProjectReference Include="../WinSight.OcrHost.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseUpstream)' == 'true'">
+    <Compile Include="$(PreparedSourceRoot)/RapidOcrNet/*.cs" />
+    <PackageReference Include="Clipper2" Version="[2.0.0]" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="[1.29.0]" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="[1.29.0]" />
+    <PackageReference Include="SkiaSharp" Version="[3.119.1]" />
+  </ItemGroup>
+</Project>

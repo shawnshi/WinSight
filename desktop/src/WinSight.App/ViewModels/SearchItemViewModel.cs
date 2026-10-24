@@ -20,11 +20,19 @@ public sealed class SearchItemViewModel
     public Visibility ExcerptVisibility =>
         string.IsNullOrWhiteSpace(Excerpt) ? Visibility.Collapsed : Visibility.Visible;
 
-    public string ScoreDisplay => $"{Score:P0}";
+    public string ScoreDisplay => $"排序分 {Score:0.000}";
     public string LocationDisplay
     {
         get
         {
+            if (Hit.Source is { } source)
+            {
+                var value = source.Location;
+                if (value.Type == "sheet") return $"'{value.Sheet?.Replace("'", "''", StringComparison.Ordinal)}'!{value.Range}";
+                if (value.Type == "slide") return $"幻灯片 {value.Page}" + (source.Channel == "notes" ? " · 演讲者备注" : "");
+                if (value.Type == "paragraph") return $"段落 {value.Paragraph}" + (value.Part == "body" ? "" : $" · {value.Part}");
+                if (value.Type == "pdf-page") return $"第 {value.Page} 页";
+            }
             if (Location is null) return string.Empty;
             if (string.Equals(Kind, "audio", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(Kind, "video", StringComparison.OrdinalIgnoreCase))

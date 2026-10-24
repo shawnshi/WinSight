@@ -1,23 +1,22 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Text.Json;
-using Windows.Globalization;
+using WinSight.Shared;
 using Windows.Graphics.Imaging;
-using Windows.Media.Ocr;
 using Windows.Storage;
 
 namespace WinSight.InferenceHost;
 
 internal sealed record ImageInspectResult(int Protocol, string SourcePath, int Width, int Height, int Orientation,
     int FrameCount, IReadOnlyDictionary<string, string> Exif, string OcrText, IReadOnlyList<string> OcrLanguages,
-    int OcrWidth, int OcrHeight, string State, string? Detail);
+    int OcrWidth, int OcrHeight, string State, string? Detail,
+    string OcrEngine, string OcrEngineVersion, string OcrModelProfile,
+    IReadOnlyList<OcrRegionRect> OcrRegions, bool OcrRegionsTruncated);
 
 internal static partial class NativeMediaCommand
 {
     private const int MaxImagePixels = 40_000_000;
     private const int MaxOcrEdge = 2600;
-    private const int MaxOcrCharacters = 8000;
     private static readonly IReadOnlyDictionary<string, string> ImageExifKeys = new Dictionary<string, string>
     {
         ["System.Photo.CameraManufacturer"] = "cameraManufacturer",
@@ -76,7 +75,7 @@ internal static partial class NativeMediaCommand
         {
             warnings.Add("EXIF inspection failed: " + error.GetType().Name + ": " + error.Message);
         }
-        var edge = Math.Min(MaxOcrEdge, checked((int)OcrEngine.MaxImageDimension));
+        var edge = MaxOcrEdge;
         double scale = Math.Min(1, (double)edge / Math.Max(width, height));
         var transform = new BitmapTransform
         {
@@ -86,48 +85,21 @@ internal static partial class NativeMediaCommand
         };
         using var pixels = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied,
             transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(cancellationToken);
-        var available = OcrEngine.AvailableRecognizerLanguages.Select(language => language.LanguageTag).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var requested = new[] { "en-US", "zh-Hans-CN" }.Where(available.Contains).ToArray();
-        if (requested.Length == 0) requested = OcrEngine.AvailableRecognizerLanguages.Take(1).Select(language => language.LanguageTag).ToArray();
-        var used = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var output = new StringBuilder();
-        bool truncated = false;
-        foreach (var language in requested)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var engine = OcrEngine.TryCreateFromLanguage(new Language(language));
-            if (engine is null) { warnings.Add("OCR recognizer unavailable: " + language); continue; }
-            try
-            {
-                var result = await engine.RecognizeAsync(pixels).AsTask(cancellationToken);
-                used.Add(language);
-                // Deduplicate whole recognizer passes, never repeated rows/words inside an image.
-                var text = result.Text.Trim();
-                if (text.Length == 0 || !seen.Add(text.Normalize(NormalizationForm.FormKC))) continue;
-                int availableCharacters = MaxOcrCharacters - output.Length - (output.Length > 0 ? 1 : 0);
-                if (availableCharacters <= 0) { truncated = true; continue; }
-                int take = Math.Min(availableCharacters, text.Length);
-                if (take < text.Length)
-                {
-                    truncated = true;
-                    if (char.IsHighSurrogate(text[take - 1])) take--;
-                }
-                if (take == 0) continue;
-                if (output.Length > 0) output.Append('\n');
-                output.Append(text.AsSpan(0, take));
-            }
-            catch (Exception error) when (error is COMException or IOException or ArgumentException)
-            {
-                warnings.Add("OCR failed (" + language + "): " + error.GetType().Name + ": " + error.Message);
-            }
-        }
-        if (used.Count == 0) warnings.Add("No installed OCR recognizer completed; install/enable a supported Windows OCR language.");
-        if (truncated) warnings.Add("OCR text exceeded the 8000-character bound.");
+        var ocr = await RunIsolatedOcrAsync(pixels, cancellationToken);
+        if (ocr.Truncated) warnings.Add("OCR text exceeded the 8000-character bound.");
         cancellationToken.ThrowIfCancellationRequested();
-        return new ImageInspectResult(1, file.Path, checked((int)width), checked((int)height), orientation,
-            checked((int)decoder.FrameCount), exif, output.ToString(), used, pixels.PixelWidth, pixels.PixelHeight,
-            warnings.Count == 0 ? "done" : "partial", warnings.Count == 0 ? null : string.Join(" ", warnings));
+        if (ocr.RegionsTruncated) warnings.Add("OCR text-box coverage reached its bound.");
+        var result = new ImageInspectResult(3, file.Path, checked((int)width), checked((int)height), orientation,
+            checked((int)decoder.FrameCount), exif, ocr.Text, ["zh-Hans-CN", "en-US"], pixels.PixelWidth, pixels.PixelHeight,
+            warnings.Count == 0 ? "done" : "partial", warnings.Count == 0 ? null : string.Join(" ", warnings),
+            OcrIdentity.Engine, OcrIdentity.EngineVersion, OcrIdentity.ModelProfile, ocr.Regions, ocr.RegionsTruncated);
+        while (JsonSerializer.SerializeToUtf8Bytes(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }).Length > 64 * 1024)
+        {
+            if (result.OcrRegions.Count == 0) throw new InvalidDataException("Bounded image reply exceeds64 KiB.");
+            result = result with { OcrRegions = result.OcrRegions.Take(result.OcrRegions.Count - 1).ToArray(), OcrRegionsTruncated = true,
+                State = "partial", Detail = "OCR text-box response reached the64 KiB output bound." };
+        }
+        return result;
     }
 
     private static string? FormatImageProperty(object? value)

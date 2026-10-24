@@ -66,7 +66,7 @@ internal sealed class ModelManifest : IDisposable
             .Append(Repository).Append('@').Append(Revision).Append('\n')
             .Append("ort=").Append(Microsoft.ML.OnnxRuntime.OrtEnv.Instance().GetVersionString()).Append('\n')
             .Append("provider=qualified-per-graph-with-same-model-CPU-fallback;dtype=q4;dim=768;features=512\n")
-            .Append("tokenizer=tokenizers-0.23.1;abi=1;special=true\n")
+            .Append("tokenizer=").Append(NativeTokenizer.RuntimeIdentity).Append('\n')
             .Append("text=raw-prompt-v1;maxTokens=8192\n")
             .Append("media=embedding-gemma2-placeholder-v1;preprocessor=").Append(mediaPreprocessorVersion).Append('\n');
         foreach (var asset in manifest.Files.OrderBy(asset => asset.Path, StringComparer.Ordinal))

@@ -1,5 +1,8 @@
 # WinSight（智寻）架构与开发指南
 
+> 退役范围说明（2026-10-23）：本页保留历史设计、迁移依据或行为对照。涉及 Swift/Tauri、旧 Vendor、旧 CLI 与旧生成脚本的路径／命令只供回查，不再是当前可执行开发入口。原始源码位于 Git 提交 `400c5b501e664f7aaaf2c2ec5e1c270cf0425a87`；当前主线见仓库 README 和 `docs/native-migration/legacy-retirement.md`。原验收缺口不会因源码退役自动关闭。
+
+
 > Windows 11 本地多模态文件检索与 MCP 服务。技术基线：C# / .NET 10.0、WinUI 3、EmbeddingGemma 2 ONNX、固定 768 维、SQLite / sqlite-vec / FTS5；完整文本与视觉模型随安装包离线交付。
 
 - 文档版本：2.0.1；修订日期：2026-10-14。

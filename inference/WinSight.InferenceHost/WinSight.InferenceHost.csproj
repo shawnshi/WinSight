@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetFramework>net11.0-windows10.0.26100.0</TargetFramework>
+    <RollForward>Disable</RollForward>
     <SupportedOSPlatformVersion>10.0.18362.0</SupportedOSPlatformVersion>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
     <TokenizerRustTarget Condition="'$(RuntimeIdentifier)' == 'win-arm64'">aarch64-pc-windows-msvc</TokenizerRustTarget>
@@ -17,14 +18,39 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK.ML" Version="[2.1.94]" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="[10.0.26100.9169]" />
     <EmbeddedResource Include="model-manifest.json" />
+    <EmbeddedResource Include="../WinSight.OcrHost/model-manifest.json" LogicalName="WinSight.OcrHost.model-manifest.json" />
+    <Compile Include="../OcrIdentity.cs" Link="Shared/OcrIdentity.cs" />
+    <Compile Include="../../desktop/src/WinSight.Infrastructure/Media/WindowsNativeMediaProcess.cs" Link="Shared/WindowsNativeMediaProcess.cs" />
+    <Compile Include="../../desktop/src/WinSight.Infrastructure/Media/PowerPointPolicy.cs" Link="Shared/PowerPointPolicy.cs" />
+    <Compile Include="../../desktop/src/WinSight.Infrastructure/Media/OfficeNavigationPolicy.cs" Link="Shared/OfficeNavigationPolicy.cs" />
     <None Update="model-manifest.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="../../native/winsight-tokenizer/target/$(TokenizerRustTarget)/release/winsight_tokenizer.dll"
           Link="runtimes/$(RuntimeIdentifier)/native/winsight_tokenizer.dll"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="../../native/winsight-tokenizer/target/$(TokenizerRustTarget)/release/winsight_tokenizer.dll.source.sha256"
+          Link="runtimes/$(RuntimeIdentifier)/native/winsight_tokenizer.dll.source.sha256"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="RequireNativeTokenizer" BeforeTargets="PrepareForBuild">
     <Error Condition="!Exists('$(MSBuildProjectDirectory)/../../native/winsight-tokenizer/target/$(TokenizerRustTarget)/release/winsight_tokenizer.dll')"
            Text="Build the matching native tokenizer Rust target first; no emulated/other-architecture DLL fallback is allowed." />
+    <PropertyGroup>
+      <_TokenizerRoot>$(MSBuildProjectDirectory)/../../native/winsight-tokenizer</_TokenizerRoot>
+      <_TokenizerDll>$(_TokenizerRoot)/target/$(TokenizerRustTarget)/release/winsight_tokenizer.dll</_TokenizerDll>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_TokenizerDll).source.sha256')"
+           Text="Native tokenizer source binding is missing; run scripts/build-native-tokenizer.ps1 for this RID." />
+    <GetFileHash Files="$(_TokenizerRoot)/Cargo.toml" Algorithm="SHA256"><Output TaskParameter="Items" ItemName="_TokenizerManifestHash" /></GetFileHash>
+    <GetFileHash Files="$(_TokenizerRoot)/Cargo.lock" Algorithm="SHA256"><Output TaskParameter="Items" ItemName="_TokenizerLockHash" /></GetFileHash>
+    <GetFileHash Files="$(_TokenizerRoot)/src/lib.rs" Algorithm="SHA256"><Output TaskParameter="Items" ItemName="_TokenizerSourceHash" /></GetFileHash>
+    <GetFileHash Files="$(_TokenizerDll)" Algorithm="SHA256"><Output TaskParameter="Items" ItemName="_TokenizerBinaryHash" /></GetFileHash>
+    <ReadLinesFromFile File="$(_TokenizerDll).source.sha256"><Output TaskParameter="Lines" ItemName="_TokenizerBindingLine" /></ReadLinesFromFile>
+    <PropertyGroup>
+      <_ExpectedTokenizerBinding>@(_TokenizerManifestHash->'%(FileHash)'):@(_TokenizerLockHash->'%(FileHash)'):@(_TokenizerSourceHash->'%(FileHash)'):@(_TokenizerBinaryHash->'%(FileHash)')</_ExpectedTokenizerBinding>
+    </PropertyGroup>
+    <Error Condition="'@(_TokenizerBindingLine)' != '$(_ExpectedTokenizerBinding)'"
+           Text="Native tokenizer source/DLL binding mismatch; rebuild the pinned native source, never adopt a stale DLL." />
   </Target>
 </Project>

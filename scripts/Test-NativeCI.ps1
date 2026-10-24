@@ -165,7 +165,7 @@ try {
         }
         foreach ($sdkPath in @('desktop/global.json','inference/global.json')) {
             $sdk = Get-Content -LiteralPath (Join-Path $workspace $sdkPath) -Raw | ConvertFrom-Json
-            if ($sdk.sdk.version -ne '10.0.113') { throw "Unexpected SDK pin in $sdkPath" }
+            if ($sdk.sdk.version -ne '11.0.100-rc.2.26504.105') { throw "Unexpected SDK pin in $sdkPath" }
         }
         $script:emptyFeed = Join-Path $out 'empty-feed'
         $null = New-Item -ItemType Directory -Path $emptyFeed
@@ -181,7 +181,7 @@ try {
     Invoke-Gate 'Toolchain' {
         foreach ($directory in @('desktop','inference')) {
             $log = Dotnet @('--version') (Join-Path $workspace $directory)
-            if ([IO.File]::ReadAllText("$log.stdout.log").Trim() -ne '10.0.113') { throw 'Exact SDK 10.0.113 was not selected; no install/version fallback.' }
+            if ([IO.File]::ReadAllText("$log.stdout.log").Trim() -ne '11.0.100-rc.2.26504.105') { throw 'Exact SDK 11.0.100-rc.2.26504.105 was not selected; no install/version fallback.' }
         }
         $null = Dotnet @('--info')
         $null = Run $cargo @('--version')
@@ -193,7 +193,12 @@ try {
     if ($DependencyMode -eq 'Offline') { $cargoArgs += '--offline' }
     Invoke-Gate 'TokenizerBuild' {
         $null = Run $cargo (@('build','--release') + $cargoArgs) $native
-        if (-not (Test-Path -LiteralPath (Join-Path $native 'target/x86_64-pc-windows-msvc/release/winsight_tokenizer.dll'))) { throw 'Native tokenizer DLL missing.' }
+        $dll = Join-Path $native 'target/x86_64-pc-windows-msvc/release/winsight_tokenizer.dll'
+        if (-not (Test-Path -LiteralPath $dll)) { throw 'Native tokenizer DLL missing.' }
+        # Bind the just-completed locked build to source and output before any Host publish.
+        $bindingInputs = @((Join-Path $native 'Cargo.toml'), (Join-Path $native 'Cargo.lock'), (Join-Path $native 'src/lib.rs'), $dll)
+        $binding = (@($bindingInputs | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToUpperInvariant() }) -join ':')
+        [IO.File]::WriteAllText($dll + '.source.sha256', $binding + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
     }
     Invoke-Gate 'TokenizerSyntheticTests' {
         # Only these two filters are model-free. The pinned-tokenizer test belongs to ModelParity, never silently skipped as passed.
@@ -240,13 +245,13 @@ try {
         Assert-LocksUnchanged
     }
     Invoke-Gate 'SyntheticTests' {
-        # Inference Program.cs resolves FakeHost/bin/Debug/net10.0 explicitly, so do not relocate these mirrored outputs or change configuration.
+        # Inference Program.cs resolves FakeHost/bin/Debug/net11.0 explicitly, so do not relocate these mirrored outputs or change configuration.
         foreach ($suite in $suites) {
             $project = "tests/$suite/$suite.csproj"
             $null = Dotnet @('build',$project,'--no-restore','--configuration','Debug')
             $arguments = @('run','--project',$project,'--no-build','--no-restore','--configuration','Debug')
             if ($suite -eq 'WinSight.Pause.Tests') {
-                $fake = Join-Path $workspace 'desktop/tests/WinSight.Inference.Tests/FakeHost/bin/Debug/net10.0/FakeHost.exe'
+                $fake = Join-Path $workspace 'desktop/tests/WinSight.Inference.Tests/FakeHost/bin/Debug/net11.0/FakeHost.exe'
                 if (-not (Test-Path -LiteralPath $fake)) { throw 'Explicit test-only FakeHost is missing.' }
                 $arguments += @('--',$fake,(Join-Path $out 'fixtures/pause'))
             }

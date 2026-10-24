@@ -276,7 +276,8 @@ await Test("normalization, Porter stemming, prefix rescue, coverage gate and loo
     await repo.UpsertFileAsync(SampleFile("C:/rank/full.txt", "invoice ZX99123 running Grok4 أَلْفَا ＡＢＣ"));
     await repo.UpsertFileAsync(SampleFile("C:/rank/part.txt", "invoice"));
     var service = new SearchService(repo, new FakeEmbedding { ThrowIfCalled = true });
-    Check((await service.SearchAsync(new SearchRequest("ZX99123", Mode: SearchMode.Keyword))).Hits.Single().Score == 4);
+    var lookup = (await service.SearchAsync(new SearchRequest("ZX99123", Mode: SearchMode.Keyword))).Hits.Single();
+    Check(lookup.Score == 1 && lookup.Channels!.SequenceEqual(["keyword"]) && lookup.Excerpt!.Contains("ZX99123", StringComparison.Ordinal));
     Check((await service.SearchAsync(new SearchRequest("run", Mode: SearchMode.Keyword))).Hits.Single().Path.EndsWith("full.txt", StringComparison.Ordinal));
     Check((await service.SearchAsync(new SearchRequest("grok", Mode: SearchMode.Keyword))).Hits.Count == 1);
     Check((await service.SearchAsync(new SearchRequest("الفا", Mode: SearchMode.Keyword))).Hits.Count == 1);
