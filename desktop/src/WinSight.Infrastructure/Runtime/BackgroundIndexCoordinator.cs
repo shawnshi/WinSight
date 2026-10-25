@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using WinSight.Core;
+using WinSight.Infrastructure.Indexing;
 
 namespace WinSight.Infrastructure.Runtime;
 
@@ -22,17 +23,24 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     private readonly Func<bool> isOnAcPower;
     private readonly TimeSpan policyPoll;
     private readonly object policyGate = new();
+    private readonly IncrementalIndexQueue? queue;
+    private readonly Func<IReadOnlyList<string>, IReadOnlyList<string>, bool, CancellationToken, Task>? indexPaths;
     private CancellationTokenSource? activePolicyStop;
     private Task? activePolicyCancellation;
     private int disposed;
 
     public Task Completion => worker;
     public Exception? Failure => worker.Exception?.GetBaseException();
+    public IncrementalIndexQueue? Queue => queue;
+    public long WatcherOverflows => queue?.WatcherOverflows ?? 0;
 
     public BackgroundIndexCoordinator(AppSettings settings, Func<IndexRequest, CancellationToken, Task> index,
         Action<Exception> onError, TimeSpan? debounce = null, TimeSpan? reconcile = null,
         IReadOnlyList<string>? ignoredRoots = null, Func<bool>? indexingAllowed = null,
-        Func<bool>? isOnAcPower = null, TimeSpan? policyPoll = null)
+        Func<bool>? isOnAcPower = null, TimeSpan? policyPoll = null,
+        IIndexRepository? repository = null,
+        Func<IReadOnlyList<string>, IReadOnlyList<string>, bool, CancellationToken, Task>? indexPaths = null,
+        IncrementalIndexQueue? queue = null)
     {
         this.settings = settings;
         this.index = index;
@@ -42,6 +50,8 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         this.indexingAllowed = indexingAllowed ?? (() => true);
         this.isOnAcPower = isOnAcPower ?? PowerSource.IsOnAcPower;
         this.policyPoll = policyPoll ?? TimeSpan.FromSeconds(30);
+        this.indexPaths = indexPaths;
+        this.queue = queue ?? (repository != null ? new IncrementalIndexQueue(repository, indexPaths, onError, reconcileInterval: reconcile) : null);
         if (this.policyPoll <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(policyPoll));
         foreach (var root in settings.Folders.Concat(settings.CodeFolders).Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -63,6 +73,7 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
                 watcher.Error += (_, eventArgs) =>
                 {
                     onError(eventArgs.GetException());
+                    queue?.OnWatcherError(root, eventArgs.GetException());
                     Signal();
                 };
                 watchers.Add(watcher);
@@ -83,6 +94,14 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         var ignored = ignoredRoots.Any(root => DesktopBackend.IsUnder(args.FullPath, root));
         if (ignored && (args is not RenamedEventArgs renamed
             || ignoredRoots.Any(root => DesktopBackend.IsUnder(renamed.OldFullPath, root)))) return;
+
+        if (queue != null)
+        {
+            var isCode = settings.CodeFolders.Any(f => DesktopBackend.IsUnder(args.FullPath, f));
+            var root = (isCode ? settings.CodeFolders : settings.Folders).FirstOrDefault(f => DesktopBackend.IsUnder(args.FullPath, f))
+                ?? Path.GetDirectoryName(args.FullPath) ?? args.FullPath;
+            _ = queue.EnqueueEventAsync(args.FullPath, root, isCode, args.ChangeType, (args as RenamedEventArgs)?.OldFullPath);
+        }
         Signal();
     }
     private void Signal() => signals.Writer.TryWrite(true);
@@ -120,6 +139,26 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
                 await Task.Delay(debounce, stop.Token);
                 while (signals.Reader.TryRead(out _)) { }
                 if (!AllowedNow() || !indexingAllowed()) continue;
+
+                if (queue != null)
+                {
+                    foreach (var code in new[] { false, true })
+                    {
+                        var roots = code ? settings.CodeFolders : settings.Folders;
+                        foreach (var root in roots)
+                        {
+                            if (!AllowedNow() || !indexingAllowed()) break;
+                            await queue.ReconcileRootAsync(root, code, stop.Token).ConfigureAwait(false);
+                        }
+                    }
+
+                    var processed = await queue.ProcessReadyTasksAsync(50, stop.Token).ConfigureAwait(false);
+                    if (processed > 0 && indexPaths != null)
+                    {
+                        continue;
+                    }
+                }
+
                 foreach (var code in new[] { false, true })
                 {
                     var roots = code ? settings.CodeFolders : settings.Folders;

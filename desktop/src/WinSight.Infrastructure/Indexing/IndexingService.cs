@@ -188,6 +188,93 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
         finally { runGate.Release(); }
     }
 
+    public async Task IndexPathsAsync(IReadOnlyList<string> roots, IReadOnlyList<string> paths, bool code,
+        IProgress<IndexProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(roots);
+        ArgumentNullException.ThrowIfNull(paths);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (paths.Count == 0) return;
+        await runGate.WaitAsync(cancellationToken);
+        try
+        {
+            await repository.InitializeAsync(cancellationToken);
+            var existing = await repository.ReadFilesAsync(cancellationToken);
+            var info = embeddings is null ? null : await embeddings.GetInfoAsync(cancellationToken);
+            await GuardMetadataAsync(existing, info, code, cancellationToken);
+            var previous = existing.ToDictionary(f => FilePolicy.Normalize(f.Path), StringComparer.OrdinalIgnoreCase);
+
+            var completed = 0;
+            var failed = 0;
+            var partial = 0;
+
+            foreach (var rawPath in paths)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var normPath = FilePolicy.Normalize(rawPath);
+                var root = roots.FirstOrDefault(r => FilePolicy.Inside(normPath, r) || string.Equals(normPath, r, StringComparison.OrdinalIgnoreCase))
+                    ?? Path.GetDirectoryName(normPath) ?? normPath;
+
+                if (!File.Exists(normPath))
+                {
+                    if (previous.TryGetValue(normPath, out var old))
+                    {
+                        await repository.AckTaskWithDeleteAsync(old.Path, normPath, cancellationToken);
+                        completed++;
+                        progress?.Report(new("deleted", normPath, completed, failed, partial));
+                    }
+                    continue;
+                }
+
+                var kind = FilePolicy.Kind(normPath, code);
+                if (kind is null) continue;
+
+                var fi = new FileInfo(normPath);
+                if (FilePolicy.Unsafe(fi.Attributes)) continue;
+
+                var candidate = new Candidate(normPath, kind, fi.Length, Mtime(fi), null);
+                previous.TryGetValue(normPath, out var oldFile);
+
+                var row = new IndexedFile(oldFile?.Id ?? 0, oldFile?.Path ?? normPath, candidate.Kind, candidate.Size, candidate.Mtime, "pending", null, null, []);
+                await repository.UpsertFileAsync(row, cancellationToken);
+                progress?.Report(new("pending", normPath, completed, failed, partial));
+
+                var result = await ProcessAsync(candidate, code, info, new DocumentExtractionOptions(), false, cancellationToken);
+
+                if (result.State is "done" or "partial" || IsNativeMedia(candidate, code) && result.State == "skipped")
+                {
+                    try
+                    {
+                        var now = new FileInfo(candidate.Path);
+                        if (!now.Exists || FilePolicy.Unsafe(now.Attributes) || now.Length != candidate.Size || Math.Abs(Mtime(now) - candidate.Mtime) >= 0.001)
+                            result = new([], "pending", "File changed during extraction; retry on next indexing pass.");
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                    {
+                        result = new([], "failed", IsNativeMedia(candidate, code) ? DescribeMediaFailure("snapshot validation", error) : Describe(error));
+                    }
+                }
+
+                if (result.Info is not null)
+                {
+                    var metadata = JsonNode.Parse(result.Info)!.AsObject();
+                    metadata["indexRoot"] = root;
+                    metadata["lexicalRevision"] = "chinese-width-exact-v1";
+                    result = result with { Info = metadata.ToJsonString() };
+                }
+
+                var finalRow = row with { State = result.State, Detail = result.Detail, Info = result.Info, Segments = result.Segments };
+                await repository.AckTaskWithUpsertAsync(finalRow, normPath, null, cancellationToken);
+                completed++;
+                if (result.State == "failed") failed++;
+                if (result.State == "partial") partial++;
+                progress?.Report(new(result.State, normPath, completed, failed, partial, result.Detail));
+            }
+            progress?.Report(new("finished", null, completed, failed, partial));
+        }
+        finally { runGate.Release(); }
+    }
+
     private async Task GuardMetadataAsync(IReadOnlyList<IndexedFile> files, EmbeddingInfo? info, bool code, CancellationToken token)
     {
         var fingerprint = "native-extraction-v1|" + (code ? "code-lines1800-cells" : "documents1800-overlap200-pdfpig0.1.16-imagehost");
