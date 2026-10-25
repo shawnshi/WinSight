@@ -25,6 +25,8 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     private readonly object policyGate = new();
     private readonly IncrementalIndexQueue? queue;
     private readonly Func<IReadOnlyList<string>, IReadOnlyList<string>, bool, CancellationToken, Task>? indexPaths;
+    private readonly HostSignals hostSignals;
+    private readonly ResourceBudgetController budgetController;
     private CancellationTokenSource? activePolicyStop;
     private Task? activePolicyCancellation;
     private int disposed;
@@ -34,6 +36,7 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     public Exception? Failure => worker.Exception?.GetBaseException();
     public IncrementalIndexQueue? Queue => queue;
     public long WatcherOverflows => queue?.WatcherOverflows ?? 0;
+    public ResourceBudgetController BudgetController => budgetController;
 
     public BackgroundIndexCoordinator(AppSettings settings, Func<IndexRequest, CancellationToken, Task> index,
         Action<Exception> onError, TimeSpan? debounce = null, TimeSpan? reconcile = null,
@@ -41,7 +44,9 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         Func<bool>? isOnAcPower = null, TimeSpan? policyPoll = null,
         IIndexRepository? repository = null,
         Func<IReadOnlyList<string>, IReadOnlyList<string>, bool, CancellationToken, Task>? indexPaths = null,
-        IncrementalIndexQueue? queue = null)
+        IncrementalIndexQueue? queue = null,
+        HostSignals? hostSignals = null,
+        ResourceBudgetController? budgetController = null)
     {
         this.settings = settings;
         this.index = index;
@@ -53,6 +58,26 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         this.policyPoll = policyPoll ?? TimeSpan.FromSeconds(30);
         this.indexPaths = indexPaths;
         this.queue = queue ?? (repository != null ? new IncrementalIndexQueue(repository, indexPaths, onError, reconcileInterval: reconcile) : null);
+        if (hostSignals != null)
+        {
+            this.hostSignals = hostSignals;
+        }
+        else if (isOnAcPower != null)
+        {
+            this.hostSignals = new HostSignals(
+                powerStatus: () => new SystemPowerInfo(isOnAcPower(), false, 100),
+                onError: onError);
+        }
+        else
+        {
+            this.hostSignals = new HostSignals(onError: onError);
+        }
+
+        this.budgetController = budgetController ?? new ResourceBudgetController(this.hostSignals);
+        if (this.queue != null)
+        {
+            this.queue.IsBattery = () => !this.hostSignals.GetPowerInfo().IsAcPower;
+        }
         if (this.policyPoll <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(policyPoll));
         foreach (var root in settings.Folders.Concat(settings.CodeFolders).Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -107,6 +132,61 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     }
     private void Signal() => signals.Writer.TryWrite(true);
     public void RequestReconciliation() => Signal();
+
+    public void PreemptForInteractiveQuery() => budgetController.PreemptForInteractiveQuery();
+
+    public async Task HandleResumeAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        foreach (var root in settings.Folders.Concat(settings.CodeFolders).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!Directory.Exists(root))
+            {
+                onError(new DirectoryNotFoundException($"Configured folder is unavailable: {root}"));
+            }
+        }
+
+        if (queue != null)
+        {
+            foreach (var code in new[] { false, true })
+            {
+                var roots = code ? settings.CodeFolders : settings.Folders;
+                foreach (var root in roots)
+                {
+                    if (Directory.Exists(root))
+                    {
+                        await queue.ReconcileRootAsync(root, code, force: true, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
+        }
+
+        budgetController.ComputeBudgets();
+        Signal();
+    }
+
+    public async Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var budgets = budgetController.ComputeBudgets();
+        if (queue != null)
+        {
+            return await queue.GetIndexingQueueStatusAsync(budgets, cancellationToken).ConfigureAwait(false);
+        }
+
+        return new IndexingQueueStatus(
+            Pending: 0,
+            Stabilizing: 0,
+            Ready: 0,
+            Running: 0,
+            Failed: 0,
+            Deferred: 0,
+            Dropped: 0,
+            WatcherOverflows: 0,
+            LastReconcileUtc: null,
+            UsnState: "not-implemented",
+            Budgets: budgets);
+    }
 
     public static bool IsScheduledTime(IndexHours hours, int minute)
     {
@@ -207,10 +287,19 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         using var clock = new PeriodicTimer(policyPoll);
         var nextReconcile = DateTimeOffset.UtcNow + reconcile;
         var wasAllowed = AllowedNow();
+        var lastTickUtc = DateTimeOffset.UtcNow;
         try
         {
             while (await clock.WaitForNextTickAsync(stop.Token))
             {
+                var nowUtc = DateTimeOffset.UtcNow;
+                var gap = nowUtc - (lastTickUtc + policyPoll);
+                lastTickUtc = nowUtc;
+                if (gap > TimeSpan.FromSeconds(60))
+                {
+                    _ = HandleResumeAsync(stop.Token);
+                }
+
                 var allowed = AllowedNow();
                 if (!allowed)
                 {

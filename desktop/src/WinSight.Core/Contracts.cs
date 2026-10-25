@@ -31,6 +31,9 @@ public sealed record IndexRequest(IReadOnlyList<string> Roots, IReadOnlyList<str
     long MaxFileBytes = 32 * 1024 * 1024, DocumentExtractionOptions? Documents = null, bool AllowPowerPointAutomation = false);
 public sealed record EngineStatus(int Files, int Done, int Pending, int Partial, int Failed,
     string IndexPath, string? Detail = null, IndexingControlState IndexingState = IndexingControlState.Running);
+public sealed record IndexBudgetState(string Class, int ExtractConcurrency, int InferenceConcurrency, string State);
+public sealed record IndexingQueueStatus(int Pending, int Stabilizing, int Ready, int Running, int Failed, int Deferred, long Dropped,
+    long WatcherOverflows, DateTimeOffset? LastReconcileUtc, string UsnState, IReadOnlyList<IndexBudgetState> Budgets);
 public sealed record EmbeddingInput(string Operation, string Value, int Budget = 280);
 public sealed record EmbeddingResult(float[]? Vector, string? Error = null);
 public sealed record EmbeddingInfo(string ProfileId, int Dimension, string Runtime, string Model,
@@ -45,6 +48,8 @@ public interface IIndexService
 {
     Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress = null,
         CancellationToken cancellationToken = default);
+    Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, "not-implemented", Array.Empty<IndexBudgetState>()));
 }
 public interface IIndexRepository : IAsyncDisposable
 {
@@ -151,6 +156,8 @@ public interface IDesktopBackend : IAsyncDisposable
     Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress = null,
         CancellationToken cancellationToken = default);
     Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default);
+    Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, "not-implemented", Array.Empty<IndexBudgetState>()));
     Task SetIndexingPausedAsync(bool paused, CancellationToken cancellationToken = default);
     Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancellationToken = default);
     Task<ISourcePreview> PreviewSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>
