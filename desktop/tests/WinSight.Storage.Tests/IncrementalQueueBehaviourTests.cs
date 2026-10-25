@@ -123,7 +123,122 @@ internal static class IncrementalQueueBehaviourTests
             Require(freshTask is not null && freshTask.Reason == "reconcile_backfill", "New file must be queued by reconciliation.");
             Require(knownTask is null, "A file whose size and mtime already match the index must not be re-queued.");
         });
+        await test("S1-Q6 settling waits for quiet, then requires a stable second sample", async () =>
+        {
+            var sandbox = Sandbox(root);
+            await using var repo = new SqliteIndexRepository(Path.Combine(sandbox, "q6.sqlite"));
+            await repo.InitializeAsync();
+            await using var queue = new IncrementalIndexQueue(repo, quietPeriod: TimeSpan.FromMilliseconds(400), maxWait: TimeSpan.FromSeconds(5));
+            await queue.InitializeAsync();
+            var path = Path.Combine(sandbox, "settling.txt");
+            await File.WriteAllTextAsync(path, "settled");
+            await queue.EnqueueEventAsync(path, sandbox, false, WatcherChangeTypes.Created);
+
+            var task = await repo.GetTaskAsync(path);
+            Require(task is not null && task.State == "Stabilizing", "A fresh event must start in Stabilizing.");
+            Require(!await queue.CheckStabilizationAsync(task!), "A task inside its quiet window must not be released early.");
+
+            await Task.Delay(450);
+            task = await repo.GetTaskAsync(path);
+            Require(await queue.CheckStabilizationAsync(task!), "A quiet, stable file must be released.");
+            var ready = await repo.GetTaskAsync(path);
+            Require(ready!.State == "Ready" && ready.Reason is null, "Released task must be Ready without a caveat.");
+        });
+
+        await test("S1-Q7 continuous writes are still released at the maximum wait", async () =>
+        {
+            var sandbox = Sandbox(root);
+            await using var repo = new SqliteIndexRepository(Path.Combine(sandbox, "q7.sqlite"));
+            await repo.InitializeAsync();
+            await using var queue = new IncrementalIndexQueue(repo, quietPeriod: TimeSpan.FromMilliseconds(200), maxWait: TimeSpan.FromMilliseconds(700));
+            await queue.InitializeAsync();
+            var path = Path.Combine(sandbox, "growing.log");
+            await File.WriteAllTextAsync(path, "0");
+            await queue.EnqueueEventAsync(path, sandbox, false, WatcherChangeTypes.Created);
+
+            // A real writer keeps touching the file during the whole sampling window, otherwise the
+            // stability gate would legitimately release the task instead of running into the max wait.
+            using var writing = new CancellationTokenSource();
+            var writer = Task.Run(async () =>
+            {
+                while (!writing.IsCancellationRequested)
+                {
+                    try { await File.AppendAllTextAsync(path, new string('x', 64), writing.Token); }
+                    catch (OperationCanceledException) { return; }
+                    catch (IOException) { }
+                    await Task.Delay(40, CancellationToken.None);
+                }
+            });
+
+            var deadline = DateTime.UtcNow.AddSeconds(4);
+            var released = false;
+            try
+            {
+                while (DateTime.UtcNow < deadline && !released)
+                {
+                    var task = await repo.GetTaskAsync(path);
+                    if (task is null) break;
+                    released = await queue.CheckStabilizationAsync(task);
+                }
+            }
+            finally
+            {
+                await writing.CancelAsync();
+                await writer;
+            }
+            Require(released, "Continuous writes must not defer past the maximum wait.");
+            var settled = await repo.GetTaskAsync(path);
+            Require(settled!.State == "Ready" && settled.Reason == "still-changing", "Maximum-wait release must be marked still-changing, saw state=" + settled.State + " reason=" + (settled.Reason ?? "<null>") + " attempts=" + settled.Attempts);
+        });
+
+        await test("S1-Q8 an exclusively held file backs off and is released after the handle closes", async () =>
+        {
+            var sandbox = Sandbox(root);
+            await using var repo = new SqliteIndexRepository(Path.Combine(sandbox, "q8.sqlite"));
+            await repo.InitializeAsync();
+            await using var queue = new IncrementalIndexQueue(repo, quietPeriod: TimeSpan.FromMilliseconds(50), maxWait: TimeSpan.FromSeconds(5));
+            await queue.InitializeAsync();
+            var path = Path.Combine(sandbox, "locked.txt");
+            await File.WriteAllTextAsync(path, "locked");
+            await queue.EnqueueEventAsync(path, sandbox, false, WatcherChangeTypes.Created);
+            await Task.Delay(80);
+
+            using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                var task = await repo.GetTaskAsync(path);
+                Require(!await queue.CheckStabilizationAsync(task!), "A held file must not be released.");
+                var waiting = await repo.GetTaskAsync(path);
+                Require(waiting!.State == "Stabilizing" && waiting.Reason == "locked" && waiting.Attempts == 1, "A sharing violation must record one locked attempt and back off.");
+                Require(waiting.DueUtc > DateTimeOffset.UtcNow, "The retry must be scheduled in the future.");
+            }
+
+            await Task.Delay(600);
+            var retry = await repo.GetTaskAsync(path);
+            Require(await queue.CheckStabilizationAsync(retry!), "After the handle closes the task must be released.");
+            Require((await repo.GetTaskAsync(path))!.State == "Ready", "Released task must be Ready.");
+        });
+
+        await test("S1-Q9 exceeding the retry budget defers the task instead of spinning", async () =>
+        {
+            var sandbox = Sandbox(root);
+            await using var repo = new SqliteIndexRepository(Path.Combine(sandbox, "q9.sqlite"));
+            await repo.InitializeAsync();
+            await using var queue = new IncrementalIndexQueue(repo, quietPeriod: TimeSpan.FromMilliseconds(50), maxWait: TimeSpan.FromSeconds(5));
+            await queue.InitializeAsync();
+            var path = Path.Combine(sandbox, "stuck.txt");
+            await File.WriteAllTextAsync(path, "stuck");
+            await repo.EnqueueIndexTaskAsync(new IndexTask(FilePolicy.Normalize(path), sandbox, false, "Update", null, "Stabilizing", 5, DateTimeOffset.UtcNow.AddSeconds(-1), DateTimeOffset.UtcNow.AddSeconds(-1)));
+
+            using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                var task = await repo.GetTaskAsync(path);
+                Require(!await queue.CheckStabilizationAsync(task!), "A sixth violation must not be retried again.");
+            }
+            var deferred = await repo.GetTaskAsync(path);
+            Require(deferred!.State == "Deferred" && deferred.Reason == "locked" && deferred.Attempts == 6, "The budget must end in Deferred(locked).");
+        });
     }
+
 
     private static void Require(bool condition, string message)
     {
