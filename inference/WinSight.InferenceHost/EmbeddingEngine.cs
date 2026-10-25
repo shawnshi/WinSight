@@ -16,27 +16,46 @@ internal sealed class EmbeddingEngine : IDisposable
     internal bool TextLoaded => providers.Loaded("model_q4.onnx");
     internal bool VisionLoaded => providers.Loaded("vision_encoder_q4.onnx");
     internal bool AudioLoaded => providers.Loaded("audio_encoder_q4.onnx");
-    internal bool AutomaticProviders { get; }
+    internal string Preference { get; }
+    internal bool ProviderDownloadsAllowed { get; }
+    internal string RequestedProvider => FormatRequestedProvider(Preference);
+    internal bool AutomaticProviders => Preference != "cpu";
     internal long ProviderEpoch => providers.Epoch;
     internal object ProviderStatus => providers.Status;
     internal string? PerformanceProfile => providers.PerformanceIdentity(Profile);
     internal string? PerformanceForBatch(long expectedEpoch) => providers.PerformanceIdentity(Profile, expectedEpoch);
 
-    internal EmbeddingEngine(string modelRoot, string mediaPreprocessorVersion = "unbound", string? manifestPath = null, bool automaticProviders = true)
+    internal static string FormatRequestedProvider(string preference) => preference switch
+    {
+        "cpu" => "CPUExecutionProvider",
+        "auto" => "device-auto-with-real-model-gates",
+        "discrete-gpu" => "device-discrete-gpu-with-real-model-gates",
+        "npu" => "device-npu-with-real-model-gates",
+        "gpu" => "device-gpu-with-real-model-gates",
+        _ => throw new ArgumentException($"Unknown device preference: {preference}")
+    };
+
+    internal EmbeddingEngine(string modelRoot, string mediaPreprocessorVersion = "unbound", string? manifestPath = null, string preference = "auto", bool providerInstall = true)
     {
         models = new ModelManifest(modelRoot, manifestPath);
         try
         {
             Profile = models.Profile(mediaPreprocessorVersion);
             tokenizer = NativeTokenizer.Load(models.TokenizerJson);
-            AutomaticProviders = automaticProviders;
-            providers = new ExecutionProviderManager(models, automaticProviders);
+            Preference = preference;
+            ProviderDownloadsAllowed = providerInstall;
+            providers = new ExecutionProviderManager(models, preference, providerInstall);
         }
         catch
         {
             models.Dispose();
             throw;
         }
+    }
+
+    internal EmbeddingEngine(string modelRoot, string mediaPreprocessorVersion, string? manifestPath, bool automaticProviders)
+        : this(modelRoot, mediaPreprocessorVersion, manifestPath, automaticProviders ? "auto" : "cpu", automaticProviders)
+    {
     }
 
     internal long[] Tokenize(string input, bool special = true)
