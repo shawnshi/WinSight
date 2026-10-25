@@ -53,6 +53,22 @@ public sealed class SqliteIndexRepository : IIndexRepository
                 if (!Equals(Scalar(db, null, "SELECT value FROM meta WHERE key=$key", ("$key", MarkerKey)), NativeFormat))
                     throw new InvalidDataException("Index format changed while opening.");
                 Execute(db, null, "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+                Execute(db, null, """
+                    CREATE TABLE IF NOT EXISTS index_tasks (
+                        path TEXT PRIMARY KEY,
+                        root TEXT NOT NULL,
+                        code INTEGER NOT NULL,
+                        kind TEXT NOT NULL,
+                        tombstone TEXT,
+                        state TEXT NOT NULL,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        due_utc TEXT NOT NULL,
+                        seen_utc TEXT NOT NULL,
+                        reason TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_index_tasks_due ON index_tasks(state, due_utc);
+                    """);
+                Execute(db, null, "UPDATE index_tasks SET state='Pending' WHERE state IN ('Running', 'Stabilizing')");
             }
             ct.ThrowIfCancellationRequested();
             connection = db;
@@ -181,7 +197,7 @@ public sealed class SqliteIndexRepository : IIndexRepository
             throw new InvalidDataException("Unsupported FTS layout/tokenizer.");
         using var objects = Command(db, null, "SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'");
         using var rows = objects.ExecuteReader();
-        var allowedTables = new HashSet<string>(["meta", "files", "segments", "fts", "fts_data", "fts_idx", "fts_content", "fts_docsize", "fts_config"], StringComparer.Ordinal);
+        var allowedTables = new HashSet<string>(["meta", "files", "segments", "fts", "fts_data", "fts_idx", "fts_content", "fts_docsize", "fts_config", "index_tasks"], StringComparer.Ordinal);
         while (rows.Read())
             if (rows.GetString(1) is "trigger" or "view" || (rows.GetString(1) == "table" && !allowedTables.Contains(rows.GetString(0))))
                 throw new InvalidDataException("Unknown database objects; refusing an unsafe index.");
@@ -276,37 +292,39 @@ public sealed class SqliteIndexRepository : IIndexRepository
         ValidateFile(file);
         return RunAsync(() =>
         {
-            Write(cancellationToken, (db, tx) =>
-            {
-                if (file.Segments.Any(s => s.Vector != null) && string.IsNullOrWhiteSpace(Scalar(db, tx, "SELECT value FROM meta WHERE key='profile_id'") as string))
-                    throw new InvalidDataException("Set profile_id before storing any vectors.");
-                var existing = Scalar(db, tx, "SELECT id FROM files WHERE path=$path", ("$path", file.Path));
-                if (file.Id != 0 && (existing == null || Convert.ToInt64(existing) != file.Id)) throw new InvalidDataException("File ID does not belong to this path.");
-                Execute(db, tx, "INSERT INTO files(path,kind,size,mtime,inode,device,state,detail,info,indexed_at) VALUES($path,$kind,$size,$mtime,0,0,$state,$detail,$info,$now) " +
-                    "ON CONFLICT(path) DO UPDATE SET kind=excluded.kind,size=excluded.size,mtime=excluded.mtime,state=excluded.state,detail=excluded.detail,info=excluded.info,indexed_at=excluded.indexed_at",
-                    ("$path", file.Path), ("$kind", file.Kind), ("$size", file.Size), ("$mtime", file.ModifiedTime), ("$state", file.State), ("$detail", file.Detail), ("$info", file.Info), ("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0));
-                long id = Convert.ToInt64(Scalar(db, tx, "SELECT id FROM files WHERE path=$path", ("$path", file.Path)));
-                Execute(db, tx, "DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file=$id); DELETE FROM segments WHERE file=$id;", ("$id", id));
-                string slash = file.Path.Replace('\\', '/');
-                int last = slash.LastIndexOf('/');
-                AddSegment(db, tx, id, new IndexSegment("name", "none", null, null, null), last < 0 ? slash : slash[(last + 1)..], last < 0 ? "" : slash[..last].Replace('/', ' '));
-                var anchors = new Dictionary<long, SourceAnchor>();
-                foreach (var segment in file.Segments.Where(s => s.Kind != "name"))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var segmentId = AddSegment(db, tx, id, segment, "", segment.Excerpt);
-                    if (segment.Source is { } source) anchors.Add(segmentId, source);
-                }
-                if (anchors.Count != 0 || file.Info?.Contains("_sourceAnchorsV1", StringComparison.Ordinal) == true)
-                {
-                    var metadata = file.Info is null ? new JsonObject() : JsonNode.Parse(file.Info)!.AsObject();
-                    metadata.Remove("_sourceAnchorsV1");
-                    if (anchors.Count != 0) metadata.Add("_sourceAnchorsV1", JsonSerializer.SerializeToNode(anchors));
-                    Execute(db, tx, "UPDATE files SET info=$info WHERE id=$id", ("$info", metadata.ToJsonString()), ("$id", id));
-                }
-            });
+            Write(cancellationToken, (db, tx) => UpsertFileInternal(db, tx, file, cancellationToken));
             return 0;
         }, cancellationToken);
+    }
+
+    private static void UpsertFileInternal(SqliteConnection db, SqliteTransaction tx, IndexedFile file, CancellationToken ct)
+    {
+        if (file.Segments.Any(s => s.Vector != null) && string.IsNullOrWhiteSpace(Scalar(db, tx, "SELECT value FROM meta WHERE key='profile_id'") as string))
+            throw new InvalidDataException("Set profile_id before storing any vectors.");
+        var existing = Scalar(db, tx, "SELECT id FROM files WHERE path=$path", ("$path", file.Path));
+        if (file.Id != 0 && (existing == null || Convert.ToInt64(existing) != file.Id)) throw new InvalidDataException("File ID does not belong to this path.");
+        Execute(db, tx, "INSERT INTO files(path,kind,size,mtime,inode,device,state,detail,info,indexed_at) VALUES($path,$kind,$size,$mtime,0,0,$state,$detail,$info,$now) " +
+            "ON CONFLICT(path) DO UPDATE SET kind=excluded.kind,size=excluded.size,mtime=excluded.mtime,state=excluded.state,detail=excluded.detail,info=excluded.info,indexed_at=excluded.indexed_at",
+            ("$path", file.Path), ("$kind", file.Kind), ("$size", file.Size), ("$mtime", file.ModifiedTime), ("$state", file.State), ("$detail", file.Detail), ("$info", file.Info), ("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0));
+        long id = Convert.ToInt64(Scalar(db, tx, "SELECT id FROM files WHERE path=$path", ("$path", file.Path)));
+        Execute(db, tx, "DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file=$id); DELETE FROM segments WHERE file=$id;", ("$id", id));
+        string slash = file.Path.Replace('\\', '/');
+        int last = slash.LastIndexOf('/');
+        AddSegment(db, tx, id, new IndexSegment("name", "none", null, null, null), last < 0 ? slash : slash[(last + 1)..], last < 0 ? "" : slash[..last].Replace('/', ' '));
+        var anchors = new Dictionary<long, SourceAnchor>();
+        foreach (var segment in file.Segments.Where(s => s.Kind != "name"))
+        {
+            ct.ThrowIfCancellationRequested();
+            var segmentId = AddSegment(db, tx, id, segment, "", segment.Excerpt);
+            if (segment.Source is { } source) anchors.Add(segmentId, source);
+        }
+        if (anchors.Count != 0 || file.Info?.Contains("_sourceAnchorsV1", StringComparison.Ordinal) == true)
+        {
+            var metadata = file.Info is null ? new JsonObject() : JsonNode.Parse(file.Info)!.AsObject();
+            metadata.Remove("_sourceAnchorsV1");
+            if (anchors.Count != 0) metadata.Add("_sourceAnchorsV1", JsonSerializer.SerializeToNode(anchors));
+            Execute(db, tx, "UPDATE files SET info=$info WHERE id=$id", ("$info", metadata.ToJsonString()), ("$id", id));
+        }
     }
 
     private static long AddSegment(SqliteConnection db, SqliteTransaction tx, long id, IndexSegment segment, string name, string? body)
@@ -327,10 +345,236 @@ public sealed class SqliteIndexRepository : IIndexRepository
         ValidatePath(path);
         return RunAsync(() =>
         {
-            Write(cancellationToken, (db, tx) => Execute(db, tx,
-                "DELETE FROM fts WHERE rowid IN (SELECT s.id FROM segments s JOIN files f ON f.id=s.file WHERE f.path=$path); DELETE FROM files WHERE path=$path;", ("$path", path)));
+            Write(cancellationToken, (db, tx) => DeleteFileInternal(db, tx, path));
             return 0;
         }, cancellationToken);
+    }
+
+    private static void DeleteFileInternal(SqliteConnection db, SqliteTransaction tx, string path)
+    {
+        Execute(db, tx, "DELETE FROM fts WHERE rowid IN (SELECT s.id FROM segments s JOIN files f ON f.id=s.file WHERE f.path=$path); DELETE FROM files WHERE path=$path;", ("$path", path));
+    }
+
+    public Task ResetHangingTasksAsync(CancellationToken cancellationToken = default) =>
+        RunAsync(() =>
+        {
+            Write(cancellationToken, (db, tx) =>
+            {
+                Execute(db, tx, "UPDATE index_tasks SET state='Pending' WHERE state IN ('Running', 'Stabilizing')");
+            });
+            return 0;
+        }, cancellationToken);
+
+    public Task EnqueueIndexTaskAsync(IndexTask task, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        ValidatePath(task.Path);
+        return RunAsync(() =>
+        {
+            Write(cancellationToken, (db, tx) =>
+            {
+                Execute(db, tx, """
+                    INSERT INTO index_tasks(path, root, code, kind, tombstone, state, attempts, due_utc, seen_utc, reason)
+                    VALUES($path, $root, $code, $kind, $tombstone, $state, $attempts, $due, $seen, $reason)
+                    ON CONFLICT(path) DO UPDATE SET
+                        root=excluded.root,
+                        code=excluded.code,
+                        kind=excluded.kind,
+                        tombstone=coalesce(excluded.tombstone, index_tasks.tombstone),
+                        state=excluded.state,
+                        attempts=excluded.attempts,
+                        due_utc=excluded.due_utc,
+                        seen_utc=index_tasks.seen_utc,
+                        reason=excluded.reason
+                    """,
+                    ("$path", task.Path),
+                    ("$root", task.Root),
+                    ("$code", task.Code ? 1 : 0),
+                    ("$kind", task.Kind),
+                    ("$tombstone", task.Tombstone),
+                    ("$state", task.State),
+                    ("$attempts", task.Attempts),
+                    ("$due", task.DueUtc.ToString("O")),
+                    ("$seen", task.SeenUtc.ToString("O")),
+                    ("$reason", task.Reason));
+            });
+            return 0;
+        }, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<IndexTask>> ReadDueTasksAsync(int limit, CancellationToken cancellationToken = default)
+    {
+        return RunAsync(() => Read(cancellationToken, (db, tx) =>
+        {
+            var list = new List<IndexTask>();
+            var now = DateTimeOffset.UtcNow.ToString("O");
+            using var cmd = Command(db, tx, """
+                SELECT path, root, code, kind, tombstone, state, attempts, due_utc, seen_utc, reason
+                FROM index_tasks
+                WHERE due_utc <= $now AND state IN ('Pending', 'Stabilizing', 'Ready')
+                ORDER BY due_utc ASC
+                LIMIT $limit
+                """, ("$now", now), ("$limit", limit));
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                list.Add(new IndexTask(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetInt32(2) != 0,
+                    reader.GetString(3),
+                    Text(reader, 4),
+                    reader.GetString(5),
+                    reader.GetInt32(6),
+                    DateTimeOffset.Parse(reader.GetString(7)),
+                    DateTimeOffset.Parse(reader.GetString(8)),
+                    Text(reader, 9)));
+            }
+            return (IReadOnlyList<IndexTask>)list;
+        }), cancellationToken);
+    }
+
+    public Task<IndexTask?> GetTaskAsync(string path, CancellationToken cancellationToken = default)
+    {
+        ValidatePath(path);
+        return RunAsync(() => Read(cancellationToken, (db, tx) =>
+        {
+            using var cmd = Command(db, tx, """
+                SELECT path, root, code, kind, tombstone, state, attempts, due_utc, seen_utc, reason
+                FROM index_tasks WHERE path=$path
+                """, ("$path", path));
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read()) return null;
+            return new IndexTask(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetInt32(2) != 0,
+                reader.GetString(3),
+                Text(reader, 4),
+                reader.GetString(5),
+                reader.GetInt32(6),
+                DateTimeOffset.Parse(reader.GetString(7)),
+                DateTimeOffset.Parse(reader.GetString(8)),
+                Text(reader, 9));
+        }), cancellationToken);
+    }
+
+    public Task UpdateTaskStateAsync(string path, string state, int attempts, DateTimeOffset dueUtc, string? reason = null, CancellationToken cancellationToken = default)
+    {
+        ValidatePath(path);
+        return RunAsync(() =>
+        {
+            Write(cancellationToken, (db, tx) =>
+            {
+                Execute(db, tx, "UPDATE index_tasks SET state=$state, attempts=$attempts, due_utc=$due, reason=$reason WHERE path=$path",
+                    ("$state", state), ("$attempts", attempts), ("$due", dueUtc.ToString("O")), ("$reason", reason), ("$path", path));
+            });
+            return 0;
+        }, cancellationToken);
+    }
+
+    public Task AckTaskWithUpsertAsync(IndexedFile file, string taskPath, string? tombstone = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        ArgumentNullException.ThrowIfNull(file.Segments);
+        ValidatePath(taskPath);
+        file = file with { Segments = file.Segments.Select(s => s with { Vector = s.Vector?.ToArray(),
+            Source = s.Source is { } source ? source with { Fields = source.Fields?.ToArray(), Regions = source.Regions?.ToArray() }
+                : s.Excerpt is { } text ? new(new(file.Kind is "image" or "screenshot" ? "image" : "text"), s.Modality == "image" ? "page-visual" : file.Kind is "image" or "screenshot" ? "ocr" : "body", DocumentSearchQuery.FieldsFromText(text)) : null }).ToArray() };
+        ValidateFile(file);
+        return RunAsync(() =>
+        {
+            Write(cancellationToken, (db, tx) =>
+            {
+                if (!string.IsNullOrEmpty(tombstone) && !string.Equals(tombstone, file.Path, StringComparison.OrdinalIgnoreCase))
+                {
+                    DeleteFileInternal(db, tx, tombstone);
+                    Execute(db, tx, "DELETE FROM index_tasks WHERE path=$tombstone", ("$tombstone", tombstone));
+                }
+                UpsertFileInternal(db, tx, file, cancellationToken);
+                Execute(db, tx, "DELETE FROM index_tasks WHERE path=$taskPath", ("$taskPath", taskPath));
+            });
+            return 0;
+        }, cancellationToken);
+    }
+
+    public Task AckTaskWithDeleteAsync(string filePath, string taskPath, CancellationToken cancellationToken = default)
+    {
+        ValidatePath(filePath);
+        ValidatePath(taskPath);
+        return RunAsync(() =>
+        {
+            Write(cancellationToken, (db, tx) =>
+            {
+                DeleteFileInternal(db, tx, filePath);
+                Execute(db, tx, "DELETE FROM index_tasks WHERE path=$taskPath", ("$taskPath", taskPath));
+            });
+            return 0;
+        }, cancellationToken);
+    }
+
+    public Task<int> TrimTasksAsync(int maxTasks = 50000, CancellationToken cancellationToken = default)
+    {
+        return RunAsync(() =>
+        {
+            var trimmed = 0;
+            Write(cancellationToken, (db, tx) =>
+            {
+                var total = Convert.ToInt64(Scalar(db, tx, "SELECT count(*) FROM index_tasks"));
+                if (total <= maxTasks) return;
+                var excess = (int)(total - maxTasks);
+
+                // 1. Backfill first
+                var backfillDeleted = Execute(db, tx, """
+                    DELETE FROM index_tasks WHERE path IN (
+                        SELECT path FROM index_tasks
+                        WHERE reason LIKE '%backfill%' OR reason LIKE '%reconcile%' OR kind = 'Reconcile'
+                        ORDER BY seen_utc ASC LIMIT $limit
+                    )
+                    """, ("$limit", excess));
+                trimmed += backfillDeleted;
+                excess -= backfillDeleted;
+                if (excess <= 0) return;
+
+                // 2. Oldest Deferred next
+                var deferredDeleted = Execute(db, tx, """
+                    DELETE FROM index_tasks WHERE path IN (
+                        SELECT path FROM index_tasks
+                        WHERE state = 'Deferred'
+                        ORDER BY seen_utc ASC LIMIT $limit
+                    )
+                    """, ("$limit", excess));
+                trimmed += deferredDeleted;
+                excess -= deferredDeleted;
+                if (excess <= 0) return;
+
+                // 3. Oldest remaining
+                var oldestDeleted = Execute(db, tx, """
+                    DELETE FROM index_tasks WHERE path IN (
+                        SELECT path FROM index_tasks
+                        ORDER BY seen_utc ASC LIMIT $limit
+                    )
+                    """, ("$limit", excess));
+                trimmed += oldestDeleted;
+            });
+            return trimmed;
+        }, cancellationToken);
+    }
+
+    public Task<IReadOnlyDictionary<string, int>> GetTaskCountsAsync(CancellationToken cancellationToken = default)
+    {
+        return RunAsync(() => Read(cancellationToken, (db, tx) =>
+        {
+            var dict = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            using var cmd = Command(db, tx, "SELECT state, count(*) FROM index_tasks GROUP BY state");
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                dict[reader.GetString(0)] = reader.GetInt32(1);
+            }
+            return (IReadOnlyDictionary<string, int>)dict;
+        }), cancellationToken);
     }
 
     public Task<string?> GetMetaAsync(string key, CancellationToken cancellationToken = default)
@@ -636,8 +880,8 @@ public sealed class SqliteIndexRepository : IIndexRepository
         foreach (var arg in args) cmd.Parameters.AddWithValue(arg.Key, arg.Value ?? DBNull.Value);
         return cmd;
     }
-    private static void Execute(SqliteConnection db, SqliteTransaction? tx, string sql, params (string Key, object? Value)[] args)
-    { using var cmd = Command(db, tx, sql, args); cmd.ExecuteNonQuery(); }
+    private static int Execute(SqliteConnection db, SqliteTransaction? tx, string sql, params (string Key, object? Value)[] args)
+    { using var cmd = Command(db, tx, sql, args); return cmd.ExecuteNonQuery(); }
     private static object? Scalar(SqliteConnection db, SqliteTransaction? tx, string sql, params (string Key, object? Value)[] args)
     { using var cmd = Command(db, tx, sql, args); var value = cmd.ExecuteScalar(); return value is DBNull ? null : value; }
 
@@ -658,6 +902,8 @@ public sealed class SqliteIndexRepository : IIndexRepository
             modality TEXT NOT NULL,loc REAL,loc_end REAL,excerpt TEXT,vec BLOB);
         CREATE INDEX segments_file ON segments(file);
         CREATE VIRTUAL TABLE fts USING fts5(name,body,original UNINDEXED,tokenize="{{Tokenizer}}");
+        CREATE TABLE IF NOT EXISTS index_tasks (path TEXT PRIMARY KEY,root TEXT NOT NULL,code INTEGER NOT NULL,kind TEXT NOT NULL,tombstone TEXT,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,due_utc TEXT NOT NULL,seen_utc TEXT NOT NULL,reason TEXT);
+        CREATE INDEX IF NOT EXISTS ix_index_tasks_due ON index_tasks(state, due_utc);
         PRAGMA user_version=5;
         """;
 }

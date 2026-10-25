@@ -24,6 +24,8 @@ public sealed record IndexedFile(long Id, string Path, string Kind, long Size, d
 public sealed record KeywordMatch(long FileId, double Rank);
 public sealed record IndexProgress(string Phase, string? Path, int Completed, int Failed, int Partial,
     string? Detail = null);
+public sealed record IndexTask(string Path, string Root, bool Code, string Kind, string? Tombstone,
+    string State, int Attempts, DateTimeOffset DueUtc, DateTimeOffset SeenUtc, string? Reason = null);
 public sealed record IndexRequest(IReadOnlyList<string> Roots, IReadOnlyList<string>? Excluded = null,
     IReadOnlyList<string>? SkipTypes = null, bool Code = false, bool Force = false,
     long MaxFileBytes = 32 * 1024 * 1024, DocumentExtractionOptions? Documents = null, bool AllowPowerPointAutomation = false);
@@ -57,6 +59,15 @@ public interface IIndexRepository : IAsyncDisposable
     Task<string?> GetMetaAsync(string key, CancellationToken cancellationToken = default);
     Task SetMetaAsync(string key, string value, CancellationToken cancellationToken = default);
     Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default);
+    Task ResetHangingTasksAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    Task EnqueueIndexTaskAsync(IndexTask task, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    Task<IReadOnlyList<IndexTask>> ReadDueTasksAsync(int limit, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<IndexTask>>([]);
+    Task<IndexTask?> GetTaskAsync(string path, CancellationToken cancellationToken = default) => Task.FromResult<IndexTask?>(null);
+    Task UpdateTaskStateAsync(string path, string state, int attempts, DateTimeOffset dueUtc, string? reason = null, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    Task AckTaskWithUpsertAsync(IndexedFile file, string taskPath, string? tombstone = null, CancellationToken cancellationToken = default) => UpsertFileAsync(file, cancellationToken);
+    Task AckTaskWithDeleteAsync(string filePath, string taskPath, CancellationToken cancellationToken = default) => DeleteFileAsync(filePath, cancellationToken);
+    Task<int> TrimTasksAsync(int maxTasks = 50000, CancellationToken cancellationToken = default) => Task.FromResult(0);
+    Task<IReadOnlyDictionary<string, int>> GetTaskCountsAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyDictionary<string, int>>(new Dictionary<string, int>());
 }
 public interface IEmbeddingService : IAsyncDisposable
 {
