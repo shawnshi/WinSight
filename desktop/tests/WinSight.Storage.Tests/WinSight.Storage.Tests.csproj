@@ -9,6 +9,9 @@
     <Compile Include="../../src/WinSight.Core/Contracts.cs" Link="Core/Contracts.cs" />
     <Compile Include="../../src/WinSight.Infrastructure/Storage/**/*.cs" Link="Storage/%(Filename)%(Extension)" />
     <Compile Include="../../src/WinSight.Infrastructure/Search/**/*.cs" Link="Search/%(Filename)%(Extension)" />
+    <!-- S1 queue semantics live in Indexing; the queue deliberately has no runtime dependency. -->
+    <Compile Include="../../src/WinSight.Infrastructure/Indexing/IncrementalIndexQueue.cs" Link="Indexing/IncrementalIndexQueue.cs" />
+    <Compile Include="../../src/WinSight.Infrastructure/Extraction/FilePolicy.cs" Link="Extraction/FilePolicy.cs" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.13]" />
   </ItemGroup>
 </Project>
