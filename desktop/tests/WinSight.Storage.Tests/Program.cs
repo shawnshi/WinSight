@@ -415,6 +415,8 @@ await Test("query validation, no keyword error swallowing, dispose ownership, co
 });
 
 await WsRegressions.RunAsync(root, Test);
+await IncrementalQueueStorageTests.RunAsync(root, Test);
+await IncrementalQueueBehaviourTests.RunAsync(root, Test);
 Console.WriteLine($"RESULT passed={passed} failed={failed} synthetic={root}");
 return failed == 0 ? 0 : 1;
 
