@@ -117,6 +117,7 @@ try
         Check(errors.IsEmpty, "Synthetic watcher reported a failure.");
     });
     await QueueWatcherCases.RunAsync(root, Test);
+    await BudgetPreemptionCases.RunAsync(root, Test);
     await Test("WATCHER-DISPOSE-CANCELS-INFLIGHT", async () =>
     {
         var watched = Path.Combine(root, "watch-dispose");

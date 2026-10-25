@@ -31,6 +31,8 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
     public int DroppedCount => Volatile.Read(ref overflowDropped);
     public DateTimeOffset? LastReconcileUtc => lastReconcileUtc;
     public string UsnState { get; private set; } = "not-attempted";
+    // Optional budget signal: the coordinator sets this so queue-side work can honour battery state.
+    public Func<bool>? IsBattery { get; set; }
 
     public IncrementalIndexQueue(
         IIndexRepository repository,
@@ -546,6 +548,10 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         var dueTasks = await repository.ReadDueTasksAsync(limit, cancellationToken).ConfigureAwait(false);
+        if (IsBattery?.Invoke() == true && dueTasks.Count > 1)
+        {
+            dueTasks = PrioritizeRecentSmallFiles(dueTasks);
+        }
         var processed = 0;
 
         foreach (var task in dueTasks)
@@ -610,6 +616,53 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
     public Task<IReadOnlyDictionary<string, int>> GetTaskCountsAsync(CancellationToken cancellationToken = default) =>
         repository.GetTaskCountsAsync(cancellationToken);
+
+    public async Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(
+        IReadOnlyList<IndexBudgetState>? budgets = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var counts = await repository.GetTaskCountsAsync(cancellationToken).ConfigureAwait(false);
+        counts.TryGetValue("Pending", out var pending);
+        counts.TryGetValue("Stabilizing", out var stabilizing);
+        counts.TryGetValue("Ready", out var ready);
+        counts.TryGetValue("Running", out var running);
+        counts.TryGetValue("Failed", out var failed);
+        counts.TryGetValue("Deferred", out var deferred);
+
+        return new IndexingQueueStatus(
+            Pending: pending,
+            Stabilizing: stabilizing,
+            Ready: ready,
+            Running: running,
+            Failed: failed,
+            Deferred: deferred,
+            Dropped: DroppedCount,
+            WatcherOverflows: WatcherOverflows,
+            LastReconcileUtc: LastReconcileUtc,
+            UsnState: "not-implemented",
+            Budgets: budgets ?? Array.Empty<IndexBudgetState>());
+    }
+
+    public static IReadOnlyList<IndexTask> PrioritizeRecentSmallFiles(IEnumerable<IndexTask> tasks)
+    {
+        return tasks
+            .OrderByDescending(t => GetLastWriteTimeSafe(t.Path))
+            .ThenBy(t => GetFileSizeSafe(t.Path))
+            .ToList();
+    }
+
+    private static DateTime GetLastWriteTimeSafe(string path)
+    {
+        try { return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue; }
+        catch { return DateTime.MinValue; }
+    }
+
+    private static long GetFileSizeSafe(string path)
+    {
+        try { return File.Exists(path) ? new FileInfo(path).Length : long.MaxValue; }
+        catch { return long.MaxValue; }
+    }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
