@@ -4,8 +4,19 @@ using System.Text.Json;
 
 // Test-only executable: no ONNX references, model reads, or production inclusion.
 if (args is ["--tree-leaf"]) { await Task.Delay(Timeout.InfiniteTimeSpan); return 0; }
-if (args.Length != 7 || args[0] != "--stdio" || args[1] != "--models" || args[3] != "--manifest"
-    || args[5] != "--device" || args[6] is not ("cpu" or "auto")) return 91;
+// Accepts the 7-argument default form and the 9-argument form that also carries --provider-install.
+if (args.Length is not (7 or 9) || args[0] != "--stdio" || args[1] != "--models" || args[3] != "--manifest"
+    || args[5] != "--device" || args[6] is not ("cpu" or "auto" or "discrete-gpu" or "npu" or "gpu")) return 91;
+if (args.Length == 9 && (args[7] != "--provider-install" || args[8] is not ("true" or "false"))) return 91;
+var installAllowed = args.Length == 7 || args[8] == "true";
+var requestedProvider = args[6] switch
+{
+    "cpu" => "CPUExecutionProvider",
+    "auto" => "device-auto-with-real-model-gates",
+    "discrete-gpu" => "device-discrete-gpu-with-real-model-gates",
+    "npu" => "device-npu-with-real-model-gates",
+    _ => "device-gpu-with-real-model-gates"
+};
 var directory = args[2];
 var mode = Path.GetFileName(directory).Split(' ')[0];
 if (args[4] != Path.Combine(directory, "manifest with spaces &.json")) return 92;
@@ -13,7 +24,7 @@ var audit = Path.Combine(directory, "audit.jsonl");
 var first = !File.Exists(audit);
 void Log(object item) => File.AppendAllText(audit, JsonSerializer.Serialize(item) + "\n");
 void Emit(object item) { Console.WriteLine(JsonSerializer.Serialize(item)); Console.Out.Flush(); }
-Log(new { started = Environment.ProcessId, device = args[6] });
+Log(new { started = Environment.ProcessId, device = args[6], providerInstall = installAllowed });
 if ((mode is "startup-timeout" or "startup-cancel") && first) await Task.Delay(10000);
 if (mode == "ready-false") { Emit(new { ready = false, protocol = 1, error = "synthetic missing models" }); return 1; }
 if (mode == "stderr") { await Console.Error.WriteAsync(new string('e', 3 * 1024 * 1024)); await Console.Error.FlushAsync(); }
@@ -21,8 +32,8 @@ object Info(bool changed = false) => new {
     model = mode == "model" ? "wrong" : "onnx-community/embeddinggemma-2-ONNX",
     revision = "daa72c51243991dfcaf9f9137d2c573d8f7790c0", runtime = "windows-ml-ort-1.24.3", dtype = "q4",
     dim = 768, text_only = mode == "mode", profile_id = mode == "profile" ? "bad" : new string(changed || (mode == "restart-profile" && !first) ? 'b' : 'a', 64),
-    validation = "unverified-source-integration", requested_provider = args[6] == "cpu" ? "CPUExecutionProvider" : "device-candidates-with-real-model-gates",
-    provider_downloads_allowed = mode == "downloads" || args[6] == "auto", sessions_loaded = new { text = false, vision = false, audio = false }
+    validation = "unverified-source-integration", requested_provider = requestedProvider,
+    provider_downloads_allowed = mode == "downloads" || installAllowed, backend_status = mode == "nostatus" ? (object?)null : new { epoch = 0, providers = Array.Empty<object>(), graphs = Array.Empty<object>() }, sessions_loaded = new { text = false, vision = false, audio = false }
 };
 object Capabilities() => new { text = mode != "capabilities", image = mode != "text-only", audio = mode != "text-only" };
 Emit(new { ready = true, protocol = mode == "protocol" ? 2 : 1, info = Info(), capabilities = Capabilities() });

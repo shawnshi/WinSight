@@ -145,7 +145,27 @@ await Test("opt-in auto is reported as request, not actual GPU", async () =>
     var directory = Scenario("success");
     await using var client = NewClient(directory, fake, automatic: true);
     var info = await client.GetInfoAsync();
-    Check(info.RequestedProvider == "device-candidates-with-real-model-gates", "Auto provider misreported.");
+    Check(info.RequestedProvider == "device-auto-with-real-model-gates", "Auto provider misreported.");
+});
+await Test("device preference and provider-install policy reach the host literally", async () =>
+{
+    foreach (var (accelerator, expected) in new[]
+    {
+        ("npu", "device-npu-with-real-model-gates"),
+        ("gpu", "device-gpu-with-real-model-gates"),
+        ("discrete-gpu", "device-discrete-gpu-with-real-model-gates"),
+        ("cpu", "CPUExecutionProvider")
+    })
+    {
+        var directory = Scenario("success");
+        await using var client = new InferenceHostClient(fake, directory, Path.Combine(directory, "manifest with spaces &.json"),
+            accelerator, false, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+        var info = await client.GetInfoAsync();
+        Check(info.RequestedProvider == expected, "Selected preference was not reported literally: " + accelerator);
+        var started = Audit(directory).Single(item => item.TryGetProperty("started", out _));
+        Check(started.GetProperty("device").GetString() == accelerator, "Device argument differed from the selection.");
+        Check(started.GetProperty("providerInstall").GetBoolean() == false, "Provider install suppression was not passed.");
+    }
 });
 await Test("stderr flood is drained without deadlock", async () =>
 {
