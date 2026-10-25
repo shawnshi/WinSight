@@ -33,7 +33,7 @@ public sealed record EmbeddingInput(string Operation, string Value, int Budget =
 public sealed record EmbeddingResult(float[]? Vector, string? Error = null);
 public sealed record EmbeddingInfo(string ProfileId, int Dimension, string Runtime, string Model,
     string Revision, string RequestedProvider, string Validation,
-    IReadOnlyList<string> Capabilities);
+    IReadOnlyList<string> Capabilities, string BackendStatus = "");
 
 public interface ISearchService
 {
@@ -102,6 +102,8 @@ public sealed class AppSettings
     public string? InferenceExecutable { get; set; }
     public string? ManifestPath { get; set; }
     public WindowPlacement? Window { get; set; }
+    public string Accelerator { get; set; } = "auto";
+    public bool InstallExecutionProviders { get; set; } = true;
 }
 public sealed class IndexHours
 {

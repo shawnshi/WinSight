@@ -57,6 +57,8 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
     public string RequestedProvider => embeddingInfo?.RequestedProvider ?? "CPU (Default)";
     public string ValidationStatus => embeddingInfo?.Validation ?? "Unprobed";
     public IReadOnlyList<string> Capabilities => embeddingInfo?.Capabilities ?? [];
+    public string BackendStatusRaw => embeddingInfo?.BackendStatus ?? "";
+    public string BackendStatusSummary => SummarizeBackendStatus(embeddingInfo?.BackendStatus);
 
     public StorageModelViewModel(IDesktopBackend backend)
     {
@@ -107,6 +109,8 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(RequestedProvider));
             OnPropertyChanged(nameof(ValidationStatus));
             OnPropertyChanged(nameof(Capabilities));
+            OnPropertyChanged(nameof(BackendStatusRaw));
+            OnPropertyChanged(nameof(BackendStatusSummary));
         }
         catch (Exception ex)
         {
@@ -118,6 +122,99 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
         {
             IsInspecting = false;
         }
+    }
+
+    public static string SummarizeBackendStatus(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "未提供状态";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                return Truncate(raw, 200);
+            }
+
+            var parts = new List<string>();
+
+            if (root.TryGetProperty("epoch", out var epochProp) && epochProp.TryGetInt64(out var epoch))
+            {
+                parts.Add($"Epoch: {epoch}");
+            }
+
+            if (root.TryGetProperty("device", out var deviceProp) && deviceProp.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                parts.Add($"Device: {deviceProp.GetString()}");
+            }
+
+            if (root.TryGetProperty("providers", out var providersProp) && providersProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                var providerList = new List<string>();
+                foreach (var item in providersProp.EnumerateArray())
+                {
+                    if (item.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    {
+                        var name = item.TryGetProperty("name", out var n) ? n.GetString() : null;
+                        var state = item.TryGetProperty("state", out var s) ? s.GetString() : null;
+                        if (name != null)
+                        {
+                            providerList.Add(state != null ? $"{name} ({state})" : name);
+                        }
+                    }
+                    else if (item.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        providerList.Add(item.GetString()!);
+                    }
+                }
+                if (providerList.Count > 0)
+                {
+                    parts.Add($"Providers: {string.Join(", ", providerList)}");
+                }
+            }
+
+            if (root.TryGetProperty("graphs", out var graphsProp) && graphsProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                var graphList = new List<string>();
+                foreach (var item in graphsProp.EnumerateArray())
+                {
+                    if (item.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    {
+                        var g = item.TryGetProperty("graph", out var gp) ? gp.GetString() : null;
+                        var candidate = item.TryGetProperty("eligible_candidate", out var ec) ? ec.GetString() : null;
+                        var last = item.TryGetProperty("last_execution", out var le) ? le.GetString() : null;
+                        if (g != null)
+                        {
+                            graphList.Add($"{g}: {candidate ?? last ?? "CPU"}");
+                        }
+                    }
+                }
+                if (graphList.Count > 0)
+                {
+                    parts.Add($"Graphs: {string.Join("; ", graphList)}");
+                }
+            }
+
+            if (parts.Count > 0)
+            {
+                return string.Join(" | ", parts);
+            }
+
+            var props = root.EnumerateObject().Take(4)
+                .Select(p => $"{p.Name}: {Truncate(p.Value.ToString(), 40)}");
+            var summary = string.Join(", ", props);
+            return string.IsNullOrEmpty(summary) ? Truncate(raw, 200) : summary;
+        }
+        catch
+        {
+            return Truncate(raw, 200);
+        }
+    }
+
+    private static string Truncate(string text, int maxLength)
+    {
+        var trimmed = text.Trim();
+        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength] + "...";
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

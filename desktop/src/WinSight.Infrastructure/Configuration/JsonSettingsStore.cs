@@ -108,6 +108,8 @@ public sealed class JsonSettingsStore(string settingsPath) : ISettingsStore
                 || path.StartsWith(@"\\?\GLOBALROOT", StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidDataException("Storage, model and executable paths must be absolute when supplied.");
         if (string.IsNullOrWhiteSpace(settings.Hotkey)) throw new InvalidDataException("Hotkey must not be empty.");
+        if (settings.Accelerator is not ("auto" or "discrete-gpu" or "npu" or "gpu" or "cpu"))
+            throw new InvalidDataException($"Unsupported accelerator '{settings.Accelerator}'. Allowed values: auto, discrete-gpu, npu, gpu, cpu.");
     }
 
     private static void RejectDuplicateProperties(JsonElement element)

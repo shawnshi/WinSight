@@ -13,7 +13,8 @@ public sealed class InferenceHostClient : IEmbeddingService
     private const int MaxPending = 32;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private readonly string executable, modelDirectory, manifestPath;
-    private readonly bool automaticProviders;
+    private readonly string accelerator;
+    private readonly bool installExecutionProviders;
     private readonly TimeSpan startupTimeout, requestTimeout;
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
@@ -23,23 +24,38 @@ public sealed class InferenceHostClient : IEmbeddingService
     private int pending, disposed;
     private long nextId;
 
-    public InferenceHostClient(string executable, string modelDirectory, string manifestPath, bool automaticProviders = false)
-        : this(executable, modelDirectory, manifestPath, automaticProviders, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(120)) { }
+    public InferenceHostClient(string executable, string modelDirectory, string manifestPath,
+        string accelerator = "auto", bool installExecutionProviders = true)
+        : this(executable, modelDirectory, manifestPath, accelerator, installExecutionProviders,
+            TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(120)) { }
 
-    internal InferenceHostClient(string executable, string modelDirectory, string manifestPath, bool automaticProviders,
+    public InferenceHostClient(string executable, string modelDirectory, string manifestPath,
+        bool automaticProviders)
+        : this(executable, modelDirectory, manifestPath, automaticProviders ? "auto" : "cpu",
+            automaticProviders, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(120)) { }
+
+    internal InferenceHostClient(string executable, string modelDirectory, string manifestPath,
+        string accelerator, bool installExecutionProviders,
         TimeSpan startupTimeout, TimeSpan requestTimeout)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
         ArgumentException.ThrowIfNullOrWhiteSpace(modelDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(manifestPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(accelerator);
         if (startupTimeout <= TimeSpan.Zero || requestTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(requestTimeout));
         this.executable = executable;
         this.modelDirectory = modelDirectory;
         this.manifestPath = manifestPath;
-        this.automaticProviders = automaticProviders;
+        this.accelerator = accelerator;
+        this.installExecutionProviders = installExecutionProviders;
         this.startupTimeout = startupTimeout;
         this.requestTimeout = requestTimeout;
     }
+
+    internal InferenceHostClient(string executable, string modelDirectory, string manifestPath,
+        bool automaticProviders, TimeSpan startupTimeout, TimeSpan requestTimeout)
+        : this(executable, modelDirectory, manifestPath, automaticProviders ? "auto" : "cpu",
+            automaticProviders, startupTimeout, requestTimeout) { }
 
     public Task<EmbeddingInfo> GetInfoAsync(CancellationToken cancellationToken = default) => ExecuteAsync(async token =>
     {
@@ -123,12 +139,34 @@ public sealed class InferenceHostClient : IEmbeddingService
         }
     }
 
+    internal static IReadOnlyList<string> BuildArguments(string modelDirectory, string manifestPath,
+        string accelerator, bool installExecutionProviders)
+    {
+        var args = new List<string> { "--stdio", "--models", modelDirectory, "--manifest", manifestPath, "--device", accelerator };
+        if (!installExecutionProviders)
+        {
+            args.Add("--provider-install");
+            args.Add("false");
+        }
+        return args;
+    }
+
+    internal static string ExpectedRequestedProvider(string accelerator) => accelerator switch
+    {
+        "cpu" => "CPUExecutionProvider",
+        "auto" => "device-auto-with-real-model-gates",
+        "discrete-gpu" => "device-discrete-gpu-with-real-model-gates",
+        "npu" => "device-npu-with-real-model-gates",
+        "gpu" => "device-gpu-with-real-model-gates",
+        _ => throw new ArgumentException($"Unsupported accelerator: '{accelerator}'. Allowed: auto, discrete-gpu, npu, gpu, cpu.", nameof(accelerator))
+    };
+
     private async Task EnsureStartedAsync(CancellationToken token)
     {
         if (session is not null) return;
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var argument in new[] { "--stdio", "--models", modelDirectory, "--manifest", manifestPath, "--device", automaticProviders ? "auto" : "cpu" })
+        foreach (var argument in BuildArguments(modelDirectory, manifestPath, accelerator, installExecutionProviders))
             start.ArgumentList.Add(argument);
         session = Session.Start(start);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -195,17 +233,26 @@ public sealed class InferenceHostClient : IEmbeddingService
         var runtime = Text(info, "runtime");
         Require(runtime.StartsWith("windows-ml-ort-", StringComparison.Ordinal) && runtime.Length > 15, "Invalid host runtime.");
         var provider = Text(info, "requested_provider");
-        Require(provider == (automaticProviders ? "device-candidates-with-real-model-gates" : "CPUExecutionProvider"), "Host requested provider mismatch.");
-        Require(Flag(info, "provider_downloads_allowed") == automaticProviders, "Host provider download policy mismatch.");
+        var expectedProvider = ExpectedRequestedProvider(accelerator);
+        Require(provider == expectedProvider, "Host requested provider mismatch.");
+        Require(Flag(info, "provider_downloads_allowed") == installExecutionProviders, "Host provider download policy mismatch.");
         var textOnly = Flag(info, "text_only");
         var capabilities = Field(root, "capabilities", JsonValueKind.Object);
         var text = Flag(capabilities, "text");
         var image = Flag(capabilities, "image");
         var audio = Flag(capabilities, "audio");
         Require(!textOnly && text, "Host mode/capabilities differ from the requested full-media mode.");
+        var backendStatus = "";
+        if (info.TryGetProperty("backend_status", out var statusProp)
+            && statusProp.ValueKind != JsonValueKind.Null && statusProp.ValueKind != JsonValueKind.Undefined)
+        {
+            backendStatus = statusProp.ValueKind == JsonValueKind.String
+                ? statusProp.GetString() ?? ""
+                : statusProp.GetRawText();
+        }
         return new EmbeddingInfo(profile, VectorContract.Dimension, runtime, model, revision, provider,
             Text(info, "validation"), Array.AsReadOnly(new[] { ("text", text), ("image", image), ("audio", audio) }
-                .Where(item => item.Item2).Select(item => item.Item1).ToArray()));
+                .Where(item => item.Item2).Select(item => item.Item1).ToArray()), backendStatus);
     }
 
     private void CheckIdentity(EmbeddingInfo info)
@@ -213,7 +260,8 @@ public sealed class InferenceHostClient : IEmbeddingService
         if (identity is null) return;
         Require(identity.ProfileId == info.ProfileId && identity.Dimension == info.Dimension && identity.Runtime == info.Runtime
             && identity.Model == info.Model && identity.Revision == info.Revision && identity.RequestedProvider == info.RequestedProvider
-            && identity.Validation == info.Validation && identity.Capabilities.SequenceEqual(info.Capabilities), "Host embedding identity changed.");
+            && identity.Validation == info.Validation && identity.Capabilities.SequenceEqual(info.Capabilities)
+            && identity.BackendStatus == info.BackendStatus, "Host embedding identity changed.");
     }
 
     private static IReadOnlyList<EmbeddingResult> ReadBatch(JsonElement root, int count)
