@@ -99,7 +99,7 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
         {
             embeddingInfo = await backend.GetEmbeddingInfoAsync();
             HasEmbeddingInfo = true;
-            StatusMessage = "Embedding host online and verified (CPU default).";
+            StatusMessage = DescribeInspection(embeddingInfo);
 
             OnPropertyChanged(nameof(ProfileId));
             OnPropertyChanged(nameof(Dimension));
@@ -208,6 +208,74 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
         catch
         {
             return Truncate(raw, 200);
+        }
+    }
+
+    // The message must describe what the host actually reported, not a preferred default.
+    internal static string DescribeInspection(EmbeddingInfo? info)
+    {
+        if (info is null) return "Embedding host did not report status.";
+        var provider = info.RequestedProvider;
+        var preference = provider switch
+        {
+            "CPUExecutionProvider" => "cpu only",
+            "device-auto-with-real-model-gates" => "auto: discrete GPU, then NPU, then integrated GPU, then CPU",
+            "device-discrete-gpu-with-real-model-gates" => "discrete GPU only",
+            "device-npu-with-real-model-gates" => "NPU only",
+            "device-gpu-with-real-model-gates" => "any GPU",
+            _ => provider
+        };
+        var graphs = SummarizeGraphRouting(info.BackendStatus);
+        return graphs.Length == 0
+            ? $"Embedding host online. Device policy: {preference}. Acceleration qualifies on the first real embedding run."
+            : $"Embedding host online. Device policy: {preference}. Graph routing: {graphs}";
+    }
+
+    internal static string SummarizeGraphRouting(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return string.Empty;
+            var rejected = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (root.TryGetProperty("providers", out var providers) && providers.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var item in providers.EnumerateArray())
+                {
+                    if (item.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                    var name = item.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    var state = item.TryGetProperty("state", out var s) ? s.GetString() : null;
+                    if (name is null || state is null) continue;
+                    var slash = name.IndexOf('/', StringComparison.Ordinal);
+                    if (slash > 0 && state.StartsWith("rejected:", StringComparison.Ordinal))
+                        rejected[name[..slash]] = state;
+                }
+            }
+            if (!root.TryGetProperty("graphs", out var graphs) || graphs.ValueKind != System.Text.Json.JsonValueKind.Array) return string.Empty;
+            var parts = new List<string>();
+            foreach (var item in graphs.EnumerateArray())
+            {
+                if (item.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                var graph = item.TryGetProperty("graph", out var g) ? g.GetString() : null;
+                if (graph is null) continue;
+                var eligible = item.TryGetProperty("eligible_candidate", out var ec) ? ec.GetString() : null;
+                var candidates = item.TryGetProperty("candidate_devices", out var cd) && cd.ValueKind == System.Text.Json.JsonValueKind.Array ? cd.GetArrayLength() : 0;
+                if (eligible is not null && !eligible.StartsWith("CPUExecutionProvider", StringComparison.Ordinal))
+                    parts.Add($"{graph}: {eligible}");
+                else if (rejected.TryGetValue(graph, out var reason))
+                    parts.Add($"{graph}: CPU, accelerator rejected ({reason})");
+                else if (candidates > 0)
+                    parts.Add($"{graph}: CPU, {candidates} candidate(s) await real-model qualification");
+                else
+                    parts.Add($"{graph}: CPU, no applicable device");
+            }
+            return string.Join("; ", parts);
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 

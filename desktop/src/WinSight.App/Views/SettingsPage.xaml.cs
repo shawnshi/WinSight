@@ -105,14 +105,8 @@ public sealed partial class SettingsPage : Page
     {
         if (AcceleratorComboBox.SelectedItem is ComboBoxItem item)
         {
-            ViewModel.Accelerator = (item.Tag as string) ?? (item.Content.ToString() switch
-            {
-                "独显 GPU" => "discrete-gpu",
-                "NPU" => "npu",
-                "GPU" => "gpu",
-                "CPU" => "cpu",
-                _ => "auto"
-            });
+            // Every item carries an explicit Tag; display text is presentation only.
+            ViewModel.Accelerator = (item.Tag as string) ?? "auto";
         }
     }
 

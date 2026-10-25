@@ -243,18 +243,18 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="2">
-                            <TextBlock Text="加速设备" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
-                            <TextBlock Text="选择用于向量嵌入与模型推理的硬件加速设备。"
+                            <TextBlock Text="Acceleration device" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="Choose the hardware used for embedding and model inference."
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
                         <ComboBox Grid.Column="1"
                                   x:Name="AcceleratorComboBox"
                                   AutomationProperties.AutomationId="AcceleratorComboBox"
-                                  AutomationProperties.Name="加速设备"
+                                  AutomationProperties.Name="Acceleration device"
                                   SelectionChanged="OnAcceleratorSelectionChanged">
-                            <ComboBoxItem Content="自动（独显优先）" Tag="auto"/>
-                            <ComboBoxItem Content="独显 GPU" Tag="discrete-gpu"/>
+                            <ComboBoxItem Content="Automatic (discrete GPU first)" Tag="auto"/>
+                            <ComboBoxItem Content="Discrete GPU" Tag="discrete-gpu"/>
                             <ComboBoxItem Content="NPU" Tag="npu"/>
                             <ComboBoxItem Content="GPU" Tag="gpu"/>
                             <ComboBoxItem Content="CPU" Tag="cpu"/>
@@ -268,15 +268,15 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="2">
-                            <TextBlock Text="允许 Windows ML 安装/注册执行提供程序" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
-                            <TextBlock Text="允许下载或注册适用的 DirectML / NPU / GPU 执行提供程序组件。"
+                            <TextBlock Text="Allow Windows ML to install and register execution providers" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="Allow downloading or registering the applicable DirectML, NPU or GPU execution provider components."
                                        TextWrapping="Wrap"
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
                         <ToggleSwitch Grid.Column="1"
                                       AutomationProperties.AutomationId="InstallExecutionProvidersToggle"
-                                      AutomationProperties.Name="允许 Windows ML 安装/注册执行提供程序"
+                                      AutomationProperties.Name="Allow Windows ML to install and register execution providers"
                                       IsOn="{x:Bind ViewModel.InstallExecutionProviders, Mode=TwoWay}"/>
                     </Grid>
                 </StackPanel>

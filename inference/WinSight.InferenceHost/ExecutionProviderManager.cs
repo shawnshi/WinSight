@@ -58,6 +58,9 @@ internal sealed class ExecutionProviderManager : IDisposable
         "QNNExecutionProvider", "NvTensorRtRtxExecutionProvider", "DirectMLExecutionProvider",
         "DmlExecutionProvider"
     };
+    // Native EP qualification runs in-process, so an EP whose session creation faults would kill the
+    // host. RyzenAILightExecutionProvider crashed inside InferenceSession.Init on this machine
+    // (0xC0000005) and stays out of the candidate set until qualification is isolated in a child process.
 
     internal ExecutionProviderManager(ModelManifest models, string preference = "auto", bool providerInstall = true)
     {
