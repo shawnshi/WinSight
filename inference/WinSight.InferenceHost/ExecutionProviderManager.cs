@@ -58,9 +58,69 @@ internal sealed class ExecutionProviderManager : IDisposable
         "QNNExecutionProvider", "NvTensorRtRtxExecutionProvider", "DirectMLExecutionProvider",
         "DmlExecutionProvider"
     };
-    // Native EP qualification runs in-process, so an EP whose session creation faults would kill the
-    // host. RyzenAILightExecutionProvider crashed inside InferenceSession.Init on this machine
-    // (0xC0000005) and stays out of the candidate set until qualification is isolated in a child process.
+    // RyzenAILightExecutionProvider remains excluded in this slice; to re-enable once child isolation is verified: add "RyzenAILightExecutionProvider" to Allowed.
+
+    internal static string? ChildProcessOverridePath { get; set; }
+    internal static TimeSpan? ChildTimeoutOverride { get; set; }
+
+    static ExecutionProviderManager()
+    {
+        var envOverride = Environment.GetEnvironmentVariable("WINSIGHT_TEST_QUALIFY_CHILD");
+        if (!string.IsNullOrWhiteSpace(envOverride))
+            ChildProcessOverridePath = envOverride;
+
+        var timeoutEnv = Environment.GetEnvironmentVariable("WINSIGHT_TEST_QUALIFY_TIMEOUT_MS");
+        if (int.TryParse(timeoutEnv, out var ms) && ms > 0)
+            ChildTimeoutOverride = TimeSpan.FromMilliseconds(ms);
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string? lpName);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(IntPtr hJob, int JobObjectInformationClass, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryLimit;
+        public UIntPtr PeakJobMemoryLimit;
+    }
+
+    private const int JobObjectExtendedLimitInformation = 9;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
 
     internal ExecutionProviderManager(ModelManifest models, string preference = "auto", bool providerInstall = true)
     {
@@ -491,44 +551,202 @@ internal sealed class ExecutionProviderManager : IDisposable
     {
         var slot = slots[probe.Graph];
         var label = device.EpName + ":" + device.HardwareDevice.Type + ":" + device.HardwareDevice.DeviceId;
-        var directory = Path.Combine(Path.GetTempPath(), "WinSight-ep-" + Guid.NewGuid().ToString("N"));
-        InferenceSession? candidate = null;
+        states[probe.Graph] = "qualifying " + label;
+
+        // Check input size limit before serialization
+        long totalInputBytes = probe.Inputs.Sum(input => input.Value switch
+        {
+            Tensor<float> f => (long)f.Length * 4,
+            Tensor<long> l => (long)l.Length * 8,
+            Tensor<bool> b => (long)b.Length * 1,
+            _ => 0
+        });
+        if (totalInputBytes > 8 * 1024 * 1024)
+        {
+            states[probe.Graph + "/" + label] = "rejected: probe too large";
+            return false;
+        }
+
+        // Measure CPU baseline in parent process
+        double cpuTime;
+        using (var cpuRunOptions = new RunOptions())
+        {
+            try
+            {
+                cpuTime = Median(slot.Cpu.Value, probe, cpuRunOptions);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)
+            {
+                states[probe.Graph + "/" + label] = $"rejected: CPU baseline failed: {error.GetType().Name}: {error.Message}";
+                return false;
+            }
+        }
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "WinSight-qualify-" + Guid.NewGuid().ToString("N"));
+        IntPtr jobHandle = IntPtr.Zero;
         try
         {
-            Directory.CreateDirectory(directory);
-            using var options = ModelProbe.CpuOptions();
-            options.AppendExecutionProvider(OrtEnv.Instance(), new[] { device }, new Dictionary<string, string>());
-            options.ProfileOutputPathPrefix = Path.Combine(directory, "nodes");
-            options.EnableProfiling = true;
-            states[probe.Graph] = "qualifying " + label;
-            candidate = new InferenceSession(models.Graph(probe.Graph), options);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stopping.Token);
-            timeout.CancelAfter(TimeSpan.FromMinutes(2));
-            using var runOptions = new RunOptions();
-            using var cancellation = timeout.Token.Register(() => runOptions.Terminate = true);
-            var output = Execute(candidate, probe.Inputs, probe.Output, runOptions);
-            if (!ValidResult(probe.Graph, output, probe.ExpectedRows) || !Equivalent(probe.Reference, output))
-                throw new InvalidDataException("CPU numerical/shape/output agreement failed");
-            var trace = candidate.EndProfiling();
-            var traceFile = new FileInfo(trace);
-            if (!traceFile.Exists || traceFile.Length > 32 * 1024 * 1024 || !HasComputePlacement(trace, device.EpName))
-                throw new InvalidDataException("No target-EP compute-node execution evidence");
-            // CPU InferenceSession supports concurrent Run; background qualification never holds the foreground gate.
-            var cpuTime = Median(slot.Cpu.Value, probe, runOptions);
-            var epTime = Median(candidate, probe, runOptions);
-            if (epTime >= cpuTime * 0.95) throw new InvalidDataException("Warm execution did not improve CPU median by 5%");
-            timeout.Token.ThrowIfCancellationRequested();
-            lock (slot.Gate)
+            Directory.CreateDirectory(tempDir);
+            var inputsPath = Path.Combine(tempDir, "inputs.bin");
+            try
             {
-                if (stopping.IsCancellationRequested) return false;
-                slot.Active = candidate;
-                slot.ActiveName = label;
-                slot.ActiveSignature = probe.Signature;
-                candidate = null;
-                Interlocked.Increment(ref epoch);
-                states[probe.Graph] = $"eligible {label} for observed input contract; cosine>=0.999; warm median CPU={cpuTime:F3}ms EP={epTime:F3}ms";
+                EpQualificationChild.WriteTensorFile(inputsPath, probe.Inputs);
             }
-            return true;
+            catch (Exception ex)
+            {
+                states[probe.Graph + "/" + label] = $"rejected: probe too large: {ex.Message}";
+                return false;
+            }
+
+            var requestPath = Path.Combine(tempDir, "request.json");
+            var resultPath = Path.Combine(tempDir, "result.json");
+
+            var request = new EpQualificationRequest
+            {
+                Graph = probe.Graph,
+                ModelPath = models.Graph(probe.Graph),
+                EpName = device.EpName,
+                DeviceType = device.HardwareDevice.Type.ToString(),
+                DeviceId = device.HardwareDevice.DeviceId,
+                VendorId = device.HardwareDevice.VendorId,
+                OutputName = probe.Output,
+                ExpectedRows = probe.ExpectedRows,
+                ReferenceValues = probe.Reference.Values,
+                ReferenceShape = probe.Reference.Shape,
+                CpuMedianMs = cpuTime,
+                InputsPath = inputsPath
+            };
+
+            File.WriteAllText(requestPath, JsonSerializer.Serialize(request, new JsonSerializerOptions { WriteIndented = false }));
+
+            var hostExe = ChildProcessOverridePath ?? Environment.ProcessPath
+                ?? throw new InvalidOperationException("Host executable path is unavailable");
+
+            var timeout = ChildTimeoutOverride ?? TimeSpan.FromSeconds(120);
+
+            try
+            {
+                jobHandle = CreateJobObject(IntPtr.Zero, null);
+                if (jobHandle != IntPtr.Zero)
+                {
+                    var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                    var length = (uint)Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+                    var ptr = Marshal.AllocHGlobal((int)length);
+                    try
+                    {
+                        Marshal.StructureToPtr(info, ptr, false);
+                        SetInformationJobObject(jobHandle, JobObjectExtendedLimitInformation, ptr, length);
+                    }
+                    finally { Marshal.FreeHGlobal(ptr); }
+                }
+            }
+            catch { }
+
+            using var process = new Process();
+            process.StartInfo = new ProcessStartInfo
+            {
+                FileName = hostExe,
+                ArgumentList = { "--qualify-probe", requestPath, resultPath },
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true
+            };
+
+            process.Start();
+
+            if (jobHandle != IntPtr.Zero)
+            {
+                try { AssignProcessToJobObject(jobHandle, process.Handle); } catch { }
+            }
+
+            bool exited = process.WaitForExit((int)timeout.TotalMilliseconds);
+            if (!exited)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                process.WaitForExit(5000);
+                states[probe.Graph + "/" + label] = $"rejected: qualification timed out after {(int)timeout.TotalSeconds}s";
+                return false;
+            }
+
+            if (process.ExitCode != 0)
+            {
+                var stderr = process.StandardError.ReadToEnd();
+                var detail = string.IsNullOrWhiteSpace(stderr) ? $"exit code 0x{process.ExitCode:X8}" : stderr.Trim();
+                states[probe.Graph + "/" + label] = $"rejected: process exited with code 0x{process.ExitCode:X8}: {detail}";
+                return false;
+            }
+
+            if (!File.Exists(resultPath))
+            {
+                states[probe.Graph + "/" + label] = "rejected: qualification result missing";
+                return false;
+            }
+
+            EpQualificationResult? result;
+            try
+            {
+                result = JsonSerializer.Deserialize<EpQualificationResult>(File.ReadAllText(resultPath));
+            }
+            catch (Exception ex)
+            {
+                states[probe.Graph + "/" + label] = $"rejected: corrupt qualification result: {ex.Message}";
+                return false;
+            }
+
+            if (result is null)
+            {
+                states[probe.Graph + "/" + label] = "rejected: null qualification result";
+                return false;
+            }
+
+            if (!result.Qualified)
+            {
+                states[probe.Graph + "/" + label] = $"rejected: {result.Reason}";
+                return false;
+            }
+
+            // Gates validation on result
+            if (result.Cosine < 0.999 || result.EpMedianMs >= result.CpuMedianMs * 0.95)
+            {
+                states[probe.Graph + "/" + label] = "rejected: gate validation failed";
+                return false;
+            }
+
+            // Session activation in parent
+            InferenceSession? candidate = null;
+            try
+            {
+                using var options = ModelProbe.CpuOptions();
+                options.AppendExecutionProvider(OrtEnv.Instance(), new[] { device }, new Dictionary<string, string>());
+                candidate = new InferenceSession(models.Graph(probe.Graph), options);
+
+                lock (slot.Gate)
+                {
+                    if (stopping.IsCancellationRequested)
+                    {
+                        candidate.Dispose();
+                        return false;
+                    }
+                    slot.Active = candidate;
+                    slot.ActiveName = label;
+                    slot.ActiveSignature = probe.Signature;
+                    candidate = null;
+                    Interlocked.Increment(ref epoch);
+                    states[probe.Graph] = $"eligible {label} for observed input contract; cosine>=0.999; warm median CPU={result.CpuMedianMs:F3}ms EP={result.EpMedianMs:F3}ms";
+                }
+                return true;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)
+            {
+                states[probe.Graph + "/" + label] = $"rejected: session activation failed: {error.GetType().Name}: {error.Message}";
+                return false;
+            }
+            finally
+            {
+                candidate?.Dispose();
+            }
         }
         catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)
         {
@@ -537,9 +755,16 @@ internal sealed class ExecutionProviderManager : IDisposable
         }
         finally
         {
-            candidate?.Dispose();
-            try { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
-            catch (IOException error) { Console.Error.WriteLine("EP profile cleanup: " + error.Message); }
+            if (jobHandle != IntPtr.Zero)
+            {
+                try { CloseHandle(jobHandle); } catch { }
+            }
+            try
+            {
+                if (Directory.Exists(tempDir))
+                    Directory.Delete(tempDir, recursive: true);
+            }
+            catch (IOException error) { Console.Error.WriteLine("EP temp cleanup: " + error.Message); }
         }
     }
 
