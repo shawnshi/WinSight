@@ -56,9 +56,10 @@ internal sealed class ExecutionProviderManager : IDisposable
     {
         "OpenVINOExecutionProvider", "VitisAIExecutionProvider", "MIGraphXExecutionProvider",
         "QNNExecutionProvider", "NvTensorRtRtxExecutionProvider", "DirectMLExecutionProvider",
-        "DmlExecutionProvider"
+        "DmlExecutionProvider", "RyzenAILightExecutionProvider", "RyzenAIExecutionProvider"
     };
-    // RyzenAILightExecutionProvider remains excluded in this slice; to re-enable once child isolation is verified: add "RyzenAILightExecutionProvider" to Allowed.
+    // Re-enabled after qualification moved to a child process: a faulting provider is now rejected, not fatal.
+    // Kept as a named entry so it can be withdrawn again without touching the candidate logic.
 
     internal static string? ChildProcessOverridePath { get; set; }
     internal static TimeSpan? ChildTimeoutOverride { get; set; }
@@ -614,7 +615,8 @@ internal sealed class ExecutionProviderManager : IDisposable
                 ReferenceValues = probe.Reference.Values,
                 ReferenceShape = probe.Reference.Shape,
                 CpuMedianMs = cpuTime,
-                InputsPath = inputsPath
+                InputsPath = inputsPath,
+                ProviderInstallAllowed = providerInstall
             };
 
             File.WriteAllText(requestPath, JsonSerializer.Serialize(request, new JsonSerializerOptions { WriteIndented = false }));
@@ -656,6 +658,11 @@ internal sealed class ExecutionProviderManager : IDisposable
 
             process.Start();
 
+            // Drain concurrently: a native fault prints a multi-kilobyte stack, and a full pipe would
+            // block the child before exit and turn a real rejection into a false timeout.
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+
             if (jobHandle != IntPtr.Zero)
             {
                 try { AssignProcessToJobObject(jobHandle, process.Handle); } catch { }
@@ -672,7 +679,7 @@ internal sealed class ExecutionProviderManager : IDisposable
 
             if (process.ExitCode != 0)
             {
-                var stderr = process.StandardError.ReadToEnd();
+                var stderr = stderrTask.GetAwaiter().GetResult();
                 var detail = string.IsNullOrWhiteSpace(stderr) ? $"exit code 0x{process.ExitCode:X8}" : stderr.Trim();
                 states[probe.Graph + "/" + label] = $"rejected: process exited with code 0x{process.ExitCode:X8}: {detail}";
                 return false;

@@ -310,10 +310,15 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         return hr is 32 or 33;
     }
 
-    public async Task ReconcileRootAsync(string root, bool code, CancellationToken cancellationToken = default)
+    // Reconciliation enumerates the whole root, so it is gated: an explicit caller (startup, overflow,
+    // resume) forces it, while ordinary file events must not pay for a full diff on every save.
+    public async Task<bool> ReconcileRootAsync(string root, bool code, bool force = false, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!Directory.Exists(root)) return;
+        if (!Directory.Exists(root)) return false;
+        var dirty = dirtyRoots.ContainsKey(root);
+        var due = lastReconcileUtc is null || DateTimeOffset.UtcNow - lastReconcileUtc.Value >= reconcileInterval;
+        if (!force && !dirty && !due) return false;
 
         var existingFiles = await repository.ReadFilesAsync(cancellationToken).ConfigureAwait(false);
         var normRoot = FilePolicy.Normalize(root);
@@ -357,6 +362,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
         dirtyRoots.TryRemove(root, out _);
         lastReconcileUtc = DateTimeOffset.UtcNow;
+        return true;
     }
 
     private static IEnumerable<FileInfo> EnumerateFilesSafe(DirectoryInfo dir, bool code)

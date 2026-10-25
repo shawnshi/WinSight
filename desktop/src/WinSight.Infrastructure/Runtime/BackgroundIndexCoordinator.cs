@@ -28,6 +28,7 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     private CancellationTokenSource? activePolicyStop;
     private Task? activePolicyCancellation;
     private int disposed;
+    private bool queueReconciled;
 
     public Task Completion => worker;
     public Exception? Failure => worker.Exception?.GetBaseException();
@@ -142,15 +143,19 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
 
                 if (queue != null)
                 {
+                    // The first pass reconciles every root (offline changes); later passes only reconcile a
+                    // root after a watcher overflow, so ordinary saves stay on the per-file path.
+                    var force = !queueReconciled;
                     foreach (var code in new[] { false, true })
                     {
                         var roots = code ? settings.CodeFolders : settings.Folders;
                         foreach (var root in roots)
                         {
                             if (!AllowedNow() || !indexingAllowed()) break;
-                            await queue.ReconcileRootAsync(root, code, stop.Token).ConfigureAwait(false);
+                            await queue.ReconcileRootAsync(root, code, force, stop.Token).ConfigureAwait(false);
                         }
                     }
+                    queueReconciled = true;
 
                     var processed = await queue.ProcessReadyTasksAsync(50, stop.Token).ConfigureAwait(false);
                     if (processed > 0 && indexPaths != null)
