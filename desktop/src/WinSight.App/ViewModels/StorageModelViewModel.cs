@@ -14,6 +14,17 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
     private string? inspectionError;
     private string statusMessage = "Click 'Inspect Model' to probe embedding host.";
 
+    private IndexingQueueStatus? queue;
+    public string QueueSummary => queue is null
+        ? "Queue status unavailable."
+        : $"pending {queue.Pending}, settling {queue.Stabilizing}, ready {queue.Ready}, running {queue.Running}, failed {queue.Failed}, deferred {queue.Deferred}";
+    public string QueueHealth => queue is null
+        ? "—"
+        : $"dropped {queue.Dropped}, watcher overflows {queue.WatcherOverflows}, last reconcile {(queue.LastReconcileUtc is { } at ? at.ToLocalTime().ToString("HH:mm:ss") : "never")}, USN {queue.UsnState}";
+    public IReadOnlyList<string> BudgetRows => queue is null
+        ? Array.Empty<string>()
+        : queue.Budgets.Select(b => $"{b.Class}: extract {b.ExtractConcurrency}, inference {b.InferenceConcurrency} ({b.State})").ToArray();
+
     public string MigrationNotice =>
         $"Local preview. Active index: {DatabasePath}. Legacy indexes are not migrated.";
 
@@ -78,11 +89,29 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(PartialCount));
             OnPropertyChanged(nameof(FailedCount));
             OnPropertyChanged(nameof(StatusDetail));
+            await RefreshQueueStatusAsync();
         }
         catch (Exception ex)
         {
             StatusMessage = $"Status check failed: {ex.Message}";
         }
+    }
+
+    // The queue status is a read-only projection of the live coordinator; it never mutates indexing.
+    internal async Task RefreshQueueStatusAsync()
+    {
+        try
+        {
+            queue = await backend.GetIndexingQueueStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            queue = null;
+            StatusMessage = $"Queue status unavailable: {ex.Message}";
+        }
+        OnPropertyChanged(nameof(QueueSummary));
+        OnPropertyChanged(nameof(QueueHealth));
+        OnPropertyChanged(nameof(BudgetRows));
     }
 
     // Explicit user action: GetEmbeddingInfo starts the model host and hashes weights.

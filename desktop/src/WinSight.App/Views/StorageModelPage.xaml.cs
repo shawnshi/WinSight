@@ -33,4 +33,9 @@ public sealed partial class StorageModelPage : Page
     public bool Invert(bool value) => !value;
     public bool HasError(string? error) => !string.IsNullOrEmpty(error);
     public Visibility BoolToVisibility(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
+
+    private async void OnRefreshQueueClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.RefreshQueueStatusAsync();
+    }
 }

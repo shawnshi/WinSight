@@ -196,6 +196,15 @@ public sealed partial class DesktopBackend : IDesktopBackend
         if (changed && !paused && stopping == 0) background?.RequestReconciliation();
     }
 
+    public async Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var coordinator = background;
+        return coordinator is null
+            ? new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, "background-disabled", Array.Empty<IndexBudgetState>())
+            : await coordinator.GetIndexingQueueStatusAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default)
     {
         await lifecycle.WaitAsync(cancellationToken);

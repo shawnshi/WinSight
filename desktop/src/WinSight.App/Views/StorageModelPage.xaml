@@ -59,6 +59,32 @@
                 </StackPanel>
             </Border>
 
+            <!-- Incremental Index Queue -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Incremental Index Queue" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="{x:Bind ViewModel.QueueSummary, Mode=OneWay}" TextWrapping="Wrap"
+                               Style="{ThemeResource BodyTextBlockStyle}"/>
+                    <TextBlock Text="{x:Bind ViewModel.QueueHealth, Mode=OneWay}" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"/>
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.BudgetRows, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <TextBlock Text="{x:Bind}" Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <Button Content="Refresh Queue Status" Click="OnRefreshQueueClick"
+                            AutomationProperties.AutomationId="RefreshQueueStatusButton"/>
+                </StackPanel>
+            </Border>
+
             <!-- Embedding Model Diagnostics Card -->
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
