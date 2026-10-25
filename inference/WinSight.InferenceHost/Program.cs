@@ -13,6 +13,10 @@ internal static class Program
     {
         try
         {
+            if (args is ["--qualify-probe", var qualifyRequestPath, var qualifyResultPath])
+            {
+                return EpQualificationChild.Run(qualifyRequestPath, qualifyResultPath);
+            }
             if (args.Length > 0 && args[0] == "extract-media")
             {
                 if (args is not [_, var requestPath])
