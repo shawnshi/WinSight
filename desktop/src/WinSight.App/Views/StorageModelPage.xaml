@@ -101,6 +101,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="140"/>
@@ -122,8 +123,11 @@
                         <TextBlock Grid.Row="4" Grid.Column="0" Text="Execution Provider:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="4" Grid.Column="1" Text="{x:Bind ViewModel.RequestedProvider, Mode=OneWay}"/>
 
-                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Validation Status:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                        <TextBlock Grid.Row="5" Grid.Column="1" Text="{x:Bind ViewModel.ValidationStatus, Mode=OneWay}"/>
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Device &amp; EP Status:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="5" Grid.Column="1" Text="{x:Bind ViewModel.BackendStatusSummary, Mode=OneWay}" TextWrapping="Wrap"/>
+
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Validation Status:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="6" Grid.Column="1" Text="{x:Bind ViewModel.ValidationStatus, Mode=OneWay}"/>
                     </Grid>
                 </StackPanel>
             </Border>

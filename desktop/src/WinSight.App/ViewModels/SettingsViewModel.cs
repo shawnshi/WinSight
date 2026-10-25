@@ -22,6 +22,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string theme = "Default";
     private string codeEditor = "default";
     private bool openAtLogin;
+    private string accelerator = "auto";
+    private bool installExecutionProviders = true;
     private bool hasHotkeyConflict;
     private string? hotkeyConflictMessage;
     private string statusMessage = string.Empty;
@@ -99,6 +101,18 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         set => SetProperty(ref openAtLogin, value);
     }
 
+    public string Accelerator
+    {
+        get => accelerator;
+        set => SetProperty(ref accelerator, value);
+    }
+
+    public bool InstallExecutionProviders
+    {
+        get => installExecutionProviders;
+        set => SetProperty(ref installExecutionProviders, value);
+    }
+
     public bool HasHotkeyConflict
     {
         get => hasHotkeyConflict;
@@ -151,6 +165,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         theme = s.Theme;
         codeEditor = s.CodeEditor;
         openAtLogin = s.OpenAtLogin;
+        accelerator = s.Accelerator;
+        installExecutionProviders = s.InstallExecutionProviders;
 
         OnPropertyChanged(nameof(Hotkey));
         OnPropertyChanged(nameof(BackgroundIndexingEnabled));
@@ -164,6 +180,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(Theme));
         OnPropertyChanged(nameof(CodeEditor));
         OnPropertyChanged(nameof(OpenAtLogin));
+        OnPropertyChanged(nameof(Accelerator));
+        OnPropertyChanged(nameof(InstallExecutionProviders));
     }
 
     public async Task<bool> SaveAsync()
@@ -172,7 +190,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         {
             Hotkey = hotkey, BackgroundIndexing = backgroundIndexingEnabled, BackgroundTouched = backgroundIndexingTouched,
             BackgroundRevision = backgroundEditRevision, HoursOn = indexHoursOn, HoursStart = indexHoursStart, HoursEnd = indexHoursEnd,
-            ProcessorOnly = processorOnly, TrayClick = trayClick, Theme = theme, CodeEditor = codeEditor, OpenAtLogin = openAtLogin
+            ProcessorOnly = processorOnly, TrayClick = trayClick, Theme = theme, CodeEditor = codeEditor, OpenAtLogin = openAtLogin,
+            Accelerator = accelerator, InstallExecutionProviders = installExecutionProviders
         };
         await saveGate.WaitAsync();
         string? previousHotkey = null;
@@ -230,6 +249,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             latest.Theme = input.Theme;
             latest.CodeEditor = input.CodeEditor;
             latest.OpenAtLogin = input.OpenAtLogin;
+            latest.Accelerator = input.Accelerator;
+            latest.InstallExecutionProviders = input.InstallExecutionProviders;
             await backend.SaveSettingsAsync(latest);
             settings = latest;
             if (backgroundEditRevision == input.BackgroundRevision) backgroundIndexingTouched = false;

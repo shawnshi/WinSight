@@ -46,6 +46,14 @@ public sealed partial class SettingsPage : Page
 
         TrayClickComboBox.SelectedIndex = ViewModel.TrayClick == "window" ? 1 : 0;
         CodeEditorComboBox.SelectedIndex = ViewModel.CodeEditor == "vscode" ? 1 : 0;
+        AcceleratorComboBox.SelectedIndex = ViewModel.Accelerator switch
+        {
+            "discrete-gpu" => 1,
+            "npu" => 2,
+            "gpu" => 3,
+            "cpu" => 4,
+            _ => 0
+        };
     }
 
     private void OnHotkeyConflict(string message)
@@ -90,6 +98,21 @@ public sealed partial class SettingsPage : Page
             ViewModel.CodeEditor = item.Content.ToString()?.Contains("Visual Studio Code", StringComparison.OrdinalIgnoreCase) == true
                 ? "vscode"
                 : "default";
+        }
+    }
+
+    private void OnAcceleratorSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (AcceleratorComboBox.SelectedItem is ComboBoxItem item)
+        {
+            ViewModel.Accelerator = (item.Tag as string) ?? (item.Content.ToString() switch
+            {
+                "独显 GPU" => "discrete-gpu",
+                "NPU" => "npu",
+                "GPU" => "gpu",
+                "CPU" => "cpu",
+                _ => "auto"
+            });
         }
     }
 
