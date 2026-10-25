@@ -1,6 +1,14 @@
-# 原生源码合入范围（2026-10-24）
+# 原生源码合入范围（2026-10-25）
 
-本次合入是开发预览源码同步，不是安装版、完整产品或 Release 验收。状态字段见 [status.json](status.json)；具体实现以同一提交中的源码、工程、锁文件和清单为准。
+本次是开发预览源码同步，不发布私有安装包或用户绑定，也不是完整产品／Release 验收。此前本机私有包的标准安装及自包含 GUI 启动已通过有界核验；与本轮源码构建／测试及历史合成 GUI 验收分别陈述。状态字段见 [status.json](status.json)，部署摘要见 [本机安装与启动验证](local-install-validation.md)。
+
+## 本轮安装修复与发布声明
+
+合入非零原生生产者提前失败、带缓冲管道 peer-close 生命周期、Inno 6.7.3 回调输出日志及 case-only LNK Target 的卷号／128-bit FileID 验证；Arguments/WorkingDirectory 仍精确，wire/owner/NoCommit/时钟合同不变。公开模板停止门保持，入口、worker、launcher 与 builder 的固定源码 SHA 同步闭合，没有发布私有路径、绑定或恢复执行器。
+
+App 的 Windows App SDK 自包含文件、CLI 的 win-x64 RID 及 Host/OCR 的 self-contained 声明已补齐。四个工程各自 locked restore／publish exit 0，20 个依赖锁文件与基线 Git blob 一致；Core 不接受全局 RID/RuntimeFrameworkVersion 覆盖。此处只验构建边界，不新增模型、Office、完整 CLI 行为或安装运行额度。
+
+本机真实安装使用此前私有物化包，1074 文件、登记提交指针、两条菜单链接及标准 finalization 一致；已安装每日启动器随后启动可响应主窗口。公开源码测试不冒充该私有包，也不声称本轮重新物化／安装了新的公开源码图。原始本机材料未发布，详见脱敏验证摘要。
 
 ## 纳入范围
 
@@ -40,7 +48,7 @@ PPT 要求空闲独占；已有 POWERPNT 时不激活或接管。导航核对原
 
 维护者接受而未宣称修复的 P2 包括：receipt 先于 handoff 导致某些失败保守保留；预览取消与定位令牌的剩余耦合边界（几何异常后的栅格／租约清理已通过有界合成控件用例，不代表任意本地资源路径）；Word 映射与包策略预检边界；Excel 策略边界和历史 LSP；后端最终 CTS／semaphore 释放；外部设置文件在快照后的变更窗口。未知移交结果不能自动重放。
 
-CLI 的 RID／锁图问题仍未解决，本轮仅有此前静态 TFM 调整，不宣称新的 CLI restore/build 通过。旧自动 tokenizer 供应链 validator 仍失败，人工审查不改写历史失败。完整产品 GUI、多 DPI、真实 Office GUI 全语料、广泛 OCR／Office 保真和模型相关性、性能 SLA、.NET self-contained、完整 OCR 打包、法律分发、安装／升级／卸载／恢复和 Release 仍缺少各自验收。
+CLI 的 RID／锁图缺口现已由显式 win-x64 声明和本轮 locked publish 闭合；App、Host、OCR 的自包含发布也已验证。旧自动 tokenizer 供应链 validator 的失败原样保留，人工审查不改写历史记录。完整产品 GUI、多 DPI、真实 Office GUI 全语料、广泛 OCR／Office 保真、模型相关性、性能 SLA、法律分发、升级／卸载／跨重启恢复和 Release 仍缺少各自验收；本机私有安装与主窗口启动成功不关闭这些边界。
 
 ## 审查与证据范围
 
@@ -54,6 +62,6 @@ CLI 的 RID／锁图问题仍未解决，本轮仅有此前静态 TFM 调整，�
 
 此前不含新 GUI 的源码同步在当前主机复核：源码检查 17/17；Host、App、DocumentTests、Storage、Indexing、Inference 六个工程的 task-local locked restore／build 通过；文档48、review10、Storage27、Indexing29、Inference48 各自通过，不相加为整产品验收。Host 首次在新工作树中因缺少忽略目录的 tokenizer DLL 被既有 guard 拒绝；核验后仅复用既有匹配源码／DLL 绑定产物完成构建，未新跑 Rust validator，未把 DLL 纳入提交。Inference 使用合成 fake host，不是模型或 Office 测试。那轮同步未运行 GUI、Office、安装或旧图片38，未证明 hosted CI 或全新机器复现。本轮 GUI 的实际运行证据为上文独立范围，不把历史非 GUI 测试改写为 GUI 测试；本次发布复核也不另获 GUI、Office、模型或安装运行额度。
 
-本轮新增 GUI 源码发布复核：源码检查17/17；Ui Harness、App、DocumentTests、Storage、Indexing 五个工程的 task-local locked restore/build 均为0warning/0error；文档48、review10、Storage27、Indexing29各自通过。9个GUI源码文件与此前通过视觉/键盘验收的工作区字节一致；本轮没有重跑GUI、Office、模型、CLI、旧Rust供应链validator、旧图片38或安装。既有25个JSON／归属文本的根工作区CRLF与Git规范LF差异逐项核对为仅换行差异，不产生依赖锁图或该批文件Git差异；OCR原始清单作为profile输入保持批准字节不变。LSP与模式化秘密检查的覆盖有限，不声明全IDE清零或完整秘密/法律审计。
+上一轮（2026-10-24）GUI 源码发布复核：源码检查17/17；Ui Harness、App、DocumentTests、Storage、Indexing 五个工程的 task-local locked restore/build 均为0warning/0error；文档48、review10、Storage27、Indexing29各自通过。9个GUI源码文件与此前通过视觉/键盘验收的工作区字节一致；该轮没有重跑GUI、Office、模型、CLI、旧Rust供应链validator、旧图片38或安装。既有25个JSON／归属文本的根工作区CRLF与Git规范LF差异逐项核对为仅换行差异，不产生依赖锁图或该批文件Git差异；OCR原始清单作为profile输入保持批准字节不变。LSP与模式化秘密检查的覆盖有限，不声明全IDE清零或完整秘密/法律审计。
 
-普通 push 仅触发源码检查和原生 tokenizer 单元测试。原生候选打包／诊断工作流保留手动触发；没有安装、模型下载、真实用户数据操作或创建 Release 的授权。
+普通 push 仅触发源码检查和原生 tokenizer 单元测试。原生候选打包／诊断工作流仍仅手动触发，已将 runner 临时路径移至初始化 step 的 GITHUB_ENV，并对齐旧触发／hosted-fixture 测试；本轮不手动派发远端 Native 打包，不运行新的安装、GUI、模型、Office 或真实用户数据操作，不创建 Release。

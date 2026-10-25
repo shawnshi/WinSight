@@ -42,7 +42,7 @@ function Assert-Absent([string]$Path) {
 # No JSON-selected module is imported. These are frozen source identities.
 foreach($row in @(
     @('NativeDeploymentJob.psm1','1f5600efadac9afc1f5afb2a7f6158643fcb25aeaf9400f58022674c69763331'),
-    @('NativeStandardLiveShell.psm1','7aa3a888133ed4792c3e1e923ff7e11b4ddf7465af6cecbc634fea5121410485'),
+    @('NativeStandardLiveShell.psm1','e0343ec8769a66e0911b65a3d34d72d279f92bc291f0e3d9a46b9070a0f4edba'),
     @('NativeInstaller.psm1','768e725b9ea3e5193b4d87d2430a63801c98af5b876f1328c31e49c60500c572')
 )){
     $p=Join-Path $engine $row[0];Assert-Path $p

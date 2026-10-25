@@ -2,13 +2,13 @@
 
 WinSight 是面向 Windows 11 的本地文件检索项目，用关键词和多模态语义查找文档、代码、图片及媒体片段。当前原生候选以 .NET 11 RC2、WinUI 3、SQLite 和独立推理进程实现，不依赖远程模型 API 完成检索。
 
-> **当前状态（2026-10-24）：开发预览／原生迁移候选，不是稳定发行版。** 结构化检索、PDF 页面／OCR 几何、PPT 整页视觉三个源码阶段已获独立批准；有界非 GUI 只读 PPT／来源 API 源码及披露的 P2 边界已由维护者接受。SearchPage 页面预览、OCR 行框与键盘交互已完成当前 200% DPI、自有合成夹具的有界验收并纳入源码同步；这不代表完整产品、所有 DPI 或真实 Office GUI 全语料获验收。标准安装、升级／卸载／恢复和 Release 门禁未闭合。见[源码合入范围与验收边界](docs/native-migration/source-integration-status.md)。
+> **当前状态（2026-10-25）：开发预览／原生迁移候选，不是稳定发行版。** 文档检索、PDF／PPT 页面与来源 API 已合入；SearchPage 合成视觉与键盘交互已完成当前 DPI 的有界验收。维护者本机私有自包含包已完成标准安装、1074 文件／登记／菜单交叉核验，并经已安装启动器打开可响应的 GUI。源码已合入对应修复，但公开安装入口仍是默认拒绝执行的模板，没有可直接分发的稳定安装包。升级／卸载／跨重启恢复、完整产品和 Release 门禁仍未闭合。见[本机安装与启动验证](docs/native-migration/local-install-validation.md)及[源码合入范围](docs/native-migration/source-integration-status.md)。
 
 ## 1. 项目定位与范围
 
 - **面向谁**：需要在本机资料和代码中查找内容、并回到来源文件或片段的 Windows 用户。
 - **解决什么问题**：文件名不能充分表达内容，关键词无法覆盖图片文字或语义相近的表达；项目将提取内容、位置和向量纳入同一检索链路。
-- **源码入口**：WinUI 桌面程序和返回 JSON 的原生 CLI，两者复用后端与索引合同；SearchPage 的有界 GUI 预览已交付；CLI 锁定构建仍有下述已知缺口。
+- **源码入口**：WinUI 桌面程序和返回 JSON 的原生 CLI，两者复用后端与索引合同；SearchPage 的有界 GUI 预览已交付。App、CLI、InferenceHost、OCR host 的 x64 自包含 locked restore／publish 已通过；这不等于完整 CLI 行为或发行验收。
 - **不做什么**：不默认扫描整块磁盘，不自动发现个人目录或迁移旧索引；不提供云端同步、通用 OCR 准确率保证、通用敏感数据识别或恒定延迟承诺。
 - **Agent 集成**：MCP 是目标方向，当前原生 CLI 不是 MCP 服务，InferenceHost 的内部通信也不是 MCP；不能把目标接口当作已交付能力。
 
@@ -67,7 +67,7 @@ SQLite 保存文件状态、片段、全文索引与向量；文档和代码分�
 | 向量检索 | 768 维、归一化向量，以 FP16 存储；当前语义评分仍为托管向量缓存加线性余弦计算，不是已交付的 sqlite-vec、HNSW 或 ANN 索引 |
 | 模型 | Windows ML；`onnx-community/embeddinggemma-2-ONNX` 的清单固定版本，包含文本、视觉和音频 ONNX 工件及 tokenizer 配置 |
 | 分词 | 原生 Rust tokenizer DLL；不是以 C# `Microsoft.ML.Tokenizers` 替代当前实现 |
-| 安装 | Inno Setup 标准每用户安装候选，配合受控启动器、源哈希绑定和恢复事务；当前现场安装验收尚未通过 |
+| 安装 | Inno Setup 每用户私有预览包已完成一次标准提交及跨表面核验，随后有界 GUI 启动通过；公开模板仍未物化，升级／卸载／跨重启恢复与正式发行未验收 |
 
 精确版本以工程、锁文件及清单为准：[App](desktop/src/WinSight.App/WinSight.App.csproj)、[Infrastructure](desktop/src/WinSight.Infrastructure/WinSight.Infrastructure.csproj)、[Host](inference/WinSight.InferenceHost/WinSight.InferenceHost.csproj)、[模型清单](inference/WinSight.InferenceHost/model-manifest.json)。
 
@@ -102,13 +102,13 @@ SQLite 保存文件状态、片段、全文索引与向量；文档和代码分�
 
 ### 终端用户
 
-**当前没有在本 README 中承诺已通过完整安装验收的稳定安装包。** 不要将 `.dev/` 中的编译产物、隔离运行目录或旧任务 binding 当作可直接分发的安装版。
+**本机私有预览安装通过，不等于已有稳定发行包。** 本机验证覆盖标准提交、1074 个载荷文件、20 个带类型登记值（含提交回执指针）、两条菜单链接及可响应的 GUI 主窗口；旧默认数据未读取或迁移。不要将 `.dev/` 编译产物、恢复现场或任务 binding 当作可直接分发的安装版。
 
 公开源码中的标准安装／恢复入口仍是**默认拒绝执行的未就绪模板**：本机私有目录、解释器和绑定不能公开复用。要启用，必须在独立任务中固化私有图、重新计算完整源／清单／绑定哈希，并通过对应验收；不能通过环境变量或调用方 JSON 选择代码，也不能把去掉拒绝语句当作验收。已有本地失败现场、模型及恢复记录没有随源码提交。
 
 当前标准安装设计采用独立的 `WinSight.Native.Preview` 身份，提供当前用户的开始菜单入口和卸载入口；默认不启用自启，不修改全局 PATH，也不自动迁移旧版资料。完整包需要同时包含 App、CLI、Host、匹配架构的 tokenizer、运行时依赖、模型清单、权重和许可材料，不能只复制一个 EXE。
 
-安装脚本与 payload、源文件哈希、目标目录及所有权绑定必须一致，不能绕过启动器或复用旧绑定。当前标准安装入口及其绑定还校验精确的 x64 Windows PowerShell Desktop 宿主版本（当前为 `5.1.29683.1000`），不能直接用 PowerShell 7 替代该入口。安装成功后仍需核验真实入口、模型／OCR、隔离数据检索，以及升级、卸载和失败恢复；编译通过或进程存在不代表这组验收完成。
+安装脚本与 payload、源文件哈希、目标目录及所有权绑定必须一致，不能绕过启动器或复用旧绑定。标准安装入口校验精确的 x64 Windows PowerShell Desktop 宿主版本（本机候选为 `5.1.29683.1000`），不能用 PowerShell 7 替代。每日启动器先核验已提交图与短生命周期 validator 结算，再启动应用；本机已确认窗口响应，但模型／OCR、检索、升级、卸载和跨重启恢复仍有各自验收边界。源码组件回归命令及原始证据未公开的限制见[验证摘要](docs/native-migration/local-install-validation.md)。
 
 参考：[标准每用户安装合同](docs/native-migration/standard-per-user-installer-contract.md)、[发布验收合同](docs/native-migration/release-acceptance-contract.md)。
 

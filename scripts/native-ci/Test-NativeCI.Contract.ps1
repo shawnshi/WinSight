@@ -93,7 +93,10 @@ try {
         foreach ($use in $uses) { Check ($use.Groups[1].Value -match '^actions/(checkout|setup-dotnet|upload-artifact)@[0-9a-f]{40}$') 'Action not official/commit pinned.' }
         Check ($workflow -match 'persist-credentials: false' -and $workflow -match 'contents: read') 'Least privilege is missing.'
         Check ($workflow -notmatch '(?i)secrets\.|pull_request_target|contents: write|packages: write|gh release|git push|continue-on-error') 'Release/secret/bypass path found.'
-        Check ($workflow -match 'workflow_dispatch:' -and $workflow -match 'push:\s+paths:') 'Required bounded triggers missing.'
+        Check ($workflow -match '(?m)^  workflow_dispatch:\s*$' -and $workflow -notmatch '(?m)^  (push|pull_request|schedule|workflow_run):') 'Native packaging must remain manual-only.'
+        $jobEnv = [regex]::Match($workflow,'(?ms)^    env:\r?\n(?<body>.*?)^    steps:')
+        Check ($jobEnv.Success -and $jobEnv.Groups['body'].Value -notmatch 'runner\.') 'Runner context is not available in job env.'
+        Check ($workflow.Contains('$env:RUNNER_TEMP') -and $workflow.Contains('$env:GITHUB_ENV')) 'Ephemeral paths must be initialized for subsequent steps.'
     }
     Write-Output 'CI script contract passed; no dotnet/cargo/model/media/UI/installer execution was performed.'
 }

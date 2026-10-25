@@ -63,7 +63,7 @@ try {
     }elseif($Command -ceq 'AbortPreparedCopy'){
         throw 'N7.UnconfiguredPreviewSource: prepared-copy recovery requires a materialized, re-pinned private graph.'
         # Trusted fixed sibling for this additive copy entry, never a caller/env code selector.
-        $moduleHash='4e8342e2b837a39c4eab8411cf615ec79eef7e9255dded040753734bb5838b87'
+        $moduleHash='46e54e4b7402b6a2c1c86aa99fce5556c7cdd604bb5472845338831d9dc93eeb'
         $entryHash=EntryHash (EntryBytes $PSCommandPath 32768)
     }else{
         if($BindingPath -notmatch '^[A-Za-z]:\\' -or $BindingSha256 -cnotmatch '^[0-9a-f]{64}$'){throw 'N5.Entry: explicit binding path/hash required.'}

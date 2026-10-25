@@ -4,6 +4,9 @@
     <AssemblyName>winsight-native</AssemblyName>
     <TargetFramework>net11.0-windows10.0.26100.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../WinSight.Infrastructure/WinSight.Infrastructure.csproj" />

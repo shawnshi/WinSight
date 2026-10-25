@@ -1381,6 +1381,35 @@ function Invoke-N7LivePermit($Pipe,$Job,$Worker,$Plan,$Nonce,$RequestHash,$S){
     }finally{if($null -ne $native){$native.Dispose()}}
     ,$members
 }
+function Wait-N7CallbackConnection([Threading.Tasks.Task]$Connect,$Native,[string]$Phase){
+    # N7-PRODUCER-EARLY-EXIT-MASKED-01: do not turn an already failed producer into a shared-deadline error.
+    while(-not $Connect.IsCompleted){
+        if($Native.HasExited -and $Native.ExitCode -ne 0){throw ('N7.ProducerExit: native exited '+[int]$Native.ExitCode+' before '+$Phase+' callback connection.')}
+        $remaining=[Math]::Max(0,(Get-N5Remaining)-10000)
+        if($remaining -le 0){throw 'N7.CallbackDeadline: genuine callback absent.'}
+        $null=$Connect.Wait([int][Math]::Min(100,$remaining))
+    }
+    $null=$Connect.GetAwaiter().GetResult()
+}
+function Wait-N7CallbackPeerClose($Pipe){
+    # Buffered WriteAsync completion does not mean the client consumed the reply.
+    # Keep this connection alive until the existing client closes it in finally.
+    # EOF is lifecycle settlement only, not a new acknowledgment or authority.
+    $remaining=[Math]::Max(0,(Get-N5Remaining)-10000)
+    if($remaining -le 0){throw 'N7.CallbackCloseDeadline: cleanup reserve reached.'}
+    $probe=New-Object byte[] 1
+    $read=$Pipe.ReadAsync($probe,0,1)
+    if(-not $read.Wait($remaining)){
+        # Explicitly break the server connection before disposal. A queued read
+        # can retain the native handle and unread output after Dispose alone.
+        $Pipe.Disconnect()
+        $settle=[Math]::Min(1000,(Get-N5Remaining))
+        try{$null=$read.Wait($settle)}catch{if(-not $read.IsCompleted){throw}}
+        if(-not $read.IsCompleted){throw 'N7.CallbackCloseUnsettled: disconnected read remains active.'}
+        throw ('N7.CallbackCloseDeadline: peer did not close; disconnected read settled '+$read.Status+'.')
+    }
+    if($read.GetAwaiter().GetResult() -ne 0){throw 'N7.CallbackTrailingData: one reply per connection required.'}
+}
 function Invoke-N7LiveWorker($Request,$ParentPipe){
     Assert-N5Fields $Request @('schema','protocol','nonce','parentPid','assigned','parameters','plan')
     if($Request.protocol -cne 'NativeLiveProducer/1' -or $Request.nonce -cne $env:N5_NONCE -or $Request.parentPid -ne [int]$env:N5_PARENT -or $Request.assigned -isnot [bool] -or -not $Request.assigned){throw 'N7.ProducerWorker: assignment challenge.'}
@@ -1418,7 +1447,7 @@ function Invoke-N7LiveWorker($Request,$ParentPipe){
         $permit=Receive-N5Pipe $ParentPipe;Assert-N5Fields $permit @('protocol','nonce','requestSha256','childPid','childStartTicks')
         if($permit.protocol -cne 'NativeLiveProducerPermit/1' -or $permit.nonce -cne $env:N5_NONCE -or $permit.requestSha256 -cne $env:N5_REQUEST -or $permit.childPid -ne $native.Id -or $permit.childStartTicks -ne $ticks){throw 'N7.ProducerPermit: parent assignment mismatch.'}
         foreach($phase in @('Preflight','Checkpoint')){
-            if(-not $connect.Wait([Math]::Max(0,(Get-N5Remaining)-10000))){throw 'N7.CallbackDeadline: genuine callback absent.'};$null=$connect.GetAwaiter().GetResult()
+            Wait-N7CallbackConnection $connect $native $phase
             $frame=Receive-N7OwnerFrame $server
             Assert-N7CheckpointFrame $frame
             $id=Get-N7PipePeerProcessId $server;Assert-N7SeparatePipePeer $id $frame.processId $native.Id
@@ -1442,6 +1471,7 @@ function Invoke-N7LiveWorker($Request,$ParentPipe){
             Assert-N7Pending $s
             if($role.HasExited -or $peer.HasExited -or (Get-N7PipePeerProcessId $server) -ne $id){throw 'N7.CallbackIdentity: peer/producer lost before acknowledgment.'}
             Send-N5Pipe $server ([pscustomobject]@{protocol='NativeLiveCheckpointReply/1';command=$phase;sequence=$frame.sequence;status='NoCommit'})
+            Wait-N7CallbackPeerClose $server
             $peer.Dispose();$peer=$null;$server.Disconnect();if($phase -ceq 'Preflight'){$connect=$server.WaitForConnectionAsync()}
         }
         if(-not $native.WaitForExit([Math]::Max(0,(Get-N5Remaining)-10000))){throw 'N7.ProducerDeadline: native root did not exit.'}

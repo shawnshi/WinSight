@@ -29,7 +29,7 @@ dotnet run --project desktop/src/WinSight.Cli -- help
 dotnet run --project desktop/src/WinSight.Cli -- status --data-dir C:\TaskFixtures\WinSightNative
 ```
 
-The CLI commands above are development examples, not fresh acceptance: its RID/locked restore graph remains unresolved and this source synchronization does not rerun CLI restore/build. The later bounded SearchPage preview/overlay/keyboard acceptance passes on the current host with synthetic fixtures; see the section below. This is not installation, all-DPI, hardware-keyboard or whole-product acceptance.
+The CLI now declares the win-x64 RID explicitly. App, CLI, InferenceHost, and OCR host passed task-local locked restore and self-contained publish with unchanged dependency locks; the App includes Windows App SDK runtime files. These are build-boundary checks, not full CLI behavior acceptance. A separate private local package also completed standard installation and a bounded responsive-main-window startup; the public installer remains fail-closed. See [local installation and startup scope](../docs/native-migration/local-install-validation.md). The SearchPage synthetic preview/overlay/keyboard evidence below remains distinct from installed-GUI startup, all-DPI, hardware-keyboard, Office, and whole-product acceptance.
 
 The graphical app defaults to `%LOCALAPPDATA%\WinSight\NativePreview`, never automatically imports legacy settings or indexes, and supports `--data-dir ABSOLUTE_PATH` for isolated verification. No folders are inferred. Background indexing and autostart are not authorized by defaults. Configure a folder explicitly before indexing; choose only synthetic files for development.
 

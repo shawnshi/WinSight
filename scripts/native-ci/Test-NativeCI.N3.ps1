@@ -128,9 +128,9 @@ $observed|ConvertTo-Json
     }
     Test 'NM-N3R-05 direct PublicHosted cannot bypass whole-invocation controller' {
         $root=Join-Path $out 'hosted-bypass'
-        foreach($folder in @('public-nuget','public-cargo')){$null=New-Item -ItemType Directory -Path (Join-Path $out $folder) -Force}
+        foreach($folder in @('public-nuget','public-cargo','dotnet-home')){$null=New-Item -ItemType Directory -Path (Join-Path $out $folder) -Force}
         $launchArguments=@('-NoProfile','-NonInteractive','-File',(Join-Path $repository 'scripts/Test-NativeCI.ps1'),'-DependencyMode','PublicHosted','-ArtifactRoot',$root,'-NuGetPackageRoot',(Join-Path $out 'public-nuget'),'-CargoCacheRoot',(Join-Path $out 'public-cargo'))
-        Reject {Invoke-NativeCIProcess -FilePath $pwsh -Arguments $launchArguments -WorkingDirectory $repository -LogPrefix (Join-Path $out 'hosted-bypass') -Environment @{GITHUB_ACTIONS='true';RUNNER_ENVIRONMENT='github-hosted';DOTNET_CLI_HOME='C:/Users/FixtureUser'}} 'exited 1'
+        Reject {Invoke-NativeCIProcess -FilePath $pwsh -Arguments $launchArguments -WorkingDirectory $repository -LogPrefix (Join-Path $out 'hosted-bypass') -Environment @{GITHUB_ACTIONS='true';RUNNER_ENVIRONMENT='github-hosted';DOTNET_CLI_HOME=(Join-Path $out 'dotnet-home')}} 'exited 1'
         $r=Get-Content -LiteralPath (Join-Path $root 'native-ci-result.json') -Raw|ConvertFrom-Json
         Check ($r.commands.Count -eq 0 -and $r.state -eq 'failed' -and $r.gates[0].detail -match 'Every Build invocation') 'Hosted bypass ran a tool or failed for the wrong reason'
     }

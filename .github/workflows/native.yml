@@ -23,10 +23,6 @@ jobs:
       DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
       DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: 'false'
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
-      DOTNET_CLI_HOME: ${{ runner.temp }}/winsight-native/dotnet-home
-      DOTNET_INSTALL_DIR: ${{ runner.temp }}/winsight-native/dotnet-sdk
-      NUGET_PACKAGES: ${{ runner.temp }}/winsight-native/nuget-public
-      CARGO_HOME: ${{ runner.temp }}/winsight-native/cargo-public
       RUSTUP_AUTO_INSTALL: '0'
     steps:
       # Official tag-to-commit/action metadata provenance: docs/native-migration/native-ci-handoff.md.
@@ -39,7 +35,16 @@ jobs:
       - name: Initialize ephemeral task directories
         run: |
           $ErrorActionPreference = 'Stop'
-          $paths = @($env:DOTNET_CLI_HOME, $env:NUGET_PACKAGES, $env:CARGO_HOME)
+          $variables = [ordered]@{
+            DOTNET_CLI_HOME = Join-Path $env:RUNNER_TEMP 'winsight-native/dotnet-home'
+            DOTNET_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'winsight-native/dotnet-sdk'
+            NUGET_PACKAGES = Join-Path $env:RUNNER_TEMP 'winsight-native/nuget-public'
+            CARGO_HOME = Join-Path $env:RUNNER_TEMP 'winsight-native/cargo-public'
+          }
+          foreach ($entry in $variables.GetEnumerator()) {
+            "$($entry.Key)=$($entry.Value)" >> $env:GITHUB_ENV
+          }
+          $paths = @($variables.DOTNET_CLI_HOME, $variables.NUGET_PACKAGES, $variables.CARGO_HOME)
           New-Item -ItemType Directory -Path $paths -Force | Out-Null
       - name: Provision exact public SDK (ephemeral runner only)
         timeout-minutes: 2
@@ -66,6 +71,12 @@ jobs:
       - name: Validate N3 hosted entrypoint and boundaries
         timeout-minutes: 3
         run: ./scripts/native-ci/Invoke-NativeCIContract.ps1 -Suite N3 -Group hosted
+      - name: Validate installer callback and link identity fixes
+        timeout-minutes: 3
+        run: |
+          $hostPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          & $hostPath -NoLogo -NoProfile -NonInteractive -File ./desktop/installer/tests/Test-NativeInstallFixes.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'winsight-native/installer-fixes')
+          if ($LASTEXITCODE -ne 0) { throw 'Installer component regressions failed.' }
       # Finite plan: 5 toolchain + 3 Rust + 6 production + 15 core + 15 media.
       # At most one new command per invocation, 44 total. No polling/batching.
       - name: Advance native checkpoint 01 of 44

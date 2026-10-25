@@ -1,13 +1,15 @@
 {
   "schema": 1,
   "sourcePublication": {
-    "date": "2026-10-24",
-    "scope": "Accepted native source, bounded non-GUI source APIs and current-DPI synthetic SearchPage preview/keyboard source; not installation or Release",
+    "date": "2026-10-25",
+    "scope": "Installer callback/lifecycle/shortcut-identity source fixes, x64 self-contained publication declarations, bounded native regressions and CI context repair; maintainer-local private install and GUI startup summarized separately; not a distributed installer or Release",
     "publicSummary": "docs/native-migration/source-integration-status.md",
     "guiPreviewIncluded": true,
     "localEvidencePublished": false,
     "modelWeightsOrCompiledBinariesPublished": false,
-    "releaseApproved": false
+    "releaseApproved": false,
+    "localInstallSummary": "docs/native-migration/local-install-validation.md",
+    "privateBindingsOrRecoveryScriptsPublished": false
   },
   "overall": "blocked_pending_required_acceptance",
   "productionCutover": false,
@@ -126,6 +128,7 @@
     "currentCompleteCsharpRegressionCasesPassed": null,
     "nativeSourceChecksPassed": 17,
     "nativeCliValidated": false,
+    "nativeCliValidationScope": "Historical component-upgrade snapshot only; current locked publish is recorded in publicationBuildValidation.",
     "currentOcr": "RapidOcrNet.WinSight 4.2.0-winsight.1 source candidate",
     "rapidOcrIntegrated": true,
     "ocrBlocker": null,
@@ -230,7 +233,7 @@
     "fullParityAccepted": false,
     "releaseAccepted": false,
     "installationAttemptsAdded": 0,
-    "knownCliBuildIssue": "Native CLI RID/lock mismatch remains pre-existing and unmodified; no additional CLI restore/build attempt.",
+    "knownCliBuildIssue": "Resolved for source publication: explicit CLI win-x64 RID and locked self-contained publish passed; no new full CLI behavior/legacy compatibility acceptance.",
     "historicalEvidence": "The older stage/evidence entries below remain historical receipts, not current all-product acceptance."
   },
   "nativeStackRemediation": {
@@ -327,6 +330,32 @@
     "livePreviewOrLegacyModified": false
   },
   "latestLocalDeployment": {
+    "report": "docs/native-migration/local-install-validation.md",
+    "validationDate": "2026-10-25",
+    "validationStatus": "private_per_user_standard_install_finalized_and_bounded_gui_startup_verified",
+    "installationScope": "HKCU_PerUser_PrivateUnsignedPreview",
+    "systemInstallationPerformed": true,
+    "modelsIncluded": true,
+    "payloadFilesVerified": 1074,
+    "registryTypedValuesVerified": 20,
+    "menuLinksVerified": 2,
+    "standardCommitReceiptVerified": true,
+    "finalizationVerified": true,
+    "pendingAbsent": true,
+    "journalAbsent": true,
+    "ownedProcessesAndStreamsSettledAtInstallCompletion": true,
+    "userRequestedGuiStartupVerified": true,
+    "installedDailyLauncherValidated": true,
+    "mainWindowDetectedAndResponding": true,
+    "guiLeftRunningAsRequested": true,
+    "fullUiIndependentApproval": false,
+    "oldDefaultDataReadOrMigrated": false,
+    "publicSourceGraphReinstalledInThisSync": false,
+    "sourceBodiesPortedFromValidatedPrivateCandidate": true,
+    "rawLocalLogsOrBindingsPublished": false,
+    "releaseApproved": false
+  },
+  "priorTaskLocalDeployment": {
     "status": "n2b_native_backend_model_free_preview_verified",
     "report": "docs/native-migration/n2b-deployment-verification.md",
     "stage": ".dev/native-migration/deployment-checks/n2b-native-20261019/candidate/app",
@@ -342,6 +371,54 @@
     "nativeRuntimeSourceIndependentApproval": true,
     "fullUiIndependentApproval": false,
     "releaseApproved": false
+  },
+  "publicationBuildValidation": {
+    "date": "2026-10-25",
+    "appCliInferenceHostOcrHostLockedPublishPassed": true,
+    "runtimeIdentifier": "win-x64",
+    "includedRuntimeVersion": "11.0.0-rc.2.26504.105",
+    "appWindowsAppSdkSelfContained": true,
+    "dependencyLockFilesUnchanged": 20,
+    "lockBaseline": "base-commit Git blob bytes; root CRLF versus checkout LF differences are not dependency edits",
+    "productProcessesLaunchedBySourceSync": false,
+    "newInstallOrModelOfficeRun": false
+  },
+  "nativeInstallFixes": {
+    "sourceRegressionChecksPassed": 47,
+    "sourceRegressionGroups": [
+      {
+        "name": "source",
+        "passed": 6
+      },
+      {
+        "name": "source-pin",
+        "passed": 8
+      },
+      {
+        "name": "identity",
+        "passed": 14
+      },
+      {
+        "name": "identity-case-sensitive",
+        "passed": 4
+      },
+      {
+        "name": "producer",
+        "passed": 7
+      },
+      {
+        "name": "pipe",
+        "passed": 8
+      }
+    ],
+    "caseSensitiveFileIdCounterexampleVerified": true,
+    "ownedSyntheticPipeCases": 8,
+    "realInstallAuthorityFabricated": false,
+    "publicTemplatesRemainFailClosed": true,
+    "sourcePinClosureVerified": true,
+    "ciJobEnvRunnerContextFixed": true,
+    "nativeWorkflowRemainsManual": true,
+    "nativeWorkflowManuallyDispatched": false
   },
   "previousLocalDeployment": {
     "status": "production_app_cold_start_and_basic_window_interaction_passed",
@@ -404,5 +481,11 @@
     "backendIndependentRecheck": "pass limited to NM-BR-01..10; 55 snapshot files verified against main; reviews/backend-recheck.md",
     "lspLimit": "active LSP probe reported cross-project unresolved references inconsistent with actual successful dotnet builds/tests; no LSP-clean claim and no global language-server configuration changes"
   },
-  "limits": ["No personal indexes, settings or model caches read or migrated", "No global toolchain installation", "No production install, signing or Release publication; ordinary main source synchronization is separately authorized and is not product qualification", "Backend ten-issue recheck passed. UI partial recheck resolved stale-grant save; final equality mismatch then patched with dual-domain three-action regressions, but not independently accepted. Real pause, full media, PDF/media automatic location, pixels and installer gates remain incomplete. No overall migration/release approval.", "No claim of full Swift feature parity or real inference validation"]
+  "limits": [
+    "No personal indexes, settings or model caches read or migrated",
+    "No global toolchain installation",
+    "No production cutover, signing or Release publication; private per-user install and bounded GUI startup passed separately and do not qualify a public installer",
+    "Historical baseline UI/installer blockers were followed by bounded source-API, synthetic GUI and private standard-install/startup acceptance. Full product/media/Office/DPI, upgrade/uninstall/restart recovery, distribution and overall release gates remain incomplete.",
+    "No claim of full Swift feature parity or real inference validation"
+  ]
 }

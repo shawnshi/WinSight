@@ -22,7 +22,7 @@ if ($PSCmdlet.ParameterSetName -ceq 'Standard') {
     # Frozen bootstrap modules are checked before import; binding never chooses executable code.
     foreach ($slot in @(
         @('NativeDeploymentJob.psm1','1f5600efadac9afc1f5afb2a7f6158643fcb25aeaf9400f58022674c69763331'),
-        @('NativeStandardLiveShell.psm1','7aa3a888133ed4792c3e1e923ff7e11b4ddf7465af6cecbc634fea5121410485')
+        @('NativeStandardLiveShell.psm1','e0343ec8769a66e0911b65a3d34d72d279f92bc291f0e3d9a46b9070a0f4edba')
     )) {
         $path = Join-Path $PSScriptRoot $slot[0]
         for ($ancestor=$path; $ancestor; $ancestor=[IO.Path]::GetDirectoryName($ancestor)) {

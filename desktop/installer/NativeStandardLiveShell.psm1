@@ -620,7 +620,7 @@ function Get-NativeLiveObservation {
         $bad=[Collections.Generic.List[string]]::new()
         if($authority.chainValidated){
             foreach($value in $expected.registry.values){$actual=@($registry.values|Where-Object {$_.name -ceq $value.name});if($actual.Count -ne 1 -or $actual[0].kind -cne $value.kind -or $actual[0].value -cne $value.value){$bad.Add('registry:'+ $value.name)}}
-            foreach($link in $links){$spec=@($expected.menu.links|Where-Object {($expected.menu.path+'\'+$_.name) -ceq $link.file.path})[0];if($link.file.state -cne 'Present' -or $link.target -cne $spec.target -or $link.arguments -cne $spec.arguments -or $link.workingDirectory -cne $spec.workingDirectory){$bad.Add('link:'+ $link.file.path)}}
+            foreach($link in $links){$spec=@($expected.menu.links|Where-Object {($expected.menu.path+'\'+$_.name) -ceq $link.file.path})[0];if($link.file.state -cne 'Present' -or -not (Test-NLStoredLinkFields $link $spec)){$bad.Add('link:'+ $link.file.path)}}
             foreach($file in $files){
                 $prior=@($stored.stable.files|Where-Object {$_.path -ceq $file.path})
                 $declared=@($expected.files|Where-Object {$_.path -ceq $file.path})
@@ -656,6 +656,49 @@ function Read-NLFreshStoredFields([string]$Path) {
         if($null -ne $shell){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)}
     }
 }
+function Initialize-NLLinkIdentityApi {
+    if ('WinSight.NLLinkIdentityApi' -as [type]) { return }
+    $name=[Reflection.AssemblyName]::new('WinSight.NLLinkIdentityApi')
+    if ($null -ne [AppDomain].GetMethod('DefineDynamicAssembly',[type[]]@([Reflection.AssemblyName],[Reflection.Emit.AssemblyBuilderAccess]))) {
+        $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly($name,[Reflection.Emit.AssemblyBuilderAccess]::Run)
+    } else { $assembly=[Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($name,[Reflection.Emit.AssemblyBuilderAccess]::Run) }
+    $type=$assembly.DefineDynamicModule('Native').DefineType('WinSight.NLLinkIdentityApi',[Reflection.TypeAttributes]'Public,Sealed,Abstract')
+    $method=$type.DefinePInvokeMethod('GetFileInformationByHandleEx','kernel32.dll',[Reflection.MethodAttributes]'Public,Static,PinvokeImpl',[Reflection.CallingConventions]::Standard,[bool],[type[]]@([IntPtr],[int],[IntPtr],[uint32]),[Runtime.InteropServices.CallingConvention]::Winapi,[Runtime.InteropServices.CharSet]::Unicode)
+    $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    $attribute=[Runtime.InteropServices.DllImportAttribute]
+    $method.SetCustomAttribute([Reflection.Emit.CustomAttributeBuilder]::new($attribute.GetConstructor([type[]]@([string])),[object[]]@('kernel32.dll'),[Reflection.FieldInfo[]]@($attribute.GetField('SetLastError')),[object[]]@($true)))
+    $null=$type.CreateType()
+}
+function Get-NLLinkHandleIdentity([IO.FileStream]$Stream) {
+    Initialize-NLLinkIdentityApi
+    # Windows SDK: FileIdInfo=18; FILE_ID_INFO is volume UInt64 + FILE_ID_128.
+    $buffer=[Runtime.InteropServices.Marshal]::AllocHGlobal(24)
+    try {
+        if (-not [WinSight.NLLinkIdentityApi]::GetFileInformationByHandleEx($Stream.SafeFileHandle.DangerousGetHandle(),18,$buffer,24)) { throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
+        $bytes=New-Object byte[] 24
+        [Runtime.InteropServices.Marshal]::Copy($buffer,$bytes,0,24)
+        if (@($bytes[8..23] | Where-Object { $_ -ne 0 }).Count -eq 0) { throw 'N7.LinkTargetIdentity: unavailable file identity.' }
+        [Convert]::ToBase64String($bytes)
+    } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer) }
+}
+function Test-NLStoredLinkFields($Fields,$Spec) {
+    # Command-line and working-directory contracts remain exact, not case-folded.
+    if ($Fields.arguments -cne $Spec.arguments -or $Fields.workingDirectory -cne $Spec.workingDirectory) { return $false }
+    if ($Fields.target -ceq $Spec.target) { return $true }
+    if (-not [string]::Equals($Fields.target,$Spec.target,[StringComparison]::OrdinalIgnoreCase)) { return $false }
+    Assert-NLNoReparse $Spec.target
+    # The declared drive spelling remains canonical; only case differs otherwise.
+    $actualForValidation=$Spec.target.Substring(0,2)+$Fields.target.Substring(2)
+    Assert-NLNoReparse $actualForValidation
+    $actual=$null;$declared=$null
+    try {
+        # Retain both handles with write/delete sharing denied while comparing.
+        # Equal bytes or a case-insensitive spelling alone never establish identity.
+        $actual=[IO.File]::Open($Fields.target,'Open','Read','Read')
+        $declared=[IO.File]::Open($Spec.target,'Open','Read','Read')
+        (Get-NLLinkHandleIdentity $actual) -ceq (Get-NLLinkHandleIdentity $declared)
+    } finally { if ($null -ne $declared) { $declared.Dispose() }; if ($null -ne $actual) { $actual.Dispose() } }
+}
 function Read-NLFreshLink($Spec,[string]$Path,$Lease,$Graph,$Intent,[long]$Start,[int]$Deadline) {
     $before=Invoke-NLFreshFact $Lease $Graph $Intent 'LinkRaw' $Path {Get-NLResourceFact $Path 1048576 $Start $Deadline} $Start $Deadline
     if($before.state -cne 'Present'){throw 'N7.FreshLinkAbsent: approved link required.'}
@@ -664,7 +707,7 @@ function Read-NLFreshLink($Spec,[string]$Path,$Lease,$Graph,$Intent,[long]$Start
     foreach($name in @('target','arguments','workingDirectory')){Assert-NLString $fields.$name}
     $after=Invoke-NLFreshFact $Lease $Graph $Intent 'LinkRecheck' $Path {Get-NLResourceFact $Path 1048576 $Start $Deadline} $Start $Deadline
     if($after.state -cne 'Present' -or $after.path -cne $before.path -or $after.bytes -ne $before.bytes -or $after.sha256 -cne $before.sha256){throw 'N7.FreshLinkChanged: raw bytes changed during stored-field read.'}
-    if($fields.target -cne $Spec.target -or $fields.arguments -cne $Spec.arguments -or $fields.workingDirectory -cne $Spec.workingDirectory){throw 'N7.FreshLinkFields: stored fields differ from approved declaration.'}
+    if(-not (Test-NLStoredLinkFields $fields $Spec)){throw 'N7.FreshLinkFields: stored fields differ from approved declaration.'}
     [pscustomobject]@{file=$after;target=$fields.target;arguments=$fields.arguments;workingDirectory=$fields.workingDirectory}
 }
 function Assert-NLFreshDeclaration($Fact,$Pin) {

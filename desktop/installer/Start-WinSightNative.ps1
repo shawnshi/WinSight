@@ -57,11 +57,11 @@ try {
     # These are final source identities, not caller-chosen pins. There is no
     # reverse K->launcher literal hash, so source9 remains cycle-free.
     $known=@{
-        'NativeInstallCoordinator.psm1'='4e8342e2b837a39c4eab8411cf615ec79eef7e9255dded040753734bb5838b87'
-        'Invoke-NativeInstallCoordinator.ps1'='e0039431fc53f4ebc98cae683a9d12b1b6dabb1bf7e31156284a554cf8530435'
+        'NativeInstallCoordinator.psm1'='46e54e4b7402b6a2c1c86aa99fce5556c7cdd604bb5472845338831d9dc93eeb'
+        'Invoke-NativeInstallCoordinator.ps1'='05753168f0028ee660fb668f0e033b442c5af54c3fbf12d2602909cfed14fa72'
         'NativeInstaller.psm1'='768e725b9ea3e5193b4d87d2430a63801c98af5b876f1328c31e49c60500c572'
         'NativeDeploymentJob.psm1'='1f5600efadac9afc1f5afb2a7f6158643fcb25aeaf9400f58022674c69763331'
-        'NativeStandardLiveShell.psm1'='7aa3a888133ed4792c3e1e923ff7e11b4ddf7465af6cecbc634fea5121410485'
+        'NativeStandardLiveShell.psm1'='e0343ec8769a66e0911b65a3d34d72d279f92bc291f0e3d9a46b9070a0f4edba'
     }
     $names=@($known.Keys)+@('Invoke-NativeInstaller.ps1','Invoke-NativeDeployment.ps1','Invoke-NativeDeployWorker.ps1','Start-WinSightNative.ps1')
     $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)

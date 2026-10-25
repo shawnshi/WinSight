@@ -110,10 +110,10 @@ var Code: Integer;
 begin
   CallbackFailed := True;
   RequireOwner(Operation);
-  { A owns the original deadline and inherited Job; Exec neither elevates nor commits. }
-  if not Exec('{#BoundHost}', '-NoProfile -NonInteractive -File "' +
+  { A owns the deadline and inherited Job. Capture callback errors without changing its identity or commit protocol. }
+  if not ExecAndLogOutput('{#BoundHost}', '-NoProfile -NonInteractive -File "' +
     GetEnv('N7_LIVE_ENTRY') + '" -LiveCallback ' + Phase,
-    CallbackRuntime, SW_HIDE, ewWaitUntilTerminated, Code) then
+    CallbackRuntime, SW_HIDE, ewWaitUntilTerminated, Code, nil) then
     RaiseException('B.CallbackStart: owned callback could not start.');
   if Code <> 0 then RaiseException('B.CallbackRejected: NoCommit acknowledgment failed: ' + IntToStr(Code));
   CallbackFailed := False;
