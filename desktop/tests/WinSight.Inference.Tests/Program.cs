@@ -218,6 +218,15 @@ await Test("profile remains pinned across child restarts", async () =>
     await Throws<InvalidDataException>(async () => await client.EmbedAsync(Items()));
     Check(Pids(directory).Length == 2 && Pids(directory).All(pid => !IsAlive(pid)), "New profile silently accepted.");
 });
+await Test("live provider status is not part of host identity", async () =>
+{
+    // Epoch/providers are diagnostic state; a restart that only advances them must not look like a different host.
+    var directory = Scenario("status-drift");
+    await using var client = NewClient(directory, fake, requestMs: 300);
+    await Throws<TimeoutException>(async () => await client.EmbedAsync(Items()));
+    var results = await client.EmbedAsync(Items());
+    Check(results.Single().Vector is { Length: 768 } && Pids(directory).Length == 2, "Status drift was rejected as an identity change.");
+});
 await Test("concurrent requests are serialized and matched", async () =>
 {
     var directory = Scenario("delay");

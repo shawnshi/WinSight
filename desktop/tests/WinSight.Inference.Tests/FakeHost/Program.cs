@@ -33,7 +33,7 @@ object Info(bool changed = false) => new {
     revision = "daa72c51243991dfcaf9f9137d2c573d8f7790c0", runtime = "windows-ml-ort-1.24.3", dtype = "q4",
     dim = 768, text_only = mode == "mode", profile_id = mode == "profile" ? "bad" : new string(changed || (mode == "restart-profile" && !first) ? 'b' : 'a', 64),
     validation = "unverified-source-integration", requested_provider = requestedProvider,
-    provider_downloads_allowed = mode == "downloads" || installAllowed, backend_status = mode == "nostatus" ? (object?)null : new { epoch = 0, providers = Array.Empty<object>(), graphs = Array.Empty<object>() }, sessions_loaded = new { text = false, vision = false, audio = false }
+    provider_downloads_allowed = mode == "downloads" || installAllowed, backend_status = mode == "nostatus" ? (object?)null : new { epoch = first ? 0 : 1, providers = Array.Empty<object>(), graphs = Array.Empty<object>() }, sessions_loaded = new { text = false, vision = false, audio = false }
 };
 object Capabilities() => new { text = mode != "capabilities", image = mode != "text-only", audio = mode != "text-only" };
 Emit(new { ready = true, protocol = mode == "protocol" ? 2 : 1, info = Info(), capabilities = Capabilities() });
@@ -63,7 +63,7 @@ while (await Console.In.ReadLineAsync() is { } line)
         Emit(new { id, ok = true, protocol = 1, info = Info(mode == "profile-drift"), capabilities = Capabilities() });
         continue;
     }
-    if ((mode is "request-timeout" or "cancel" or "restart-profile") && first) await Task.Delay(10000);
+    if ((mode is "request-timeout" or "cancel" or "restart-profile" or "status-drift") && first) await Task.Delay(10000);
     if (mode == "delay") await Task.Delay(250);
     if (mode == "hold") await Task.Delay(10000);
     if (mode == "invalid") { Console.WriteLine("{garbage}"); continue; }

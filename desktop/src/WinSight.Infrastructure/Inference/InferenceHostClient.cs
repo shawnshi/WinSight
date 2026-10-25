@@ -258,10 +258,12 @@ public sealed class InferenceHostClient : IEmbeddingService
     private void CheckIdentity(EmbeddingInfo info)
     {
         if (identity is null) return;
+        // BackendStatus is live diagnostic state (epoch, provider qualification progress), not identity:
+        // comparing it made a legitimate host restart look like an identity change and failed indexing.
         Require(identity.ProfileId == info.ProfileId && identity.Dimension == info.Dimension && identity.Runtime == info.Runtime
             && identity.Model == info.Model && identity.Revision == info.Revision && identity.RequestedProvider == info.RequestedProvider
-            && identity.Validation == info.Validation && identity.Capabilities.SequenceEqual(info.Capabilities)
-            && identity.BackendStatus == info.BackendStatus, "Host embedding identity changed.");
+            && identity.Validation == info.Validation && identity.Capabilities.SequenceEqual(info.Capabilities),
+            "Host embedding identity changed.");
     }
 
     private static IReadOnlyList<EmbeddingResult> ReadBatch(JsonElement root, int count)
