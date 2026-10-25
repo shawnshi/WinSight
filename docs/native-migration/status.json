@@ -487,5 +487,22 @@
     "No production cutover, signing or Release publication; private per-user install and bounded GUI startup passed separately and do not qualify a public installer",
     "Historical baseline UI/installer blockers were followed by bounded source-API, synthetic GUI and private standard-install/startup acceptance. Full product/media/Office/DPI, upgrade/uninstall/restart recovery, distribution and overall release gates remain incomplete.",
     "No claim of full Swift feature parity or real inference validation"
-  ]
+  ],
+  "incrementalIndexing": {
+    "state": "source-integrated-and-locally-installed",
+    "queue": "sqlite index_tasks in the same database (additive table); restart resumes pending work",
+    "stabilisation": "quiet 1.5s AND max wait 10s; two samples plus an exclusive open",
+    "events": "coalescing, rename/move with tombstone, temp-file filter, lock backoff 0.5/1/2/4/8s (5 tries)",
+    "reconciliation": "forced once at startup; afterwards only after a watcher overflow or when the period elapses",
+    "usn": "read-only NTFS journal catch-up from a persisted checkpoint; degrades to a directory diff on reset, missing permission or non-NTFS",
+    "budgets": ["InteractiveQuery", "NewFileIndex", "Backfill", "ComplexParse"],
+    "verified": {"storageTests": "48/48", "indexingTests": "29/29", "runtimeTests": "39/39 with the fake host argument", "scale": "20k files: cold reconcile 43.9s, warm 88.2s, no duplicate tasks"},
+    "openFindings": ["SCALE-01: per-file dedup is slower than insert; batched enqueue pending", "UPGRADE-RUNTIME-SET-01: an upgrade that changes the installer runtime set needs builder and launcher work; a fresh install was used instead"]
+  },
+  "accelerators": {
+    "policy": "auto = discrete GPU, then NPU, then integrated GPU, then CPU; manual override available; provider installation can be disabled",
+    "qualification": "runs in an isolated child process; a crash, timeout or missing evidence is recorded as a rejection",
+    "measuredOnMaintainerMachine": {"dml": "CPU 17.4ms vs EP 39.9ms (Radeon 880M integrated) - rejected by the 5 percent gate", "ryzenAi": "session runs but the profile has no target-EP compute nodes - rejected", "vitisAi": "child exited 0xC0000409 while the host stayed healthy"},
+    "qualifiesOnThisHardware": false
+  }
 }

@@ -55,3 +55,13 @@ $desktop = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
 协作 mutex、同卷移动、文件共享限制与 reparse 检查不是对同用户恶意并发的 OS 隔离。菜单/程序/登记跨表面退役不是一个原子事务；登记比较后删除也不是原子 CAS。
 
 `overall=blocked_pending_required_acceptance`、`productionCutover=false` 和 `releaseApproved=false` 继续有效。本次通过本机私有安装与有界 GUI 启动，不改变这些发行边界。
+
+## 2026-10-26：增量索引 S1–S4 与升级路径修复后重新安装
+
+- **版本**：`4167c95ee433006412d1ff9439696cf354fb944106e24d7918ee5afe55978af0`（1076 文件，逐文件核对 0 不符；`ObservedApply`，0 mismatch，无 pending/journal；事件链 `Activated→Committed→Finalized`）。
+- **方式**：全新安装（退役前整目录保留 `data`，装后还原 15 个文件与 4 个目录配置）。同根升级在**安装器运行时脚本集变化**时会要求构建器复制新 runtime 并由启动器按 binding 选择 runtime；该路径只做到 fail-closed 验证，未作为本次部署手段（`UPGRADE-RUNTIME-SET-01`）。
+- **同根升级**：本轮另用一次独立双向验证确认可用——`5fb6a28a…` 全新安装后原地升级到 `9d5eab46…`，保留两个 release 且无 repair 标记（`5fb6a28a→9d5eab46`）。修复点：提交后只断言耐久不变量，并在提交前按 CAS 把被 Inno 重建卸载键时抹掉的 prior 锚点写回。
+- **增量索引**：逐文件持久队列（`index_tasks`）、事件合并、quiet 1.5s 与 maxWait 10s 双稳定期、重命名/原子替换/锁定退避、溢出只做差集核对、四类预算与查询抢占、只读 USN 检查点补齐与显式降级。
+- **实测**：Storage 48/48、Indexing 29/29、Runtime 39/39（含 2 项真实 watcher 经生产协调器）；20 000 文件规模：冷核对 43.9s、热核对 88.2s、无重复任务（`SCALE-01`）。
+- **加速器**：本机 `auto` 下 DirectML 实测 CPU 17.4ms vs EP 39.9ms（核显更慢，5% 门拒绝）；RyzenAI NPU 会话可运行但 profile 无目标 EP 计算节点（证据门拒绝）；VitisAI 使子进程原生崩溃而宿主健康。**本机无加速器通过证据门，阈值未放宽，未伪造节点证据。**
+- **仍未闭合**：批量化入队（`SCALE-01`）、改变 runtime 集的升级路径（`UPGRADE-RUNTIME-SET-01`）、大目录端到端吞吐、NPU/GPU 实际合格、完整产品与 Release 门禁。
