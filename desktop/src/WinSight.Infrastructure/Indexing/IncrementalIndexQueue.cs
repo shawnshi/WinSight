@@ -17,6 +17,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
     private readonly TimeSpan maxWait;
     private readonly TimeSpan reconcileInterval;
     private readonly int maxQueueTasks;
+    private readonly IUsnJournalReader usnReader;
 
     private long watcherOverflows;
     private int overflowDropped;
@@ -29,6 +30,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
     public long WatcherOverflows => Interlocked.Read(ref watcherOverflows);
     public int DroppedCount => Volatile.Read(ref overflowDropped);
     public DateTimeOffset? LastReconcileUtc => lastReconcileUtc;
+    public string UsnState { get; private set; } = "not-attempted";
 
     public IncrementalIndexQueue(
         IIndexRepository repository,
@@ -37,7 +39,8 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         TimeSpan? quietPeriod = null,
         TimeSpan? maxWait = null,
         TimeSpan? reconcileInterval = null,
-        int maxQueueTasks = 50000)
+        int maxQueueTasks = 50000,
+        IUsnJournalReader? usnReader = null)
     {
         this.repository = repository ?? throw new ArgumentNullException(nameof(repository));
         this.indexPaths = indexPaths;
@@ -46,6 +49,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         this.maxWait = maxWait ?? TimeSpan.FromSeconds(10);
         this.reconcileInterval = reconcileInterval ?? TimeSpan.FromHours(6);
         this.maxQueueTasks = maxQueueTasks;
+        this.usnReader = usnReader ?? new UsnJournalReader();
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -320,6 +324,12 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         var due = lastReconcileUtc is null || DateTimeOffset.UtcNow - lastReconcileUtc.Value >= reconcileInterval;
         if (!force && !dirty && !due) return false;
 
+        // Try USN catch-up first if on NTFS and checkpoint is valid
+        if (await TryUsnCatchUpAsync(root, code, cancellationToken).ConfigureAwait(false))
+        {
+            return true;
+        }
+
         var existingFiles = await repository.ReadFilesAsync(cancellationToken).ConfigureAwait(false);
         var normRoot = FilePolicy.Normalize(root);
         var indexMap = existingFiles
@@ -360,9 +370,151 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
             await EnqueueWithCoalescingAsync(delTask, cancellationToken).ConfigureAwait(false);
         }
 
+        await TryRecordUsnCheckpointAsync(normRoot, cancellationToken).ConfigureAwait(false);
+
         dirtyRoots.TryRemove(root, out _);
         lastReconcileUtc = DateTimeOffset.UtcNow;
         return true;
+    }
+
+    private async Task<bool> TryUsnCatchUpAsync(string root, bool code, CancellationToken cancellationToken)
+    {
+        var normRoot = FilePolicy.Normalize(root);
+        if (!usnReader.IsNtfsVolume(normRoot, out var volumeSerial) || string.IsNullOrEmpty(volumeSerial))
+        {
+            UsnState = "usn_unavailable(not-ntfs)";
+            return false;
+        }
+
+        if (repository is not IUsnCheckpointRepository checkpointRepo)
+        {
+            UsnState = "usn_unavailable(no-checkpoint-store)";
+            return false;
+        }
+
+        (string JournalId, string NextUsn, DateTimeOffset ReconcileUtc)? checkpoint;
+        try
+        {
+            checkpoint = await checkpointRepo.GetUsnCheckpointAsync(volumeSerial, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            UsnState = $"usn_unavailable(checkpoint-read-failed: {ex.Message})";
+            return false;
+        }
+
+        if (checkpoint == null)
+        {
+            UsnState = "usn_unavailable(missing-checkpoint)";
+            return false;
+        }
+
+        var (queryOk, queryInfo, queryErr) = usnReader.QueryJournal(normRoot);
+        if (!queryOk || queryInfo == null)
+        {
+            UsnState = $"usn_unavailable({queryErr ?? "query-failed"})";
+            return false;
+        }
+
+        string currentJournalIdHex = queryInfo.JournalId.ToString("X16");
+        if (!string.Equals(checkpoint.Value.JournalId, currentJournalIdHex, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(checkpoint.Value.JournalId, queryInfo.JournalId.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            UsnState = "usn_unavailable(journal-id-mismatch)";
+            return false;
+        }
+
+        if (!long.TryParse(checkpoint.Value.NextUsn, out var startUsn))
+        {
+            UsnState = "usn_unavailable(corrupted-checkpoint-usn)";
+            return false;
+        }
+
+        if (startUsn < queryInfo.LowestValidUsn)
+        {
+            UsnState = "usn_unavailable(journal-truncated)";
+            return false;
+        }
+
+        var (readOk, records, nextUsn, readErr) = usnReader.ReadIncrements(normRoot, queryInfo.JournalId, startUsn);
+        if (!readOk)
+        {
+            UsnState = $"usn_unavailable({readErr ?? "read-failed"})";
+            return false;
+        }
+
+        int matchedCount = 0;
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var record in records)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var resolvedPath = usnReader.ResolvePath(normRoot, record.FileReferenceNumber, record.ParentFileReferenceNumber, record.FileName);
+            if (resolvedPath == null) continue;
+
+            var normPath = FilePolicy.Normalize(resolvedPath);
+            if (!FilePolicy.Under(normPath, normRoot)) continue;
+            if (IsTemporaryFile(normPath)) continue;
+            if (FilePolicy.Kind(normPath, code) == null) continue;
+
+            string kind;
+            if ((record.Reason & UsnJournalReader.USN_REASON_FILE_DELETE) != 0)
+            {
+                kind = "Delete";
+            }
+            else if ((record.Reason & UsnJournalReader.USN_REASON_RENAME_NEW_NAME) != 0)
+            {
+                kind = "Add";
+            }
+            else
+            {
+                kind = "Update";
+            }
+
+            var task = new IndexTask(normPath, normRoot, code, kind, null, "Pending", 0, now, now, "usn_catch_up");
+            await EnqueueWithCoalescingAsync(task, cancellationToken).ConfigureAwait(false);
+            matchedCount++;
+        }
+
+        try
+        {
+            await checkpointRepo.SaveUsnCheckpointAsync(volumeSerial, currentJournalIdHex, nextUsn.ToString(), now, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            onError?.Invoke(ex);
+        }
+
+        dirtyRoots.TryRemove(root, out _);
+        lastReconcileUtc = now;
+        UsnState = $"usn_caught_up({matchedCount} records)";
+        return true;
+    }
+
+    private async Task TryRecordUsnCheckpointAsync(string normRoot, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (repository is IUsnCheckpointRepository checkpointRepo &&
+                usnReader.IsNtfsVolume(normRoot, out var volumeSerial) &&
+                !string.IsNullOrEmpty(volumeSerial))
+            {
+                var (queryOk, queryInfo, _) = usnReader.QueryJournal(normRoot);
+                if (queryOk && queryInfo != null)
+                {
+                    await checkpointRepo.SaveUsnCheckpointAsync(
+                        volumeSerial,
+                        queryInfo.JournalId.ToString("X16"),
+                        queryInfo.NextUsn.ToString(),
+                        DateTimeOffset.UtcNow,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            onError?.Invoke(ex);
+        }
     }
 
     private static IEnumerable<FileInfo> EnumerateFilesSafe(DirectoryInfo dir, bool code)
