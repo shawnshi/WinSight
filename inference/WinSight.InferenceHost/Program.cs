@@ -77,6 +77,7 @@ internal static class Program
             {
                 string? hostModelRoot = null, manifestPath = null;
                 var device = "auto";
+                var providerInstall = true;
                 var textOnly = false;
                 for (var i = 0; i < args.Length; i++)
                 {
@@ -87,13 +88,19 @@ internal static class Program
                         case "--models" when i + 1 < args.Length: hostModelRoot = args[++i]; break;
                         case "--manifest" when i + 1 < args.Length: manifestPath = args[++i]; break;
                         case "--device" when i + 1 < args.Length: device = args[++i]; break;
+                        case "--provider-install" when i + 1 < args.Length:
+                            var installArg = args[++i];
+                            if (!bool.TryParse(installArg, out providerInstall))
+                                throw new ArgumentException("provider-install must be true or false");
+                            break;
                         default: throw new ArgumentException($"Unknown or incomplete host option: {args[i]}");
                     }
                 }
                 if (hostModelRoot is null || manifestPath is null)
-                    throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|cpu]");
-                if (device is not ("auto" or "cpu")) throw new ArgumentException("device must be auto or cpu");
-                return StdioServer.Run(hostModelRoot, manifestPath, textOnly, device == "auto");
+                    throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu] [--provider-install true|false]");
+                if (device is not ("auto" or "discrete-gpu" or "npu" or "gpu" or "cpu"))
+                    throw new ArgumentException("device must be auto, discrete-gpu, npu, gpu or cpu");
+                return StdioServer.Run(hostModelRoot, manifestPath, textOnly, device, providerInstall);
             }
             if (args is ["embed-tokens", var textModelRoot, var fixturePath, var reportDirectory])
             {
@@ -106,7 +113,7 @@ internal static class Program
                 return 0;
             }
             if (args is not ["environment"])
-                throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|cpu] | environment | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON | render-pdf-page ABSOLUTE_REQUEST_JSON");
+                throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu] [--provider-install true|false] | environment | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON | render-pdf-page ABSOLUTE_REQUEST_JSON");
 
             var catalog = ExecutionProviderCatalog.GetDefault()
                 ?? throw new InvalidOperationException("Windows ML execution-provider catalog is unavailable");

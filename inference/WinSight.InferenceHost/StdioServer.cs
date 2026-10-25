@@ -11,11 +11,11 @@ internal static class StdioServer
     private const int MaxLineBytes = 1024 * 1024;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
-    internal static int Run(string modelRoot, string manifestPath, bool textOnly, bool automaticProviders)
+    internal static int Run(string modelRoot, string manifestPath, bool textOnly, string device = "auto", bool providerInstall = true)
     {
         var clock = Stopwatch.StartNew();
         EmbeddingEngine engine;
-        try { engine = new EmbeddingEngine(modelRoot, MediaPreprocessor.ProfileVersion, manifestPath, automaticProviders); }
+        try { engine = new EmbeddingEngine(modelRoot, MediaPreprocessor.ProfileVersion, manifestPath, device, providerInstall); }
         catch (Exception error)
         {
             Console.Error.WriteLine($"Host startup failed: {error.GetType().Name}: {error.Message}");
@@ -69,6 +69,9 @@ internal static class StdioServer
         }
     }
 
+    internal static int Run(string modelRoot, string manifestPath, bool textOnly, bool automaticProviders) =>
+        Run(modelRoot, manifestPath, textOnly, automaticProviders ? "auto" : "cpu", automaticProviders);
+
     private static object Info(EmbeddingEngine engine, double loadSeconds, bool textOnly) => new
     {
         model = ModelManifest.Repository, revision = ModelManifest.Revision,
@@ -77,8 +80,9 @@ internal static class StdioServer
         graph_capabilities = new[] { "text", "vision_features", "audio_features" },
         media_preprocessor = MediaPreprocessor.ProfileVersion, validation = "unverified-source-integration", profile_id = engine.Profile,
         input_contract = "raw-text-v1: callers supply query/document task prompts; no implicit truncation",
-        requested_provider = engine.AutomaticProviders ? "device-candidates-with-real-model-gates" : "CPUExecutionProvider",
-        provider_downloads_allowed = engine.AutomaticProviders, backend_status = engine.ProviderStatus,
+        requested_provider = engine.RequestedProvider,
+        provider_downloads_allowed = engine.ProviderDownloadsAllowed,
+        backend_status = engine.ProviderStatus,
         performance_profile_id = engine.PerformanceProfile,
         // Sessions are lazy: startup time is not a measured model-load time.
         load_seconds = (double?)null, startup_seconds = loadSeconds,
