@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using WinSight.Core;
 using WinSight.Infrastructure.Search;
 using WinSight.Infrastructure.Storage;
+using WinSight.Storage.Tests;
 
 var root = Path.Combine(AppContext.BaseDirectory, "synthetic", Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -417,6 +418,7 @@ await Test("query validation, no keyword error swallowing, dispose ownership, co
 await WsRegressions.RunAsync(root, Test);
 await IncrementalQueueStorageTests.RunAsync(root, Test);
 await IncrementalQueueBehaviourTests.RunAsync(root, Test);
+await IncrementalQueueUsnTests.RunAsync(root, Test);
 Console.WriteLine($"RESULT passed={passed} failed={failed} synthetic={root}");
 return failed == 0 ? 0 : 1;
 

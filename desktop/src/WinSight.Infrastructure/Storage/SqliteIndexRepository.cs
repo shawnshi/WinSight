@@ -3,12 +3,13 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using WinSight.Core;
+using WinSight.Infrastructure.Indexing;
 using WinSight.Infrastructure.Search;
 
 namespace WinSight.Infrastructure.Storage;
 
 /// <summary>Schema5 reader; only newly created, explicitly marked native indexes are writable.</summary>
-public sealed class SqliteIndexRepository : IIndexRepository
+public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepository
 {
     public const string NativeFormat = "winsight-native-schema5-fp16-v1";
     private const string MarkerKey = "native_format";
@@ -67,6 +68,12 @@ public sealed class SqliteIndexRepository : IIndexRepository
                         reason TEXT
                     );
                     CREATE INDEX IF NOT EXISTS ix_index_tasks_due ON index_tasks(state, due_utc);
+                    CREATE TABLE IF NOT EXISTS usn_checkpoints (
+                        volume_serial TEXT PRIMARY KEY,
+                        journal_id TEXT,
+                        next_usn TEXT,
+                        reconcile_utc TEXT
+                    );
                     """);
                 Execute(db, null, "UPDATE index_tasks SET state='Pending' WHERE state IN ('Running', 'Stabilizing')");
             }
@@ -197,7 +204,7 @@ public sealed class SqliteIndexRepository : IIndexRepository
             throw new InvalidDataException("Unsupported FTS layout/tokenizer.");
         using var objects = Command(db, null, "SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'");
         using var rows = objects.ExecuteReader();
-        var allowedTables = new HashSet<string>(["meta", "files", "segments", "fts", "fts_data", "fts_idx", "fts_content", "fts_docsize", "fts_config", "index_tasks"], StringComparer.Ordinal);
+        var allowedTables = new HashSet<string>(["meta", "files", "segments", "fts", "fts_data", "fts_idx", "fts_content", "fts_docsize", "fts_config", "index_tasks", "usn_checkpoints"], StringComparer.Ordinal);
         while (rows.Read())
             if (rows.GetString(1) is "trigger" or "view" || (rows.GetString(1) == "table" && !allowedTables.Contains(rows.GetString(0))))
                 throw new InvalidDataException("Unknown database objects; refusing an unsafe index.");
@@ -577,6 +584,53 @@ public sealed class SqliteIndexRepository : IIndexRepository
         }), cancellationToken);
     }
 
+    public Task SaveUsnCheckpointAsync(string volumeSerial, string journalId, string nextUsn, DateTimeOffset reconcileUtc, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(volumeSerial);
+        ArgumentException.ThrowIfNullOrWhiteSpace(journalId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(nextUsn);
+        return RunAsync(() =>
+        {
+            Write(cancellationToken, (db, tx) =>
+            {
+                Execute(db, tx, """
+                    INSERT INTO usn_checkpoints(volume_serial, journal_id, next_usn, reconcile_utc)
+                    VALUES($serial, $jid, $next, $rec)
+                    ON CONFLICT(volume_serial) DO UPDATE SET
+                        journal_id=excluded.journal_id,
+                        next_usn=excluded.next_usn,
+                        reconcile_utc=excluded.reconcile_utc
+                    """,
+                    ("$serial", volumeSerial),
+                    ("$jid", journalId),
+                    ("$next", nextUsn),
+                    ("$rec", reconcileUtc.ToString("o")));
+            });
+            return 0;
+        }, cancellationToken);
+    }
+
+    public Task<(string JournalId, string NextUsn, DateTimeOffset ReconcileUtc)?> GetUsnCheckpointAsync(string volumeSerial, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(volumeSerial);
+        return RunAsync(() =>
+        {
+            return Read(cancellationToken, (db, tx) =>
+            {
+                using var cmd = Command(db, tx, "SELECT journal_id, next_usn, reconcile_utc FROM usn_checkpoints WHERE volume_serial=$serial", ("$serial", volumeSerial));
+                using var reader = cmd.ExecuteReader();
+                if (reader.Read())
+                {
+                    string jid = reader.GetString(0);
+                    string next = reader.GetString(1);
+                    DateTimeOffset rec = DateTimeOffset.Parse(reader.GetString(2));
+                    return ((string JournalId, string NextUsn, DateTimeOffset ReconcileUtc)?)(jid, next, rec);
+                }
+                return null;
+            });
+        }, cancellationToken);
+    }
+
     public Task<string?> GetMetaAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
@@ -904,6 +958,7 @@ public sealed class SqliteIndexRepository : IIndexRepository
         CREATE VIRTUAL TABLE fts USING fts5(name,body,original UNINDEXED,tokenize="{{Tokenizer}}");
         CREATE TABLE IF NOT EXISTS index_tasks (path TEXT PRIMARY KEY,root TEXT NOT NULL,code INTEGER NOT NULL,kind TEXT NOT NULL,tombstone TEXT,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,due_utc TEXT NOT NULL,seen_utc TEXT NOT NULL,reason TEXT);
         CREATE INDEX IF NOT EXISTS ix_index_tasks_due ON index_tasks(state, due_utc);
+        CREATE TABLE IF NOT EXISTS usn_checkpoints (volume_serial TEXT PRIMARY KEY, journal_id TEXT, next_usn TEXT, reconcile_utc TEXT);
         PRAGMA user_version=5;
         """;
 }
