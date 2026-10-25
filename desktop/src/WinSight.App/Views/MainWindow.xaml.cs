@@ -20,18 +20,19 @@ public sealed partial class MainWindow : Window
 
     public IntPtr WindowHandle => windowHandle;
 
-    public MainWindow(IDesktopBackend backend, AppSettings? settings = null, HotkeyService? hotkeyService = null)
+    public MainWindow(IDesktopBackend backend, AppSettings? settings = null, HotkeyService? hotkeyService = null, string? dataDirectory = null)
     {
         this.backend = backend;
         this.settings = settings ?? new AppSettings();
         this.hotkeyService = hotkeyService;
-        ViewModel = new MainWindowViewModel(backend, this.settings);
+        ViewModel = new MainWindowViewModel(backend, this.settings, dataDirectory);
 
         InitializeComponent();
 
         windowHandle = WindowNative.GetWindowHandle(this);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(windowHandle);
         appWindow = AppWindow.GetFromWindowId(windowId);
+        appWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "WinSight.ico"));
 
         appWindow.Closing += OnAppWindowClosing;
 
@@ -107,7 +108,9 @@ public sealed partial class MainWindow : Window
                 ContentFrame.Content = searchPage;
                 break;
             case "folders":
-                ContentFrame.Content = new FoldersPage(backend, settings, windowHandle);
+                var foldersPage = new FoldersPage(backend, ViewModel.Settings, windowHandle);
+                foldersPage.ViewModel.SettingsChanged += OnFolderSettingsChanged;
+                ContentFrame.Content = foldersPage;
                 break;
             case "storage":
                 ContentFrame.Content = new StorageModelPage(backend, settings);
@@ -117,6 +120,8 @@ public sealed partial class MainWindow : Window
                 break;
         }
     }
+
+    private void OnFolderSettingsChanged(object? sender, EventArgs e) => _ = ViewModel.InitializeAsync();
 
     private async void OnPauseIndexingClick(object sender, RoutedEventArgs e)
     {

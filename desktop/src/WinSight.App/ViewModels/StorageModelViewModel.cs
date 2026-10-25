@@ -15,7 +15,7 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
     private string statusMessage = "Click 'Inspect Model' to probe embedding host.";
 
     public string MigrationNotice =>
-        "Migration Preview: Running on isolated preview pipeline (%LOCALAPPDATA%\\WinSight\\NativePreview). Legacy production pipeline unchanged.";
+        $"Local preview. Active index: {DatabasePath}. Legacy indexes are not migrated.";
 
     public string DatabasePath => status?.IndexPath ?? "Isolated Preview Database";
     public int FilesCount => status?.Files ?? 0;
@@ -69,6 +69,7 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
         {
             status = await backend.GetStatusAsync();
             OnPropertyChanged(nameof(DatabasePath));
+            OnPropertyChanged(nameof(MigrationNotice));
             OnPropertyChanged(nameof(FilesCount));
             OnPropertyChanged(nameof(DoneCount));
             OnPropertyChanged(nameof(PendingCount));

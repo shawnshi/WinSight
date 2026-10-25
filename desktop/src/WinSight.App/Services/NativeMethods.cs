@@ -150,8 +150,12 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr GetModuleHandle(string? lpModuleName);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern IntPtr LoadIcon(IntPtr hInstance, IntPtr lpIconName);
+    [DllImport("user32.dll", EntryPoint = "LoadImageW", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr LoadImage(IntPtr hInstance, string name, uint type, int width, int height, uint flags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DestroyIcon(IntPtr icon);
 
     [DllImport("user32.dll")]
     public static extern uint GetDpiForWindow(IntPtr hWnd);

@@ -17,6 +17,7 @@ public sealed class SyntheticDesktopBackend : IDesktopBackend
     public Func<CancellationToken, Task<EngineStatus>>? StatusHandler { get; set; }
     public Func<SearchRequest,CancellationToken,Task<SearchResponse>>? SearchHandler { get; set; }
     public int LoadSettingsCount { get; private set; }
+    public Func<CancellationToken, Task<AppSettings>>? LoadSettingsHandler { get; set; }
     public Func<SearchHit,CancellationToken,Task<ISourcePreview>>? PreviewHandler {get;set;}
     public Func<SearchHit,CancellationToken,Task<SourceNavigationResult>>? NavigationHandler {get;set;}
     public Task<ISourcePreview> PreviewSourceAsync(SearchHit hit,bool code=false,CancellationToken cancellationToken=default)=>PreviewHandler?.Invoke(hit,cancellationToken)??Task.FromException<ISourcePreview>(new NotSupportedException("Synthetic preview not configured."));
@@ -114,7 +115,9 @@ public sealed class SyntheticDesktopBackend : IDesktopBackend
     public Task<AppSettings> LoadSettingsAsync(CancellationToken cancellationToken = default)
     {
         LoadSettingsCount++;
-        return Task.FromResult(DeepClone(settings));
+        return LoadSettingsHandler is not null
+            ? LoadSettingsHandler(cancellationToken)
+            : Task.FromResult(DeepClone(settings));
     }
 
     public Task SaveSettingsAsync(AppSettings updated, CancellationToken cancellationToken = default)

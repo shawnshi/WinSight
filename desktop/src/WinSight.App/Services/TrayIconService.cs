@@ -21,6 +21,7 @@ public sealed class TrayIconService : IDisposable
     private readonly NativeMethods.WndProc wndProcDelegate;
     private readonly IntPtr hInstance;
     private bool disposed;
+    private IntPtr iconHandle;
     private readonly MainWindowViewModel? indexing;
 
     public string PauseMenuText => indexing?.PauseActionText ?? "Indexing status unavailable";
@@ -56,7 +57,8 @@ public sealed class TrayIconService : IDisposable
             hInstance = hInstance,
             lpszClassName = WindowClassName
         };
-        NativeMethods.RegisterClassEx(ref wndClass);
+        if (NativeMethods.RegisterClassEx(ref wndClass) == 0)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot register the WinSight tray window.");
 
         hWnd = NativeMethods.CreateWindowEx(
             0,
@@ -69,7 +71,23 @@ public sealed class TrayIconService : IDisposable
             hInstance,
             IntPtr.Zero);
 
-        InitializeTrayIcon();
+        if (hWnd == IntPtr.Zero)
+        {
+            var error = Marshal.GetLastWin32Error();
+            NativeMethods.UnregisterClass(WindowClassName, hInstance);
+            throw new Win32Exception(error, "Cannot create the WinSight tray window.");
+        }
+        try
+        {
+            InitializeTrayIcon();
+        }
+        catch
+        {
+            if (iconHandle != IntPtr.Zero) NativeMethods.DestroyIcon(iconHandle);
+            NativeMethods.DestroyWindow(hWnd);
+            NativeMethods.UnregisterClass(WindowClassName, hInstance);
+            throw;
+        }
         if (indexing is not null)
         {
             indexing.PropertyChanged += OnIndexingChanged;
@@ -79,6 +97,13 @@ public sealed class TrayIconService : IDisposable
 
     private void InitializeTrayIcon()
     {
+        const uint imageIcon = 1;
+        const uint loadFromFile = 0x10;
+        const uint defaultSize = 0x40;
+        iconHandle = NativeMethods.LoadImage(IntPtr.Zero,
+            Path.Combine(AppContext.BaseDirectory, "Assets", "WinSight.ico"), imageIcon, 0, 0, loadFromFile | defaultSize);
+        if (iconHandle == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot load the WinSight tray icon.");
         var nid = new NativeMethods.NOTIFYICONDATA
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.NOTIFYICONDATA>(),
@@ -86,11 +111,12 @@ public sealed class TrayIconService : IDisposable
             uID = TrayIconId,
             uFlags = NativeMethods.NIF_MESSAGE | NativeMethods.NIF_ICON | NativeMethods.NIF_TIP,
             uCallbackMessage = WM_TRAYICON,
-            hIcon = NativeMethods.LoadIcon(IntPtr.Zero, new IntPtr(32512)), // IDI_APPLICATION
+            hIcon = iconHandle,
             szTip = "WinSight (Native Preview)"
         };
 
-        NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_ADD, ref nid);
+        if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_ADD, ref nid))
+            throw new InvalidOperationException("Cannot add the WinSight tray icon.");
     }
 
     public void UpdateTooltip(string tooltip)
@@ -193,5 +219,10 @@ public sealed class TrayIconService : IDisposable
             NativeMethods.DestroyWindow(hWnd);
         }
         NativeMethods.UnregisterClass(WindowClassName, hInstance);
+        if (iconHandle != IntPtr.Zero)
+        {
+            NativeMethods.DestroyIcon(iconHandle);
+            iconHandle = IntPtr.Zero;
+        }
     }
 }

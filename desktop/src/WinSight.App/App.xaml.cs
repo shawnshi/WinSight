@@ -45,7 +45,7 @@ public partial class App : Application
             var settings = await backend.LoadSettingsAsync();
 
             hotkeyService = new HotkeyService(settings.Hotkey);
-            mainWindow = new MainWindow(backend, settings, hotkeyService);
+            mainWindow = new MainWindow(backend, settings, hotkeyService, customDataDir);
             trayIconService = new TrayIconService(mainWindow.ViewModel);
             quickSearchWindow = new QuickSearchWindow(backend, settings, customDataDir);
 

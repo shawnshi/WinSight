@@ -14,13 +14,13 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Top Migration Preview Warning Banner -->
+        <!-- Preview status is informational; runtime failures are reported separately. -->
         <InfoBar Grid.Row="0"
                  IsOpen="True"
                  IsClosable="False"
-                 Severity="Warning"
-                 Title="WinSight Native Windows Migration Preview"
-                 Message="Running isolated NativePreview pipeline (%LOCALAPPDATA%\WinSight\NativePreview). Legacy production pipeline and actual user indexes remain untouched."/>
+                 Severity="Informational"
+                 Title="WinSight Native Preview"
+                 Message="{x:Bind ViewModel.PreviewNotice}"/>
 
         <!-- Main Navigation View -->
         <NavigationView Grid.Row="1"
@@ -30,6 +30,14 @@
                         PaneDisplayMode="Left"
                         ItemInvoked="OnNavItemInvoked"
                         SelectionChanged="OnNavSelectionChanged">
+            <NavigationView.PaneHeader>
+                <StackPanel Orientation="Horizontal" Spacing="10" Margin="12,8">
+                    <Image Source="ms-appx:///Assets/WinSight.png" Width="32" Height="32"
+                           AutomationProperties.Name="WinSight logo"/>
+                    <TextBlock Text="WinSight" Style="{ThemeResource SubtitleTextBlockStyle}"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+            </NavigationView.PaneHeader>
             <NavigationView.MenuItems>
                 <NavigationViewItem Content="Search" Tag="search" Icon="Find"/>
                 <NavigationViewItem Content="Folders" Tag="folders" Icon="Folder"/>

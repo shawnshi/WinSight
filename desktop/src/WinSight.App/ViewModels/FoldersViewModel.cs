@@ -17,6 +17,13 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
     public ObservableCollection<string> Skipped { get; } = [];
     public ObservableCollection<string> SkipTypes { get; } = [];
 
+    private bool isInitialized;
+    private long loadVersion;
+    public bool IsInitialized
+    {
+        get => isInitialized;
+        private set => SetProperty(ref isInitialized, value);
+    }
     public bool IsSetUp => settings.SetUp;
     public bool IsMonitoringActive => settings.SetUp && settings.BackgroundIndexingEnabled && (settings.Folders.Count > 0 || settings.CodeFolders.Count > 0);
 
@@ -61,13 +68,21 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
 
     public async Task InitializeAsync()
     {
+        var version = ++loadVersion;
+        IsInitialized = false;
         try
         {
-            settings = await backend.LoadSettingsAsync();
+            var latest = await backend.LoadSettingsAsync();
+            if (version != loadVersion) return;
+            settings = latest;
             LoadFromSettings(settings);
+            IsInitialized = true;
+            SettingsChanged?.Invoke(this, EventArgs.Empty);
         }
         catch (Exception ex)
         {
+            if (version != loadVersion) return;
+            IsInitialized = false;
             StatusMessage = $"Failed to load settings: {ex.Message}";
         }
     }
@@ -106,25 +121,26 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
             latest.SkipTypes = [.. SkipTypes];
             latest.SetUp = true;
             latest.BackgroundIndexingEnabled = true;
-            backgroundIndexingEnabled = true;
 
             await backend.SaveSettingsAsync(latest);
             settings = latest;
+            LoadFromSettings(settings);
             OnPropertyChanged(nameof(BackgroundIndexingEnabled));
             OnPropertyChanged(nameof(IsSetUp));
             OnPropertyChanged(nameof(IsMonitoringActive));
             OnPropertyChanged(nameof(MonitoringStatusText));
+            SettingsChanged?.Invoke(this, EventArgs.Empty);
             StatusMessage = "Folders confirmed. Background monitoring enabled.";
             return true;
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("revision conflict", StringComparison.OrdinalIgnoreCase))
         {
-            StatusMessage = $"Revision conflict: {ex.Message}";
+            await ReloadAfterSaveFailureAsync($"Revision conflict: {ex.Message}");
             return false;
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Confirmation error: {ex.Message}";
+            await ReloadAfterSaveFailureAsync($"Confirmation error: {ex.Message}");
             return false;
         }
     }
@@ -195,21 +211,29 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(IsSetUp));
             OnPropertyChanged(nameof(IsMonitoringActive));
             OnPropertyChanged(nameof(MonitoringStatusText));
+            SettingsChanged?.Invoke(this, EventArgs.Empty);
             StatusMessage = "Settings saved.";
             return true;
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("revision conflict", StringComparison.OrdinalIgnoreCase))
         {
-            StatusMessage = $"Revision conflict: {ex.Message}";
+            await ReloadAfterSaveFailureAsync($"Revision conflict: {ex.Message}");
             return false;
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Save error: {ex.Message}";
+            await ReloadAfterSaveFailureAsync($"Save error: {ex.Message}");
             return false;
         }
     }
 
+    private async Task ReloadAfterSaveFailureAsync(string message)
+    {
+        await InitializeAsync();
+        StatusMessage = IsInitialized ? message : $"{message} {StatusMessage}";
+    }
+
+    public event EventHandler? SettingsChanged;
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {

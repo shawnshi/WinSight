@@ -18,7 +18,7 @@
             <!-- Migration Preview Banner -->
             <InfoBar IsOpen="True"
                      IsClosable="False"
-                     Severity="Warning"
+                     Severity="Informational"
                      Title="Native Migration Preview Pipeline"
                      Message="{x:Bind ViewModel.MigrationNotice, Mode=OneWay}"/>
 

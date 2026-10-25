@@ -7,6 +7,7 @@ namespace WinSight.App.ViewModels;
 public sealed class MainWindowViewModel : INotifyPropertyChanged
 {
     private readonly IDesktopBackend backend;
+    public string PreviewNotice { get; }
     private AppSettings settings;
     private EngineStatus? status;
     private bool isIndexingActive;
@@ -17,6 +18,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private bool pauseRequested;
     private bool statusKnown;
     private long statusReadVersion;
+    private long settingsReadVersion;
 
     public IndexingControlState? IndexingState => statusKnown ? status?.IndexingState : null;
     public bool IsPauseControlBusy => isPauseControlBusy;
@@ -127,22 +129,34 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         private set => SetProperty(ref statusMessage, value);
     }
 
-    public MainWindowViewModel(IDesktopBackend backend, AppSettings? initialSettings = null)
+    public MainWindowViewModel(IDesktopBackend backend, AppSettings? initialSettings = null, string? dataDirectory = null)
     {
+        PreviewNotice = dataDirectory is null
+            ? "Local preview; see Storage & Models for the active index path. Legacy indexes are not migrated."
+            : $"Local preview. Data: {dataDirectory}. Legacy indexes are not migrated.";
         this.backend = backend;
         this.settings = initialSettings ?? new AppSettings();
     }
 
     public async Task InitializeAsync()
     {
+        var version = ++settingsReadVersion;
         try
         {
-            settings = await backend.LoadSettingsAsync();
+            var latest = await backend.LoadSettingsAsync(lifetime.Token);
+            if (version != settingsReadVersion || lifetime.IsCancellationRequested) return;
+            settings = latest;
             OnPropertyChanged(nameof(Settings));
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            return;
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Failed to load settings: {ex.Message}";
+            if (version == settingsReadVersion && !lifetime.IsCancellationRequested)
+                StatusMessage = $"Failed to load settings: {ex.Message}";
+            return;
         }
 
         await RefreshStatusAsync();
@@ -154,7 +168,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         if (lifetime.IsCancellationRequested || isPauseControlBusy) return;
         StatusMessage = error ?? (IndexingState != IndexingControlState.Running
             ? IndexingStateText
-            : status?.Detail ?? (PendingCount > 0
+            : FilesCount == 0
+                ? (settings.Folders.Count == 0 && settings.CodeFolders.Count == 0
+                    ? "No index folders configured. Add a folder to begin."
+                    : "No files indexed yet. Select Index Now to index configured folders.")
+                    + (string.IsNullOrWhiteSpace(status?.Detail) ? string.Empty : " " + status.Detail)
+                : status?.Detail ?? (PendingCount > 0
                 ? $"Indexing in progress: {DoneCount} / {FilesCount} files completed..."
                 : $"Index up to date: {DoneCount} files indexed."));
     }
@@ -209,6 +228,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             // NM-UI-04: Reload latest committed settings directly from backend
             settings = await backend.LoadSettingsAsync(ct);
             OnPropertyChanged(nameof(Settings));
+            if (settings.Folders.Count == 0 && settings.CodeFolders.Count == 0)
+            {
+                StatusMessage = "No index folders configured. Add a folder to begin.";
+                return;
+            }
 
             var progress = new Progress<IndexProgress>(p =>
             {
