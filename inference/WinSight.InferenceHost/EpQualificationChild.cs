@@ -262,6 +262,23 @@ internal static class EpQualificationChild
             var reference = new GraphResult(request.ReferenceValues, request.ReferenceShape);
 
             var ort = OrtEnv.Instance();
+            // Registration is per process: the parent registered the provider in its own OrtEnv, so this
+            // child must register it again before it can see the device. Register-only: never download here.
+            var childCatalogNote = "catalog unavailable";
+            try
+            {
+                var catalog = Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog.GetDefault();
+                if (catalog is null) childCatalogNote = "catalog unavailable";
+                else
+                {
+                    var registered = catalog.RegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
+                    childCatalogNote = "RegisterCertifiedAsync registered " + registered.Count + " provider(s)";
+                }
+            }
+            catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)
+            {
+                childCatalogNote = "catalog registration failed: " + error.GetType().Name + ": " + error.Message;
+            }
             var devices = ort.GetEpDevices();
             OrtEpDevice? matchedDevice = null;
             foreach (var d in devices)
@@ -282,7 +299,7 @@ internal static class EpQualificationChild
                 WriteResult(resultPath, new EpQualificationResult
                 {
                     Qualified = false,
-                    Reason = $"Target EP device not found in OrtEnv: {request.EpName}"
+                    Reason = $"Target EP device not found in OrtEnv: {request.EpName} ({childCatalogNote})"
                 });
                 return 0;
             }

@@ -20,6 +20,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="[1.31.0]" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="[1.31.0]" />
+    <PackageReference Include="Microsoft.Windows.AI.MachineLearning" Version="[2.4.89]" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="[10.0.26100.9169]" />
     <EmbeddedResource Include="model-manifest.json" />
     <EmbeddedResource Include="../WinSight.OcrHost/model-manifest.json" LogicalName="WinSight.OcrHost.model-manifest.json" />
