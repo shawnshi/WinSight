@@ -110,3 +110,16 @@ untime\<sourceHash>`（实测 `ba7a1ad3…` 已落盘），启动器按 binding 
   - `RyzenAILightExecutionProvider`：可加载并建会话，但无目标 EP 计算节点证据，按既有门拒绝（`No target-EP compute-node execution evidence`）。
   - 因此"ORT 1.31 + 厂商 NPU 插件"当前只能发现与加载，不能证明加速；门槛与证据口径未放宽。
 - **决策**：采用方案 C——默认路径继续 ORT 1.31，另设基于 Windows ML（ORT 1.27.1）的独立 NPU 执行宿主，按偏好路由并在失败时回退。
+
+## 2026-10-26（七）：G2 中文分词门证据
+
+- **原生分词**：`native/winsight-segmenter`，`jieba-rs = 0.11.0`（MIT），内置词典 SHA-256 `13951982…`，DLL SHA-256 `67ab85c7…`；`cargo test` 5/5，P/Invoke 探针 10/10。
+- **双 FTS 实测**（6 篇合成文档、5 条固定查询）：
+  - 纯中文查询在**原文 FTS** 上按字面短语匹配返回 **0 行**，在 **分词 FTS** 上返回 2 行（`医保报销`、`合同评审`、`电子病历五级` 三条均如此）；
+  - 端到端 **Recall@5 = 5/5**（现有词法模式已覆盖，`fts_seg` 提供真实 bm25 排序，服务字面 FTS 无法服务的短语：3/5 条查询属于此类）；
+  - `DRG DIP 结算` 原文 1 行 / 分词 2 行；`E1001` 两者各 1 行（英文标识符不受影响）。
+- **降级演练**：把分词 DLL 从宿主目录移除后**另起子进程**运行（原生句柄按进程缓存，同进程改名不算证据）：
+  - 写入失败并给出 `SegmenterUnavailableException: The Chinese segmenter library is not available.`；
+  - 检索响应带 `LexicalDegraded=true` 与"Chinese segmentation is unavailable…"提示。
+- **回归**：Storage 48/48、Inference 50/50；`SearchResponse` 新增 `LexicalDegraded`（默认 false）。
+- **未闭合**：`fts_seg` 的排序尚未作为独立通道参与 RRF（现由既有词法模式承担召回，`fts_seg` 负责 CJK 候选的真实 bm25）；这一点已在门证据里如实标注，不作为"已完成"。
