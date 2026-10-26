@@ -2,6 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net11.0-windows10.0.26100.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+    <SegmenterRustTarget Condition="'$(SegmenterRustTarget)' == ''">x86_64-pc-windows-msvc</SegmenterRustTarget>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../WinSight.Core/WinSight.Core.csproj" />
@@ -10,5 +11,10 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.13]" />
     <PackageReference Include="DocumentFormat.OpenXml" Version="[3.5.1]" />
     <PackageReference Include="PdfPig" Version="[0.1.16]" />
+    <!-- Chinese segmenter: the same native library must serve indexing and querying. -->
+    <None Include="../../../native/winsight-segmenter/target/$(SegmenterRustTarget)/release/winsight_segmenter.dll"
+          Link="runtimes/win-x64/native/winsight_segmenter.dll"
+          Condition="Exists('../../../native/winsight-segmenter/target/$(SegmenterRustTarget)/release/winsight_segmenter.dll')"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
