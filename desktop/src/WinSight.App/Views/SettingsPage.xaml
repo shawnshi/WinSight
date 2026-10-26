@@ -282,6 +282,40 @@
                 </StackPanel>
             </Border>
 
+            <!-- About -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="About" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <Grid ColumnSpacing="16" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="Version" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.AppVersion, Mode=OneWay}"
+                                   AutomationProperties.AutomationId="AboutVersion" IsTextSelectionEnabled="True"/>
+                        <TextBlock Grid.Row="1" Text="Project" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <HyperlinkButton Grid.Row="1" Grid.Column="1"
+                                         Content="{x:Bind ViewModel.RepositoryUrl}"
+                                         NavigateUri="{x:Bind ViewModel.RepositoryUrl}"
+                                         AutomationProperties.AutomationId="AboutRepositoryLink"
+                                         Padding="0"/>
+                    </Grid>
+                    <TextBlock Text="Local preview build: not a stable release. Legacy indexes are never migrated automatically."
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+                </StackPanel>
+            </Border>
+
             <!-- Save Button and Feedback -->
             <StackPanel Orientation="Horizontal" Spacing="16">
                 <Button Content="Save Settings"

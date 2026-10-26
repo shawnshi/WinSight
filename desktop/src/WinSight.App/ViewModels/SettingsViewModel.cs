@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using WinSight.Core;
 using WinSight.App.Services;
@@ -277,6 +278,21 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         }
         finally { saveGate.Release(); }
     }
+
+    // Read-only identity shown in the About card; the version is the assembly informational version.
+    public string AppVersion
+    {
+        get
+        {
+            var assembly = typeof(SettingsViewModel).Assembly;
+            var informational = assembly.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            return string.IsNullOrWhiteSpace(informational)
+                ? assembly.GetName().Version?.ToString() ?? "unknown"
+                : informational;
+        }
+    }
+
+    public string RepositoryUrl => "https://github.com/shawnshi/WinSight";
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
