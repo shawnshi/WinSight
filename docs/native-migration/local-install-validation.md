@@ -91,3 +91,12 @@ untime\<sourceHash>`（实测 `ba7a1ad3…` 已落盘），启动器按 binding 
 - **许可与供应链**：`Microsoft.AI.Foundry.Local` 与 `.Runtime` 均为 **MIT**；主包 660,772 bytes（sha256 `e5af6a36…`）、运行时包 33,491,222 bytes（sha256 `d4b19053…`），来源为 nuget.org 官方 flat container，已写入本地缓存并生成 `packages.lock.json`（17 个直接/传递包）。
 - **能力**：`probe`（仅发现，不下载）实测输出 SDK `2.2.1.0`、设备类型 `Invalid/CPU/GPU/NPU`、提供程序 `MIGraphX / RyzenAILight / VitisAI / WebGpu`（均 `registered=false`，即 Foundry 侧尚未注册）；`register --allow-download [EP...]` 才会联网安装；`models` 只列出已缓存/已加载模型。
 - **未做（明确）**：该宿主**尚未进入安装载荷**，也未被 UI 调用；把它接入打包需要新的载荷清单、固定哈希与验收条目。当前仅为"可编译、可运行、只读发现"的隔离后端。
+
+## 2026-10-26（五）：Windows ML EP 目录在 ORT 1.31 上恢复
+
+- **依赖**：主 `WinSight.InferenceHost` 同时引用 `Microsoft.ML.OnnxRuntime(.Managed) [1.31.0]` 与 `Microsoft.Windows.AI.MachineLearning [2.4.89]`；离线 `--locked-mode` 还原成功。
+- **单 ORT 进程实测**：运行期 `Process.Modules` 中只有一个 `onnxruntime.dll`（1.31.0，SHA `E98E6494…`），`OrtEnv.GetVersionString()` 报告 1.31.0，WinML 通过 C#/WinRT 投影同进程加载，未出现符号冲突。
+- **目录能力恢复**：`ExecutionProviderCatalog.GetDefault().RegisterCertifiedAsync()`（不下载）注册 `VitisAIExecutionProvider`；`GetEpDevices()` 由 1 个设备增至 2 个，出现真实 **NPU** 设备（`VitisAIExecutionProvider / NPU / deviceId 6128 / vendorId 4130`，AMD Ryzen AI）。`FindAllProviders()` 同步显示 `MIGraphX=NotPresent`、`VitisAI=Ready(Certified)`、`RyzenAILight=Ready(Uncertified)`。
+- **注册是每进程的**：资格验证子进程原先报 `Target EP device not found in OrtEnv`，因为父进程的注册不会继承；子进程改为在枚举设备前先 `RegisterCertifiedAsync()`（只注册、不下载），随后能正确看到 NPU 设备。
+- **ABI 风险被证实并被隔离**：子进程拿到 NPU 设备后，厂商插件（按 ORT 1.27 构建）在 1.31 上以 `0xC0000409` 崩溃；主宿主 exit 0、嵌入正常、回退 CPU，并把原因记为 `rejected: process exited with code 0xC0000409`。即：**目录可用、设备可见、执行仍需匹配 ORT 版本**。
+- **未部署**：该改动只进源码；是否把主宿主切到 WinML 自带的 ORT 1.27.1（以换取 NPU 可用）仍需决策，因此未重新打包安装。
