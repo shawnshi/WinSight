@@ -314,7 +314,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             "ON CONFLICT(path) DO UPDATE SET kind=excluded.kind,size=excluded.size,mtime=excluded.mtime,state=excluded.state,detail=excluded.detail,info=excluded.info,indexed_at=excluded.indexed_at",
             ("$path", file.Path), ("$kind", file.Kind), ("$size", file.Size), ("$mtime", file.ModifiedTime), ("$state", file.State), ("$detail", file.Detail), ("$info", file.Info), ("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0));
         long id = Convert.ToInt64(Scalar(db, tx, "SELECT id FROM files WHERE path=$path", ("$path", file.Path)));
-        Execute(db, tx, "DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file=$id); DELETE FROM segments WHERE file=$id;", ("$id", id));
+        Execute(db, tx, "DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file=$id); DELETE FROM fts_seg WHERE rowid IN (SELECT id FROM segments WHERE file=$id); DELETE FROM segments WHERE file=$id;", ("$id", id));
         string slash = file.Path.Replace('\\', '/');
         int last = slash.LastIndexOf('/');
         AddSegment(db, tx, id, new IndexSegment("name", "none", null, null, null), last < 0 ? slash : slash[(last + 1)..], last < 0 ? "" : slash[..last].Replace('/', ' '));
@@ -344,6 +344,10 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         string normalized = SearchText.Normalize(body ?? "");
         Execute(db, tx, "INSERT INTO fts(rowid,name,body,original) VALUES($id,$name,$body,$original)", ("$id", segmentId),
             ("$name", SearchText.Normalize(name)), ("$body", normalized), ("$original", normalized == body ? null : body));
+        // Segmented FTS: the same rules are used at query time, so Chinese terms are real FTS tokens rather
+        // than a substring heuristic. A missing segmenter aborts the file instead of leaving half a row.
+        var tokens = SearchText.SegmentedTokens(name + " " + (body ?? ""));
+        Execute(db, tx, "INSERT INTO fts_seg(rowid,tokens) VALUES($id,$tokens)", ("$id", segmentId), ("$tokens", tokens));
         return segmentId;
     }
 
@@ -359,7 +363,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
 
     private static void DeleteFileInternal(SqliteConnection db, SqliteTransaction tx, string path)
     {
-        Execute(db, tx, "DELETE FROM fts WHERE rowid IN (SELECT s.id FROM segments s JOIN files f ON f.id=s.file WHERE f.path=$path); DELETE FROM files WHERE path=$path;", ("$path", path));
+        Execute(db, tx, "DELETE FROM fts WHERE rowid IN (SELECT s.id FROM segments s JOIN files f ON f.id=s.file WHERE f.path=$path); DELETE FROM fts_seg WHERE rowid IN (SELECT s.id FROM segments s JOIN files f ON f.id=s.file WHERE f.path=$path); DELETE FROM files WHERE path=$path;", ("$path", path));
     }
 
     public Task ResetHangingTasksAsync(CancellationToken cancellationToken = default) =>
@@ -888,6 +892,18 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         var cjkIds = selected.Where(c => !c.Value.Fts).Select(c => c.Value.Segment).ToArray();
         if (cjkIds.Length > 0)
         {
+            // Segmented FTS gives Chinese units a real bm25 score instead of a substring share. When the
+            // segmenter is unavailable the channel is skipped and the caller is told lexical is degraded.
+            var segmented = new Dictionary<long, (double Rank, string? Snippet)>();
+            var segmentPatterns = SegmentedQueryPatterns(query);
+            if (segmentPatterns.Length != 0)
+            {
+                using var segCmd = Command(db, tx, "SELECT s.id,bm25(fts_seg,1.0),snippet(fts_seg,0,'«','»','…',12) FROM fts_seg JOIN segments s ON s.id=fts_seg.rowid " +
+                    "WHERE fts_seg MATCH $q AND s.id IN (SELECT value FROM json_each($ids))",
+                    ("$q", string.Join(" OR ", segmentPatterns)), ("$ids", JsonSerializer.Serialize(cjkIds)));
+                using var segRows = segCmd.ExecuteReader();
+                while (segRows.Read()) segmented[segRows.GetInt64(0)] = (segRows.GetDouble(1), Text(segRows, 2));
+            }
             using var cmd = Command(db, tx, "SELECT id,file,kind,modality,loc,loc_end,excerpt FROM segments WHERE id IN (SELECT value FROM json_each($ids))", ("$ids", JsonSerializer.Serialize(cjkIds)));
             using var rows = cmd.ExecuteReader();
             while (rows.Read())
@@ -896,7 +912,9 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 long id = rows.GetInt64(0), file = rows.GetInt64(1);
                 var selectedRow = selectedBySegment[id];
                 var segment = Segment(rows, 2, false) with { Source = sources[file].GetValueOrDefault(id) };
-                evidence.Add(id, new(file, 0, shares.GetValueOrDefault(selectedRow.Key), segment, null, true));
+                var ranked = segmented.TryGetValue(id, out var hit);
+                evidence.Add(id, new(file, ranked ? hit.Rank : 0, shares.GetValueOrDefault(selectedRow.Key), segment,
+                    ranked ? hit.Snippet : null, ranked));
             }
         }
         return selected.Select(c => evidence.TryGetValue(c.Value.Segment, out var word) ? word
@@ -1020,6 +1038,25 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         finally { gate.Release(); }
     }
 
+
+    /// <summary>Query-side tokens for the segmented FTS channel; empty when the segmenter is unusable.</summary>
+    private static string[] SegmentedQueryPatterns(string query)
+    {
+        try
+        {
+            var tokens = NativeSegmenter.Segment(query)
+                .Where(token => token.Length != 0 && token != "AND" && token != "OR" && token != "NOT")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(token => "\"" + token.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"")
+                .ToArray();
+            return tokens;
+        }
+        catch (SegmenterUnavailableException)
+        {
+            return Array.Empty<string>();
+        }
+    }
+
     private static readonly string Schema = $$"""
         CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE files(id INTEGER PRIMARY KEY,path TEXT NOT NULL UNIQUE,kind TEXT NOT NULL,size INTEGER NOT NULL,mtime REAL NOT NULL,
@@ -1030,10 +1067,11 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             modality TEXT NOT NULL,loc REAL,loc_end REAL,excerpt TEXT,vec BLOB);
         CREATE INDEX segments_file ON segments(file);
         CREATE VIRTUAL TABLE fts USING fts5(name,body,original UNINDEXED,tokenize="{{Tokenizer}}");
+        CREATE VIRTUAL TABLE fts_seg USING fts5(tokens,tokenize="unicode61 remove_diacritics 2");
         CREATE TABLE IF NOT EXISTS index_tasks (path TEXT PRIMARY KEY,root TEXT NOT NULL,code INTEGER NOT NULL,kind TEXT NOT NULL,tombstone TEXT,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,due_utc TEXT NOT NULL,seen_utc TEXT NOT NULL,reason TEXT);
         CREATE INDEX IF NOT EXISTS ix_index_tasks_due ON index_tasks(state, due_utc);
         CREATE TABLE IF NOT EXISTS usn_checkpoints (volume_serial TEXT PRIMARY KEY, journal_id TEXT, next_usn TEXT, reconcile_utc TEXT);
-        PRAGMA user_version=5;
+        PRAGMA user_version=6;
         """;
 }
 

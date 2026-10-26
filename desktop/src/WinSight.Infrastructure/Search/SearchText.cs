@@ -139,4 +139,17 @@ internal static class SearchText
         }
         return hints;
     }
+
+    /// <summary>
+    /// Tokens for the segmented FTS table. Uses the shared native segmenter so indexing and querying agree;
+    /// a missing segmenter is a hard error rather than an empty token set.
+    /// </summary>
+    internal static string SegmentedTokens(string text)
+    {
+        var tokens = NativeSegmenter.Segment(text);
+        return string.Join(' ', tokens);
+    }
+
+    /// <summary>True when the segmented lexical channel can be used for this process.</summary>
+    internal static bool SegmentationAvailable => NativeSegmenter.IsAvailable;
 }
