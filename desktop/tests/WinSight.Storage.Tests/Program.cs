@@ -18,6 +18,40 @@ async Task Test(string name, Func<Task> test)
 }
 string Db(string name) => Path.Combine(root, name + ".sqlite");
 
+await Test("migration exports, validates and keeps the source", async () =>
+{
+    var source = Path.Combine(root, "migration-source");
+    Directory.CreateDirectory(source);
+    var repository = new SqliteIndexRepository(Path.Combine(source, "index.sqlite"));
+    await repository.InitializeAsync();
+    await repository.SetMetaAsync("profile_id", "migration-profile");
+    await repository.UpsertFileAsync(new IndexedFile(0, Path.Combine(root, "migrated.txt"), "doc", 3, 0, "done", null, null,
+        [new IndexSegment("chunk", "none", 1, null, "migration content")]));
+    await repository.DisposeAsync();
+    SqliteConnection.ClearAllPools();
+
+    var target = Path.Combine(root, "migration-target");
+    var service = new IndexMigrationService();
+    var outcome = await service.MigrateAsync(source, target);
+    Check(outcome.Phase == MigrationPhase.Switched, "A clean migration must switch: " + outcome.Detail);
+    Check(File.Exists(Path.Combine(source, "index.sqlite")), "The source must be kept as the recovery point.");
+    var copied = new SqliteIndexRepository(Path.Combine(target, "index.sqlite"));
+    await copied.InitializeAsync();
+    Check((await copied.ReadFilesAsync()).Count == 1, "The export must carry the rows.");
+    Check(await copied.GetMetaAsync("profile_id") == "migration-profile", "The export must carry the metadata.");
+    await copied.DisposeAsync();
+    SqliteConnection.ClearAllPools();
+
+    var busy = Path.Combine(root, "migration-busy");
+    Directory.CreateDirectory(busy);
+    await File.WriteAllTextAsync(Path.Combine(busy, "keep.txt"), "occupied");
+    var refusedBusy = await service.MigrateAsync(source, busy);
+    Check(refusedBusy.Phase == MigrationPhase.Refused, "A non-empty target must be refused, not overwritten.");
+    Check(File.Exists(Path.Combine(busy, "keep.txt")), "The existing target content must survive.");
+    var refusedInside = await service.MigrateAsync(source, Path.Combine(source, "nested"));
+    Check(refusedInside.Phase == MigrationPhase.Refused, "A nested target must be refused.");
+});
+
 await Test("NeedsRebuild reports a stale generation and stays quiet when it matches", async () =>
 {
     var directory = Path.Combine(root, "needs-rebuild");
