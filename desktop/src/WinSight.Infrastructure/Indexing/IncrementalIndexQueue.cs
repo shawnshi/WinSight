@@ -339,7 +339,14 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
             .ToDictionary(f => FilePolicy.Normalize(f.Path), StringComparer.OrdinalIgnoreCase);
 
         var diskPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pending = new List<IndexTask>();
         var rootDir = new DirectoryInfo(normRoot);
+        async Task FlushAsync(bool force)
+        {
+            if (pending.Count == 0 || (!force && pending.Count < 500)) return;
+            await repository.EnqueueIndexTasksAsync(pending.ToArray(), cancellationToken).ConfigureAwait(false);
+            pending.Clear();
+        }
 
         foreach (var file in EnumerateFilesSafe(rootDir, code))
         {
@@ -355,13 +362,13 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                 {
                     continue;
                 }
-                var updateTask = new IndexTask(norm, normRoot, code, "Update", null, "Pending", 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill");
-                await EnqueueWithCoalescingAsync(updateTask, cancellationToken).ConfigureAwait(false);
+                pending.Add(new IndexTask(norm, normRoot, code, "Update", null, "Pending", 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill"));
+                await FlushAsync(false).ConfigureAwait(false);
             }
             else
             {
-                var addTask = new IndexTask(norm, normRoot, code, "Add", null, "Pending", 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill");
-                await EnqueueWithCoalescingAsync(addTask, cancellationToken).ConfigureAwait(false);
+                pending.Add(new IndexTask(norm, normRoot, code, "Add", null, "Pending", 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill"));
+                await FlushAsync(false).ConfigureAwait(false);
             }
         }
 
@@ -374,6 +381,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
         await TryRecordUsnCheckpointAsync(normRoot, cancellationToken).ConfigureAwait(false);
 
+        await FlushAsync(true).ConfigureAwait(false);
         dirtyRoots.TryRemove(root, out _);
         lastReconcileUtc = DateTimeOffset.UtcNow;
         return true;

@@ -66,6 +66,13 @@ public interface IIndexRepository : IAsyncDisposable
     Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default);
     Task ResetHangingTasksAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     Task EnqueueIndexTaskAsync(IndexTask task, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    Task EnqueueIndexTasksAsync(IReadOnlyList<IndexTask> tasks, CancellationToken cancellationToken = default) =>
+        tasks.Count == 0 ? Task.CompletedTask
+        : tasks.Aggregate(Task.CompletedTask, async (previous, task) =>
+        {
+            await previous.ConfigureAwait(false);
+            await EnqueueIndexTaskAsync(task, cancellationToken).ConfigureAwait(false);
+        });
     Task<IReadOnlyList<IndexTask>> ReadDueTasksAsync(int limit, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<IndexTask>>([]);
     Task<IndexTask?> GetTaskAsync(string path, CancellationToken cancellationToken = default) => Task.FromResult<IndexTask?>(null);
     Task UpdateTaskStateAsync(string path, string state, int attempts, DateTimeOffset dueUtc, string? reason = null, CancellationToken cancellationToken = default) => Task.CompletedTask;

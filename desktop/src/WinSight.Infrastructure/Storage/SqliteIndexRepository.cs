@@ -409,6 +409,49 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         }, cancellationToken);
     }
 
+    /// <summary>Inserts or coalesces many tasks in one transaction; used by reconciliation.</summary>
+    public Task EnqueueIndexTasksAsync(IReadOnlyList<IndexTask> tasks, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tasks);
+        if (tasks.Count == 0) return Task.CompletedTask;
+        foreach (var task in tasks) { ArgumentNullException.ThrowIfNull(task); ValidatePath(task.Path); }
+        return RunAsync(() =>
+        {
+            Write(cancellationToken, (db, tx) =>
+            {
+                foreach (var task in tasks)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    Execute(db, tx, """
+                        INSERT INTO index_tasks(path, root, code, kind, tombstone, state, attempts, due_utc, seen_utc, reason)
+                        VALUES($path, $root, $code, $kind, $tombstone, $state, $attempts, $due, $seen, $reason)
+                        ON CONFLICT(path) DO UPDATE SET
+                            root=excluded.root,
+                            code=excluded.code,
+                            kind=excluded.kind,
+                            tombstone=coalesce(excluded.tombstone, index_tasks.tombstone),
+                            state=excluded.state,
+                            attempts=excluded.attempts,
+                            due_utc=excluded.due_utc,
+                            seen_utc=index_tasks.seen_utc,
+                            reason=excluded.reason
+                        """,
+                        ("$path", task.Path),
+                        ("$root", task.Root),
+                        ("$code", task.Code ? 1 : 0),
+                        ("$kind", task.Kind),
+                        ("$tombstone", task.Tombstone),
+                        ("$state", task.State),
+                        ("$attempts", task.Attempts),
+                        ("$due", task.DueUtc.ToString("O")),
+                        ("$seen", task.SeenUtc.ToString("O")),
+                        ("$reason", task.Reason));
+                }
+            });
+            return 0;
+        }, cancellationToken);
+    }
+
     public Task<IReadOnlyList<IndexTask>> ReadDueTasksAsync(int limit, CancellationToken cancellationToken = default)
     {
         return RunAsync(() => Read(cancellationToken, (db, tx) =>
