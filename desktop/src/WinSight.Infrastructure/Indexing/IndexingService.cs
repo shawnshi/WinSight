@@ -118,7 +118,19 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                     {
                         if (request.AllowPowerPointAutomation && !request.Code && FilePolicy.Extension(file.Path) == "pptx" && presentationPages is not null)
                             progress?.Report(new("powerpoint-exclusive",file.Path,completed,failed,partial,"Keep PowerPoint closed during this manual indexing interval."));
-                        result = await ProcessAsync(file, request.Code, info, request.Documents ?? new(), request.AllowPowerPointAutomation, cancellationToken);
+                        // A single pathological document must not stall a corpus-wide pass. The budget only
+                        // applies to the expensive parse, and the file is retried on a later pass.
+                        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        var bounded = request.MaxFileSeconds > 0;
+                        if (bounded) budget.CancelAfter(TimeSpan.FromSeconds(request.MaxFileSeconds));
+                        try
+                        {
+                            result = await ProcessAsync(file, request.Code, info, request.Documents ?? new(), request.AllowPowerPointAutomation, budget.Token);
+                        }
+                        catch (OperationCanceledException) when (bounded && !cancellationToken.IsCancellationRequested)
+                        {
+                            result = new([], "partial", $"deferred: parsing exceeded the {request.MaxFileSeconds}s per-file budget; retried on a later pass.");
+                        }
                     }
                     catch (EmbeddingDependencyException error)
                     {

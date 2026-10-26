@@ -29,7 +29,7 @@ public sealed record IndexTask(string Path, string Root, bool Code, string Kind,
 public sealed record IndexRequest(IReadOnlyList<string> Roots, IReadOnlyList<string>? Excluded = null,
     IReadOnlyList<string>? SkipTypes = null, bool Code = false, bool Force = false,
     long MaxFileBytes = 32 * 1024 * 1024, DocumentExtractionOptions? Documents = null, bool AllowPowerPointAutomation = false,
-    bool DeferComplexParse = true);
+    bool DeferComplexParse = true, int MaxFileSeconds = 25);
 public sealed record EngineStatus(int Files, int Done, int Pending, int Partial, int Failed,
     string IndexPath, string? Detail = null, IndexingControlState IndexingState = IndexingControlState.Running);
 public sealed record FoundryProbe(string Sdk, IReadOnlyList<string> DeviceTypes, IReadOnlyList<FoundryProvider> Providers, string? Error = null);
