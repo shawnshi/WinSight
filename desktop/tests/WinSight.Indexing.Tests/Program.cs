@@ -241,6 +241,31 @@ internal sealed partial class Suite
             var codeRepo = new FakeRepository(); await new IndexingService(codeRepo, new ContentExtractor(), new FakeEmbedding()).IndexAsync(new([root], Code: true));
             Check(codeRepo.Files.Count == 1 && codeRepo.Files.ContainsKey(ordinary), "Code default directory filters wrong.");
         });
+        await Test("a file that exceeds its parse budget becomes partial and is retried", async () =>
+        {
+            var folder = Folder("slow-parse");
+            var slow = Put(folder, "slow.txt", "slow document");
+            Put(folder, "fast.txt", "fast document");
+            var repository = new FakeRepository();
+            var extractor = new StubExtractor((path, ct) =>
+            {
+                if (Path.GetFileName(path) == "slow.txt")
+                {
+                    // Block until the per-file budget cancels this parse.
+                    while (!ct.IsCancellationRequested) Thread.Sleep(20);
+                    ct.ThrowIfCancellationRequested();
+                }
+                return new ExtractionResult([new IndexSegment("chunk", "none", 1, null, "fast document")], "done", null);
+            });
+            var service = new IndexingService(repository, extractor, null);
+            await service.IndexAsync(new IndexRequest([folder], MaxFileSeconds: 1));
+            var slowRow = repository.Files.Values.FirstOrDefault(f => f.Path.EndsWith("slow.txt", StringComparison.OrdinalIgnoreCase));
+            Check(slowRow is not null && slowRow.State == "partial", "An over-budget parse must be recorded as partial, not done: " + slowRow?.State);
+            Check(slowRow!.Detail is not null && slowRow.Detail.Contains("deferred", StringComparison.OrdinalIgnoreCase), "The reason must say the parse was deferred.");
+            var fast = repository.Files.Values.FirstOrDefault(f => f.Path.EndsWith("fast.txt", StringComparison.OrdinalIgnoreCase));
+            Check(fast is not null && fast.State == "done", "A sibling file must still finish.");
+        });
+
         await Test("cloud/offline files are not opened for content", async () =>
         {
             var root = Folder("offline"); var path = Put(root, "placeholder.txt"); var attributes = File.GetAttributes(path);
