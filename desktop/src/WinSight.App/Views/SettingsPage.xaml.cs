@@ -163,4 +163,14 @@ public sealed partial class SettingsPage : Page
     {
         await ViewModel.StartRebuildAsync();
     }
+
+    private async void OnInspectMigrationClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.InspectMigrationAsync();
+    }
+
+    private async void OnMigrateIndexClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.MigrateIndexAsync();
+    }
 }

@@ -510,6 +510,37 @@ public sealed partial class DesktopBackend : IDesktopBackend
     private volatile string rebuildStatus = "idle";
     private volatile bool rebuildRunning;
 
+    /// <summary>Explains what a migration would do, without exporting or touching either directory.</summary>
+    public Task<IndexMigrationResult?> InspectMigrationAsync(string targetDirectory, CancellationToken cancellationToken = default)
+    {
+        var outcome = new IndexMigrationService().Inspect(IndexDirectory, targetDirectory);
+        return Task.FromResult<IndexMigrationResult?>(new IndexMigrationResult(outcome.Phase.ToString(), outcome.Source, outcome.Target, outcome.Detail));
+    }
+
+    /// <summary>
+    /// Exports the index to another directory and points the app at it. The old directory is kept untouched as
+    /// the recovery point; the caller decides when to remove it.
+    /// </summary>
+    public async Task<IndexMigrationResult?> MigrateIndexAsync(string targetDirectory, CancellationToken cancellationToken = default)
+    {
+        var outcome = await new IndexMigrationService().MigrateAsync(IndexDirectory, targetDirectory, cancellationToken).ConfigureAwait(false);
+        if (outcome.Phase != MigrationPhase.Switched)
+            return new IndexMigrationResult(outcome.Phase.ToString(), outcome.Source, outcome.Target, outcome.Detail);
+        try
+        {
+            var current = await settingsStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+            current.IndexDirectory = outcome.Target;
+            await SaveSettingsAsync(current, cancellationToken).ConfigureAwait(false);
+            return new IndexMigrationResult(outcome.Phase.ToString(), outcome.Source, outcome.Target,
+                outcome.Detail + " The app now uses the new location; the previous directory can be removed once verified.");
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            return new IndexMigrationResult("ExportedNotSwitched", outcome.Source, outcome.Target,
+                "The export succeeded but the settings pointer could not change: " + error.Message);
+        }
+    }
+
     /// <summary>True when the live generation no longer matches the model or the lexicon.</summary>
     public async Task<bool> RebuildNeededAsync(CancellationToken cancellationToken = default)
     {

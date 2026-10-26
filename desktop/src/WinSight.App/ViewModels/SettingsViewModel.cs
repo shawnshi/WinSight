@@ -422,6 +422,43 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     private static string Shorten(string value) => value.Length <= 12 ? value : value[..12] + "…";
 
+    private string migrationTarget = "";
+    private string migrationSummary = "Pick an empty directory to move the index; the current one is always kept.";
+    private bool migrationBusy;
+    public string MigrationTarget
+    {
+        get => migrationTarget;
+        set => SetProperty(ref migrationTarget, value);
+    }
+    public string MigrationSummary => migrationSummary;
+    public bool CanMigrate => !migrationBusy;
+
+    public async Task InspectMigrationAsync()
+    {
+        if (migrationBusy) return;
+        if (string.IsNullOrWhiteSpace(migrationTarget)) { migrationSummary = "Enter a target directory first."; OnPropertyChanged(nameof(MigrationSummary)); return; }
+        migrationBusy = true;
+        try { migrationSummary = Describe(await backend.InspectMigrationAsync(migrationTarget.Trim()), "Inspect"); }
+        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or UnauthorizedAccessException) { migrationSummary = "Inspect failed: " + error.Message; }
+        finally { migrationBusy = false; OnPropertyChanged(nameof(MigrationSummary)); OnPropertyChanged(nameof(CanMigrate)); }
+    }
+
+    public async Task MigrateIndexAsync()
+    {
+        if (migrationBusy) return;
+        if (string.IsNullOrWhiteSpace(migrationTarget)) { migrationSummary = "Enter a target directory first."; OnPropertyChanged(nameof(MigrationSummary)); return; }
+        migrationBusy = true;
+        migrationSummary = "Exporting the index…";
+        OnPropertyChanged(nameof(MigrationSummary));
+        try { migrationSummary = Describe(await backend.MigrateIndexAsync(migrationTarget.Trim()), "Migrate"); }
+        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or UnauthorizedAccessException) { migrationSummary = "Migrate failed: " + error.Message; }
+        finally { migrationBusy = false; OnPropertyChanged(nameof(MigrationSummary)); OnPropertyChanged(nameof(CanMigrate)); }
+    }
+
+    private static string Describe(IndexMigrationResult? result, string verb) => result is null
+        ? verb + ": the migration service is unavailable in this build."
+        : $"{verb}: {result.Phase}. {result.Detail} (source {result.Source})";
+
     private string rebuildSummary = "Rebuild is only needed when the model or the lexicon changed.";
     public string RebuildSummary => rebuildSummary;
 

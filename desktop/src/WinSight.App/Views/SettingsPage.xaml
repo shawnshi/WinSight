@@ -301,6 +301,34 @@
                 </StackPanel>
             </Border>
 
+            <!-- Index location -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Index location" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="Move the index to an empty directory. Inspect explains refusals first; Migrate exports, validates, then points the app at the new location. The previous directory is never deleted."
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+                    <TextBox Header="Target directory" Text="{x:Bind ViewModel.MigrationTarget, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             PlaceholderText="D:\WinSightIndex"
+                             AutomationProperties.AutomationId="MigrationTargetBox"/>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Content="Inspect" Click="OnInspectMigrationClick"
+                                AutomationProperties.AutomationId="InspectMigrationButton"/>
+                        <Button Content="Migrate" Click="OnMigrateIndexClick"
+                                IsEnabled="{x:Bind ViewModel.CanMigrate, Mode=OneWay}"
+                                AutomationProperties.AutomationId="MigrateIndexButton"/>
+                    </StackPanel>
+                    <TextBlock Text="{x:Bind ViewModel.MigrationSummary, Mode=OneWay}" TextWrapping="Wrap"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               AutomationProperties.AutomationId="MigrationSummary"/>
+                </StackPanel>
+            </Border>
+
             <!-- Index generation -->
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"

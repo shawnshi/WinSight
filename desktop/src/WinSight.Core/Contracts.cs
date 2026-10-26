@@ -34,6 +34,8 @@ public sealed record EngineStatus(int Files, int Done, int Pending, int Partial,
     string IndexPath, string? Detail = null, IndexingControlState IndexingState = IndexingControlState.Running);
 public sealed record FoundryProbe(string Sdk, IReadOnlyList<string> DeviceTypes, IReadOnlyList<FoundryProvider> Providers, string? Error = null);
 public sealed record FoundryProvider(string Name, bool Registered);
+public sealed record IndexMigrationResult(string Phase, string Source, string Target, string Detail);
+
 public sealed record ModelInventory(string EmbeddingModel, string EmbeddingRevision, string EmbeddingProfile, string EmbeddingDevice,
     string OcrEngine, string OcrVersion, string OcrProfile, string OcrDevice, string Notes);
 
@@ -193,6 +195,8 @@ public interface IDesktopBackend : IAsyncDisposable
     Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<ModelInventory?> GetModelInventoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<ModelInventory?>(null);
+    Task<IndexMigrationResult?> InspectMigrationAsync(string targetDirectory, CancellationToken cancellationToken = default) => Task.FromResult<IndexMigrationResult?>(null);
+    Task<IndexMigrationResult?> MigrateIndexAsync(string targetDirectory, CancellationToken cancellationToken = default) => Task.FromResult<IndexMigrationResult?>(null);
     Task<bool> RebuildNeededAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
     Task<string> StartRebuildAsync(CancellationToken cancellationToken = default) => Task.FromResult("unsupported");
     string RebuildStatus => "idle";

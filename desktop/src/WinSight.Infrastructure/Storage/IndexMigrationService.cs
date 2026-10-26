@@ -21,14 +21,8 @@ public sealed class IndexMigrationService
         var source = Path.GetFullPath(sourceDirectory);
         var target = Path.GetFullPath(targetDirectory);
         var sourceDatabase = Path.Combine(source, "index.sqlite");
-        if (!File.Exists(sourceDatabase))
-            return new(MigrationPhase.Refused, source, target, "There is no index to migrate at " + source + ".");
-        if (PathEquals(source, target))
-            return new(MigrationPhase.Refused, source, target, "The target is the current location.");
-        if (IsInside(target, source) || IsInside(source, target))
-            return new(MigrationPhase.Refused, source, target, "The target and the source must not contain each other.");
-        if (Directory.Exists(target) && Directory.EnumerateFileSystemEntries(target).Any())
-            return new(MigrationPhase.Refused, source, target, "The target already has content; nothing was overwritten.");
+        var preflight = Inspect(source, target);
+        if (preflight.Phase == MigrationPhase.Refused) return preflight;
 
         var targetDatabase = Path.Combine(target, "index.sqlite");
         try
@@ -50,6 +44,21 @@ public sealed class IndexMigrationService
             TryDelete(targetDatabase);
             return new(MigrationPhase.Failed, source, target, error.GetType().Name + ": " + error.Message);
         }
+    }
+
+    /// <summary>Reports the refusal reasons without touching either directory.</summary>
+    public MigrationOutcome Inspect(string sourceDirectory, string targetDirectory)
+    {
+        var source = Path.GetFullPath(sourceDirectory);
+        var target = Path.GetFullPath(targetDirectory);
+        if (!File.Exists(Path.Combine(source, "index.sqlite")))
+            return new(MigrationPhase.Refused, source, target, "There is no index to migrate at " + source + ".");
+        if (PathEquals(source, target)) return new(MigrationPhase.Refused, source, target, "The target is the current location.");
+        if (IsInside(target, source) || IsInside(source, target))
+            return new(MigrationPhase.Refused, source, target, "The target and the source must not contain each other.");
+        if (Directory.Exists(target) && Directory.EnumerateFileSystemEntries(target).Any())
+            return new(MigrationPhase.Refused, source, target, "The target already has content; nothing will be overwritten.");
+        return new(MigrationPhase.Exported, source, target, "Ready: the index can be exported here, and the source is kept.");
     }
 
     /// <summary>Uses SQLite's own backup path so the export is consistent while the source stays read-only.</summary>
