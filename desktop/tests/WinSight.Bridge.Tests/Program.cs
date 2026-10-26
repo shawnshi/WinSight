@@ -1,6 +1,7 @@
 // Bridge fixture: asserts the tool contract over stdio, then proves the pipe transport returns identical hits.
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -58,7 +59,7 @@ await using (var stdio = new StdioBridge(bridge, database))
     Check("stdio status counts files", status.GetProperty("fileCount").GetInt32() == corpus.Length);
     Check("stdio status hides the database path", !status.ToString().Contains("index.sqlite", StringComparison.OrdinalIgnoreCase));
     Check("stdio reports http disabled", status.GetProperty("http").GetString() == "disabled");
-    Check("stdio denies index_directory", Code(await stdio.Tool("index_directory", new { root = docs })) == "unauthorized");
+    Check("stdio accepts a maintenance request", Code(await stdio.Tool("index_directory", new { root = docs })) is null);
     Check("stdio rejects an oversized query", Code(await stdio.Tool("search_files", new { query = new string('x', 5000) })) == "validation_error");
     Check("stdio rejects an unknown tool", Code(await stdio.Call("tools/call", new { name = "nope", arguments = new { } })) is not null);
     Check("stdio stdout carried only JSON", stdio.Output.All(line => line.Trim().Length == 0 || Parses(line)));
@@ -94,9 +95,64 @@ using (var client = Connect(pipeName))
     Check("pipe returns the same hits as stdio", pipeSignature.SequenceEqual(stdioSignature), string.Join("|", pipeSignature) + " vs " + string.Join("|", stdioSignature));
     Frame(client, JsonSerializer.Serialize(new { jsonrpc = "2.0", id = 2, method = "tools/call", @params = new { name = "index_directory", arguments = new { root = docs } } }));
     using var maintenance = JsonDocument.Parse(Read(client)!);
-    Check("pipe denies index_directory", Code(maintenance.RootElement) == "unauthorized", Code(maintenance.RootElement));
+    Check("pipe accepts a maintenance request", Code(maintenance.RootElement) is null, Code(maintenance.RootElement));
 }
 pipeProcess.Kill(true);
+
+// --- loopback HTTP ---
+const int httpPort = 18791;
+var httpStart = new ProcessStartInfo(bridge)
+{
+    UseShellExecute = false,
+    RedirectStandardOutput = true,
+    RedirectStandardError = true,
+    ArgumentList = { "--index", database, "--http-port", httpPort.ToString(), "--pipe-token-env", "WINSIGHT_MCP_FIXTURE_TOKEN" },
+};
+httpStart.Environment["WINSIGHT_MCP_FIXTURE_TOKEN"] = token;
+using var httpProcess = Process.Start(httpStart)!;
+httpProcess.ErrorDataReceived += (_, _) => { };
+httpProcess.BeginErrorReadLine();
+using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+var endpoint = new Uri("http://127.0.0.1:" + httpPort + "/mcp/");
+var searchBody = JsonSerializer.Serialize(new { jsonrpc = "2.0", id = 1, method = "tools/call", @params = new { name = "search_files", arguments = new { query = corpus[0].Query, topK = 3 } } });
+var ready = DateTime.UtcNow.AddSeconds(20);
+while (DateTime.UtcNow < ready)
+{
+    try { using var probe = await http.PostAsync(endpoint, new StringContent(searchBody, Encoding.UTF8, "application/json")); break; }
+    catch (HttpRequestException) { await Task.Delay(250); }
+}
+using (var anonymous = await http.PostAsync(endpoint, new StringContent(searchBody, Encoding.UTF8, "application/json")))
+    Check("http refuses a request without a token", (int)anonymous.StatusCode == 401, ((int)anonymous.StatusCode).ToString());
+using (var foreign = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = new StringContent(searchBody, Encoding.UTF8, "application/json") })
+{
+    foreign.Headers.Add("Authorization", "Bearer " + token);
+    foreign.Headers.Add("Origin", "https://evil.example");
+    using var reply = await http.SendAsync(foreign);
+    Check("http refuses a foreign origin", (int)reply.StatusCode == 403, ((int)reply.StatusCode).ToString());
+}
+using (var authorized = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = new StringContent(searchBody, Encoding.UTF8, "application/json") })
+{
+    authorized.Headers.Add("Authorization", "Bearer " + token);
+    using var reply = await http.SendAsync(authorized);
+    using var document = JsonDocument.Parse(await reply.Content.ReadAsStringAsync());
+    var overHttp = Signature(document.RootElement);
+    Check("http returns the same hits as stdio", overHttp.SequenceEqual(stdioSignature), string.Join("|", overHttp));
+}
+httpProcess.Kill(true);
+
+// --- maintenance request hand-off ---
+var jobReply = await Exchange(bridge, database, JsonSerializer.Serialize(new { jsonrpc = "2.0", id = 7, method = "tools/call", @params = new { name = "index_directory", arguments = new { path = docs } } }));
+Check("index_directory records a maintenance request", jobReply is not null && jobReply.Contains("jobId", StringComparison.Ordinal), jobReply is null ? "no reply" : jobReply[..Math.Min(140, jobReply.Length)]);
+// The bridge derives its data directory from the index path, so the fixture must use the same view.
+var dataDirectory = Directory.GetParent(Directory.GetParent(database)!.FullName)!.FullName;
+var store = new MaintenanceJobStore(dataDirectory);
+var claimed = store.ClaimNext();
+Check("the request is claimable by the app", claimed is not null && claimed.Root.Length != 0, claimed?.Id ?? "none");
+if (claimed is not null)
+{
+    await store.CompleteAsync(claimed, false, "fixture: refused by policy");
+    Check("the outcome is recorded next to the job", File.Exists(Path.Combine(store.Completed, claimed.Id + ".result.json")));
+}
 Check("the index file is untouched", Hash(database) == hashBefore);
 
 var failed = checks.Count(c => !c.Pass);
@@ -153,6 +209,27 @@ static string? Read(Stream stream)
     }
     return Encoding.UTF8.GetString(body);
 }
+static async Task<string?> Exchange(string bridge, string database, string payload)
+{
+    var start = new ProcessStartInfo(bridge)
+    {
+        UseShellExecute = false,
+        RedirectStandardInput = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        ArgumentList = { "--index", database },
+    };
+    using var process = Process.Start(start)!;
+    process.ErrorDataReceived += (_, _) => { };
+    process.BeginErrorReadLine();
+    await process.StandardInput.WriteLineAsync(payload);
+    await process.StandardInput.FlushAsync();
+    var line = await process.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(20));
+    try { process.StandardInput.Close(); } catch (IOException) { }
+    if (!process.WaitForExit(10000)) process.Kill(true);
+    return line;
+}
+
 static string FindBridge()
 {
     for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
