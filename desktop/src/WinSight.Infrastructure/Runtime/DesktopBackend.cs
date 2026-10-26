@@ -510,6 +510,40 @@ public sealed partial class DesktopBackend : IDesktopBackend
     private volatile string rebuildStatus = "idle";
     private volatile bool rebuildRunning;
 
+    /// <summary>
+    /// Snapshot for the MCP console: how many requests are waiting, what recently happened, and which
+    /// transports are actually available. It reports facts only; no token or file path leaves this method.
+    /// </summary>
+    public Task<McpConsoleStatus?> GetMcpConsoleStatusAsync(CancellationToken cancellationToken = default)
+    {
+        var store = JobStore;
+        int Count(string directory) => Directory.Exists(directory) ? Directory.GetFiles(directory, "*.json").Count(name => !name.EndsWith(".result.json", StringComparison.OrdinalIgnoreCase)) : 0;
+        var recent = new List<string>();
+        if (Directory.Exists(store.Completed))
+        {
+            foreach (var file in Directory.GetFiles(store.Completed, "*.result.json").OrderByDescending(name => name).Take(5))
+            {
+                try
+                {
+                    using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(file));
+                    var root = document.RootElement;
+                    var accepted = root.TryGetProperty("accepted", out var flag) && flag.GetBoolean();
+                    var detail = root.TryGetProperty("detail", out var value) ? value.GetString() ?? "" : "";
+                    recent.Add((accepted ? "accepted" : "refused") + ": " + detail);
+                }
+                catch (System.Text.Json.JsonException) { recent.Add("unreadable completed request"); }
+            }
+        }
+        var bridge = Path.Combine(applicationDirectory, "bridge", "winsight-mcp.exe");
+        var notes = new List<string>
+        {
+            File.Exists(bridge) ? "Bridge present: stdio transport available." : "Bridge is missing from this payload.",
+            "Loopback HTTP is opt-in (bridge --http-port) and is not started by the app.",
+            "Requests are only executed by this app; the bridge never writes the index.",
+        };
+        return Task.FromResult<McpConsoleStatus?>(new McpConsoleStatus(Count(store.Inbox), Count(store.Claimed), Count(store.Completed), recent, "not running", bridge, notes));
+    }
+
     /// <summary>Explains what a migration would do, without exporting or touching either directory.</summary>
     public Task<IndexMigrationResult?> InspectMigrationAsync(string targetDirectory, CancellationToken cancellationToken = default)
     {

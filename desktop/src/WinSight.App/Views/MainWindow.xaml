@@ -42,6 +42,7 @@
                 <NavigationViewItem Content="Search" Tag="search" Icon="Find"/>
                 <NavigationViewItem Content="Folders" Tag="folders" Icon="Folder"/>
                 <NavigationViewItem Content="Storage &amp; Model" Tag="storage" Icon="Library"/>
+                <NavigationViewItem Content="MCP console" Tag="mcp" Icon="Globe"/>
             </NavigationView.MenuItems>
 
             <NavigationView.FooterMenuItems>

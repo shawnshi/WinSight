@@ -115,6 +115,9 @@ public sealed partial class MainWindow : Window
             case "storage":
                 ContentFrame.Content = new StorageModelPage(backend, settings);
                 break;
+            case "mcp":
+                ContentFrame.Content = new McpConsolePage(backend);
+                break;
             case "settings":
                 ContentFrame.Content = new SettingsPage(backend, settings, hotkeyService, ApplyTheme);
                 break;
