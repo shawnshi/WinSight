@@ -3,7 +3,6 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using Microsoft.Windows.AI.MachineLearning;
 
 namespace WinSight.InferenceHost;
 
@@ -262,66 +261,6 @@ internal static class EpQualificationChild
             var inputs = ReadTensorFile(request.InputsPath);
             var reference = new GraphResult(request.ReferenceValues, request.ReferenceShape);
 
-            // Registration is per process: the parent's TryRegister does not carry into this child.
-            var registrationNote = "catalog unavailable";
-            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 26100))
-            {
-                try
-                {
-                    var catalog = ExecutionProviderCatalog.GetDefault();
-                    if (catalog is null) registrationNote = "catalog unavailable";
-                    else
-                    {
-                        var seen = new List<string>();
-                        foreach (var provider in catalog.FindAllProviders())
-                        {
-                            seen.Add($"{provider.Name}:{provider.ReadyState}");
-                            if (!string.Equals(provider.Name, request.EpName, StringComparison.OrdinalIgnoreCase)) continue;
-                            if (provider.ReadyState != ExecutionProviderReadyState.Ready)
-                            {
-                                if (!request.ProviderInstallAllowed)
-                                {
-                                    registrationNote = $"{request.EpName} not ready ({provider.ReadyState}); download not allowed";
-                                    continue;
-                                }
-                                try
-                                {
-                                    using var ready = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-                                    var operation = provider.EnsureReadyAsync();
-                                    using var cancel = ready.Token.Register(() => operation.Cancel());
-                                    var prepared = operation.AsTask().GetAwaiter().GetResult();
-                                    if (prepared.Status != ExecutionProviderReadyResultState.Success)
-                                    {
-                                        registrationNote = $"{request.EpName} preparation {prepared.Status}: {prepared.ExtendedError}";
-                                        continue;
-                                    }
-                                }
-                                catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)
-                                {
-                                    registrationNote = $"{request.EpName} preparation failed: {error.GetType().Name}: {error.Message}";
-                                    continue;
-                                }
-                            }
-                            try
-                            {
-                                registrationNote = provider.TryRegister()
-                                    ? $"{request.EpName} registered in child"
-                                    : $"{request.EpName} TryRegister returned false";
-                            }
-                            catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)
-                            {
-                                registrationNote = $"{request.EpName} TryRegister threw {error.GetType().Name}: {error.Message}";
-                            }
-                        }
-                        if (registrationNote == "catalog unavailable") registrationNote = "catalog does not list " + request.EpName + "; seen " + string.Join(",", seen.Take(6));
-                    }
-                }
-                catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)
-                {
-                    registrationNote = "catalog discovery failed: " + error.GetType().Name + ": " + error.Message;
-                }
-            }
-
             var ort = OrtEnv.Instance();
             var devices = ort.GetEpDevices();
             OrtEpDevice? matchedDevice = null;
@@ -343,7 +282,7 @@ internal static class EpQualificationChild
                 WriteResult(resultPath, new EpQualificationResult
                 {
                     Qualified = false,
-                    Reason = $"Target EP device not found in OrtEnv: {request.EpName} ({registrationNote})"
+                    Reason = $"Target EP device not found in OrtEnv: {request.EpName}"
                 });
                 return 0;
             }
