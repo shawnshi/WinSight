@@ -4,6 +4,8 @@ using System.Text.Json.Nodes;
 namespace WinSight.Infrastructure.Configuration;
 
 /// <summary>Result of inspecting a client configuration before any write happens.</summary>
+public enum ClientTransport { Stdio, Http }
+
 public sealed record ClientConfigPlan(string Path, bool FileExists, bool AlreadyConnected, bool Blocked, string Summary,
     IReadOnlyList<string> Changes, string? BlockReason = null, string? BackupPath = null);
 
@@ -16,15 +18,17 @@ public sealed class ClientConfigAssistant
 {
     public const string ServerKey = "winsight";
 
-    public async Task<ClientConfigPlan> PreviewAsync(string configPath, string bridgePath, CancellationToken cancellationToken = default)
+    public async Task<ClientConfigPlan> PreviewAsync(string configPath, string bridgePath, ClientTransport transport = ClientTransport.Stdio, int httpPort = 0, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(configPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(bridgePath);
         var full = System.IO.Path.GetFullPath(configPath);
         var bridge = System.IO.Path.GetFullPath(bridgePath);
         if (!File.Exists(bridge)) return Blocked(full, false, "The bridge executable does not exist at " + bridge + ".");
+        if (transport == ClientTransport.Http && httpPort is < 1024 or > 65535)
+            return Blocked(full, File.Exists(full), "An HTTP entry needs a port between 1024 and 65535.");
         if (!File.Exists(full)) return new ClientConfigPlan(full, false, false, false, "A new configuration file will be created.",
-            new[] { "add mcpServers." + ServerKey + " -> " + bridge + " --stdio" });
+            new[] { Entry(transport, bridge, httpPort) });
 
         string text;
         try
@@ -36,7 +40,7 @@ public sealed class ClientConfigAssistant
             return Blocked(full, true, "The file cannot be read: " + error.Message);
         }
         if (string.IsNullOrWhiteSpace(text)) return new ClientConfigPlan(full, true, false, false, "The file is empty; one entry will be added.",
-            new[] { "add mcpServers." + ServerKey + " -> " + bridge + " --stdio" });
+            new[] { Entry(transport, bridge, httpPort) });
 
         JsonNode? root;
         try
@@ -65,9 +69,10 @@ public sealed class ClientConfigAssistant
         return Blocked(full, true, "mcpServers." + ServerKey + " already points somewhere else (" + (command ?? "no command") + "); it will not be overwritten without an explicit decision.");
     }
 
-    public async Task<ClientConfigPlan> ApplyAsync(string configPath, string bridgePath, bool replaceExisting = false, CancellationToken cancellationToken = default)
+    public async Task<ClientConfigPlan> ApplyAsync(string configPath, string bridgePath, bool replaceExisting = false,
+        ClientTransport transport = ClientTransport.Stdio, int httpPort = 0, CancellationToken cancellationToken = default)
     {
-        var plan = await PreviewAsync(configPath, bridgePath, cancellationToken).ConfigureAwait(false);
+        var plan = await PreviewAsync(configPath, bridgePath, transport, httpPort, cancellationToken).ConfigureAwait(false);
         if (plan.Blocked || plan.AlreadyConnected) return plan;
         var full = plan.Path;
         var bridge = System.IO.Path.GetFullPath(bridgePath);
@@ -89,11 +94,18 @@ public sealed class ClientConfigAssistant
         }
         if (servers[ServerKey] is JsonObject present && !replaceExisting)
             return Blocked(full, true, "mcpServers." + ServerKey + " already exists with different content; pass replaceExisting to overwrite.");
-        servers[ServerKey] = new JsonObject
-        {
-            ["command"] = bridge,
-            ["args"] = new JsonArray("--stdio"),
-        };
+        servers[ServerKey] = transport == ClientTransport.Http
+            ? new JsonObject
+            {
+                ["url"] = "http://127.0.0.1:" + httpPort + "/mcp/",
+                // The placeholder is resolved by the client from the environment; a token is never stored here.
+                ["headers"] = new JsonObject { ["Authorization"] = "Bearer ${WINSIGHT_MCP_TOKEN}" },
+            }
+            : new JsonObject
+            {
+                ["command"] = bridge,
+                ["args"] = new JsonArray("--stdio"),
+            };
 
         string? backup = null;
         if (File.Exists(full))
@@ -107,6 +119,11 @@ public sealed class ClientConfigAssistant
         File.Move(temporary, full, overwrite: true);
         return new ClientConfigPlan(full, true, true, false, "Entry written; no token was stored.", Array.Empty<string>(), null, backup);
     }
+
+    private static string Entry(ClientTransport transport, string bridge, int httpPort) =>
+        transport == ClientTransport.Http
+            ? "add mcpServers." + ServerKey + " -> http://127.0.0.1:" + httpPort + "/mcp/ (Authorization from WINSIGHT_MCP_TOKEN)"
+            : "add mcpServers." + ServerKey + " -> " + bridge + " --stdio";
 
     private static ClientConfigPlan Blocked(string path, bool exists, string reason) =>
         new(path, exists, false, true, "Nothing will be written.", Array.Empty<string>(), reason);

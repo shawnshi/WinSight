@@ -286,6 +286,21 @@
                 </StackPanel>
             </Border>
 
+            <!-- Models -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Models and devices" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="{x:Bind ViewModel.ModelsSummary, Mode=OneWay}" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="ModelsSummary"/>
+                    <Button Content="Refresh models" Click="OnRefreshModelsClick"
+                            AutomationProperties.AutomationId="RefreshModelsButton"/>
+                </StackPanel>
+            </Border>
+
             <!-- MCP maintenance authorization -->
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
@@ -293,18 +308,12 @@
                     CornerRadius="8"
                     Padding="20">
                 <StackPanel Spacing="10">
-                    <TextBlock Text="MCP maintenance authorization" Style="{ThemeResource SubtitleTextBlockStyle}"/>
-                    <TextBlock Text="Clients cannot index anything by themselves. Create a grant, give its identifier to the client, then drain pending requests here; requests outside your configured folders are refused and recorded."
+                    <TextBlock Text="MCP maintenance requests" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="Clients cannot write the index themselves: an index_directory call lands here as a request. Drain hands accepted paths to the indexing queue; anything outside your configured folders is refused and the reason is recorded."
                                Style="{ThemeResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Spacing="12">
-                        <Button Content="Create grant" Click="OnGrantMaintenanceClick"
-                                IsEnabled="{x:Bind ViewModel.CanManageMaintenance, Mode=OneWay}"
-                                AutomationProperties.AutomationId="GrantMaintenanceButton"/>
-                        <Button Content="Revoke" Click="OnRevokeMaintenanceClick"
-                                IsEnabled="{x:Bind ViewModel.CanManageMaintenance, Mode=OneWay}"
-                                AutomationProperties.AutomationId="RevokeMaintenanceButton"/>
                         <Button Content="Drain requests" Click="OnDrainMaintenanceClick"
                                 IsEnabled="{x:Bind ViewModel.CanManageMaintenance, Mode=OneWay}"
                                 AutomationProperties.AutomationId="DrainMaintenanceButton"/>

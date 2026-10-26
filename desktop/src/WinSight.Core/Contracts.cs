@@ -34,6 +34,9 @@ public sealed record EngineStatus(int Files, int Done, int Pending, int Partial,
     string IndexPath, string? Detail = null, IndexingControlState IndexingState = IndexingControlState.Running);
 public sealed record FoundryProbe(string Sdk, IReadOnlyList<string> DeviceTypes, IReadOnlyList<FoundryProvider> Providers, string? Error = null);
 public sealed record FoundryProvider(string Name, bool Registered);
+public sealed record ModelInventory(string EmbeddingModel, string EmbeddingRevision, string EmbeddingProfile, string EmbeddingDevice,
+    string OcrEngine, string OcrVersion, string OcrProfile, string OcrDevice, string Notes);
+
 public sealed record ClientConfigPreview(bool FileExists, bool AlreadyConnected, bool Blocked, string Summary, string? BlockReason = null, string? BackupPath = null);
 
 public sealed record WinMlProbe(string OrtVersion, IReadOnlyList<string> Libraries, IReadOnlyList<string> Available, IReadOnlyList<WinMlDevice> Devices, string? Error = null);
@@ -189,6 +192,7 @@ public interface IDesktopBackend : IAsyncDisposable
     Task<WinMlProbe?> ProbeWinMlAsync(CancellationToken cancellationToken = default) => Task.FromResult<WinMlProbe?>(null);
     Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
+    Task<ModelInventory?> GetModelInventoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<ModelInventory?>(null);
     Task<string?> GetMaintenanceGrantAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     Task<string?> GrantMaintenanceAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;

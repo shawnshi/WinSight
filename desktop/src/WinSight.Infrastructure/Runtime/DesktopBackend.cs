@@ -235,7 +235,7 @@ public sealed partial class DesktopBackend : IDesktopBackend
     public async Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, CancellationToken cancellationToken = default)
     {
         var bridge = Path.Combine(applicationDirectory, "bridge", "winsight-mcp.exe");
-        var plan = await new Configuration.ClientConfigAssistant().PreviewAsync(configPath, bridge, cancellationToken).ConfigureAwait(false);
+        var plan = await new Configuration.ClientConfigAssistant().PreviewAsync(configPath, bridge, ClientTransport.Stdio, 0, cancellationToken).ConfigureAwait(false);
         return new ClientConfigPreview(plan.FileExists, plan.AlreadyConnected, plan.Blocked, plan.Summary, plan.BlockReason, plan.BackupPath);
     }
 
@@ -243,7 +243,7 @@ public sealed partial class DesktopBackend : IDesktopBackend
     public async Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, CancellationToken cancellationToken = default)
     {
         var bridge = Path.Combine(applicationDirectory, "bridge", "winsight-mcp.exe");
-        var plan = await new Configuration.ClientConfigAssistant().ApplyAsync(configPath, bridge, replaceExisting: false, cancellationToken).ConfigureAwait(false);
+        var plan = await new Configuration.ClientConfigAssistant().ApplyAsync(configPath, bridge, replaceExisting: false, ClientTransport.Stdio, 0, cancellationToken).ConfigureAwait(false);
         return new ClientConfigPreview(plan.FileExists, plan.AlreadyConnected, plan.Blocked, plan.Summary, plan.BlockReason, plan.BackupPath);
     }
 
@@ -470,6 +470,33 @@ public sealed partial class DesktopBackend : IDesktopBackend
         }
     }
 
+    /// <summary>
+    /// Reports which models are in use and where they run. Embedding identity comes from the inference host;
+    /// the OCR identity is the pinned engine and manifest profile, and OCR always runs in its own process.
+    /// </summary>
+    public async Task<ModelInventory?> GetModelInventoryAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var info = await GetEmbeddings().GetInfoAsync(cancellationToken).ConfigureAwait(false);
+            var device = info.RequestedProvider switch
+            {
+                "CPUExecutionProvider" => "CPU",
+                var other when other.StartsWith("device-", StringComparison.OrdinalIgnoreCase) => "auto (gated: " + other.Replace("-with-real-model-gates", "", StringComparison.Ordinal) + ")",
+                _ => info.RequestedProvider
+            };
+            return new ModelInventory(info.Model, info.Revision, info.ProfileId, device + " via " + info.Runtime,
+                WinSight.Shared.OcrIdentity.Engine, WinSight.Shared.OcrIdentity.EngineVersion, WinSight.Shared.OcrIdentity.ModelProfile, "CPU (isolated OCR host process)",
+                "Embedding runs in the inference host; OCR runs in its own process so a parser crash cannot take search down.");
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or TimeoutException)
+        {
+            return new ModelInventory("unavailable", "unavailable", "unavailable", error.GetType().Name + ": " + error.Message,
+                WinSight.Shared.OcrIdentity.Engine, WinSight.Shared.OcrIdentity.EngineVersion, WinSight.Shared.OcrIdentity.ModelProfile, "CPU (isolated OCR host process)",
+                "The embedding host did not answer; the OCR identity is still the pinned manifest.");
+        }
+    }
+
     private MaintenanceJobStore JobStore => new(dataDirectory);
 
     /// <summary>Returns the grant the user created, or null when maintenance is not authorized.</summary>
@@ -504,15 +531,8 @@ public sealed partial class DesktopBackend : IDesktopBackend
     public async Task<IReadOnlyList<string>> DrainMaintenanceJobsAsync(CancellationToken cancellationToken = default)
     {
         var outcomes = new List<string>();
-        var grant = MaintenanceJobStore.ReadGrant(dataDirectory);
         while (JobStore.ClaimNext() is { } job)
         {
-            if (string.IsNullOrEmpty(grant) || !string.Equals(grant, job.GrantId, StringComparison.Ordinal))
-            {
-                await JobStore.CompleteAsync(job, false, "refused: the maintenance grant is absent or no longer matches", cancellationToken).ConfigureAwait(false);
-                outcomes.Add(job.Id + ": refused (grant)");
-                continue;
-            }
             if (!IsAuthorizedResult(job.Root, false))
             {
                 await JobStore.CompleteAsync(job, false, "refused: the path is outside the authorized folders", cancellationToken).ConfigureAwait(false);

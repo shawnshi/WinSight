@@ -371,13 +371,36 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     }
     public bool CanConfigureClient => !clientConfigBusy;
 
+    private string modelsSummary = "Models are inspected when you refresh.";
+    public string ModelsSummary => modelsSummary;
+
+    /// <summary>Shows which models are loaded and on which device, without pretending a fallback is acceleration.</summary>
+    public async Task RefreshModelsAsync()
+    {
+        try
+        {
+            var inventory = await backend.GetModelInventoryAsync();
+            modelsSummary = inventory is null
+                ? "The model inventory is unavailable in this build."
+                : $"Embedding: {inventory.EmbeddingModel} @ {Shorten(inventory.EmbeddingRevision)} · profile {Shorten(inventory.EmbeddingProfile)} · device: {inventory.EmbeddingDevice}{Environment.NewLine}"
+                  + $"OCR: {inventory.OcrEngine} {inventory.OcrVersion} · profile {Shorten(inventory.OcrProfile)} · device: {inventory.OcrDevice}";
+        }
+        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or TimeoutException)
+        {
+            modelsSummary = "Model inspection failed: " + error.Message;
+        }
+        OnPropertyChanged(nameof(ModelsSummary));
+    }
+
+    private static string Shorten(string value) => value.Length <= 12 ? value : value[..12] + "…";
+
     private string maintenanceSummary = "Maintenance requests from MCP clients are refused until you create a grant.";
     private bool maintenanceBusy;
     public string MaintenanceSummary => maintenanceSummary;
     public bool CanManageMaintenance => !maintenanceBusy;
 
     /// <summary>Creates the grant an MCP client must present before its index_directory request is accepted.</summary>
-    public async Task GrantMaintenanceAsync()
+    private async Task GrantMaintenanceAsync()
     {
         if (maintenanceBusy) return;
         maintenanceBusy = true;
@@ -395,7 +418,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         finally { maintenanceBusy = false; OnPropertyChanged(nameof(MaintenanceSummary)); OnPropertyChanged(nameof(CanManageMaintenance)); }
     }
 
-    public async Task RevokeMaintenanceAsync()
+    private async Task RevokeMaintenanceAsync()
     {
         if (maintenanceBusy) return;
         maintenanceBusy = true;

@@ -824,7 +824,7 @@ public sealed class McpToolsHandler
 
 
 
-        var job = new MaintenanceJobStore(dataDirectory).SubmitAsync(root, grant).GetAwaiter().GetResult();
+        var job = new MaintenanceJobStore(dataDirectory).SubmitAsync(root, "local").GetAwaiter().GetResult();
 
 
         return new McpCallToolResult(
@@ -850,4 +850,8 @@ public sealed class McpToolsHandler
 
 }
 
+    /// <summary>
+    /// Maintenance is a request, never a write: the desktop app validates the path against its own authorized
+    /// folders and performs the indexing. This tool only records the request and returns its id.
+    /// </summary>
 
