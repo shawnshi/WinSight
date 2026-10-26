@@ -21,6 +21,9 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
     public string QueueHealth => queue is null
         ? "—"
         : $"dropped {queue.Dropped}, watcher overflows {queue.WatcherOverflows}, last reconcile {(queue.LastReconcileUtc is { } at ? at.ToLocalTime().ToString("HH:mm:ss") : "never")}, USN {queue.UsnState}";
+    private IReadOnlyList<string> failures = Array.Empty<string>();
+    public string FailureSummary => failures.Count == 0 ? "No failed files recorded." : string.Join(" | ", failures);
+
     public IReadOnlyList<string> BudgetRows => queue is null
         ? Array.Empty<string>()
         : queue.Budgets.Select(b => $"{b.Class}: extract {b.ExtractConcurrency}, inference {b.InferenceConcurrency} ({b.State})").ToArray();
@@ -103,12 +106,14 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
         try
         {
             queue = await backend.GetIndexingQueueStatusAsync();
+            failures = await backend.GetFailureSummaryAsync();
         }
         catch (Exception ex)
         {
             queue = null;
             StatusMessage = $"Queue status unavailable: {ex.Message}";
         }
+        OnPropertyChanged(nameof(FailureSummary));
         OnPropertyChanged(nameof(QueueSummary));
         OnPropertyChanged(nameof(QueueHealth));
         OnPropertyChanged(nameof(BudgetRows));

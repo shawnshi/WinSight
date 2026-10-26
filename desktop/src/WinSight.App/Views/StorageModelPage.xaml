@@ -72,6 +72,9 @@
                     <TextBlock Text="{x:Bind ViewModel.QueueHealth, Mode=OneWay}" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                Style="{ThemeResource CaptionTextBlockStyle}"/>
+                    <TextBlock Text="{x:Bind ViewModel.FailureSummary, Mode=OneWay}" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"/>
                     <ItemsControl ItemsSource="{x:Bind ViewModel.BudgetRows, Mode=OneWay}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="x:String">

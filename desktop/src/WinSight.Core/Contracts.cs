@@ -28,7 +28,8 @@ public sealed record IndexTask(string Path, string Root, bool Code, string Kind,
     string State, int Attempts, DateTimeOffset DueUtc, DateTimeOffset SeenUtc, string? Reason = null);
 public sealed record IndexRequest(IReadOnlyList<string> Roots, IReadOnlyList<string>? Excluded = null,
     IReadOnlyList<string>? SkipTypes = null, bool Code = false, bool Force = false,
-    long MaxFileBytes = 32 * 1024 * 1024, DocumentExtractionOptions? Documents = null, bool AllowPowerPointAutomation = false);
+    long MaxFileBytes = 32 * 1024 * 1024, DocumentExtractionOptions? Documents = null, bool AllowPowerPointAutomation = false,
+    bool DeferComplexParse = true);
 public sealed record EngineStatus(int Files, int Done, int Pending, int Partial, int Failed,
     string IndexPath, string? Detail = null, IndexingControlState IndexingState = IndexingControlState.Running);
 public sealed record IndexBudgetState(string Class, int ExtractConcurrency, int InferenceConcurrency, string State);
@@ -50,6 +51,8 @@ public interface IIndexService
         CancellationToken cancellationToken = default);
     Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, "not-implemented", Array.Empty<IndexBudgetState>()));
+    Task<IReadOnlyList<string>> GetFailureSummaryAsync(int limit = 5, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<string>>([]);
 }
 public interface IIndexRepository : IAsyncDisposable
 {
@@ -66,6 +69,8 @@ public interface IIndexRepository : IAsyncDisposable
     Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default);
     Task ResetHangingTasksAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     Task EnqueueIndexTaskAsync(IndexTask task, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    Task AckTaskAsync(string taskPath, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
     Task EnqueueIndexTasksAsync(IReadOnlyList<IndexTask> tasks, CancellationToken cancellationToken = default) =>
         tasks.Count == 0 ? Task.CompletedTask
         : tasks.Aggregate(Task.CompletedTask, async (previous, task) =>
@@ -116,6 +121,9 @@ public sealed class AppSettings
     public bool IndexHoursOn { get; set; }
     public IndexHours IndexHours { get; set; } = new();
     public bool ProcessorOnly { get; set; } = true;
+    // Deferred parsing indexes text and structure first and leaves page vision, OCR and media parsing
+    // to a later pass; turning this off makes every document pay the full parse cost immediately.
+    public bool DeferComplexParse { get; set; } = true;
     public bool UpdateChecksOff { get; set; } = true;
     public string TrayClick { get; set; } = "panel";
     public bool OpenAtLogin { get; set; }
@@ -165,6 +173,8 @@ public interface IDesktopBackend : IAsyncDisposable
     Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default);
     Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, "not-implemented", Array.Empty<IndexBudgetState>()));
+    Task<IReadOnlyList<string>> GetFailureSummaryAsync(int limit = 5, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<string>>([]);
     Task SetIndexingPausedAsync(bool paused, CancellationToken cancellationToken = default);
     Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancellationToken = default);
     Task<ISourcePreview> PreviewSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>

@@ -20,9 +20,13 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
         NativeMediaSamplingService? mediaSampling, NativeDocumentPages? documentPages = null) : this(repository,extractor,embeddings,mediaSampling,documentPages,null) { }
 
     internal IndexingService(IIndexRepository repository, IContentExtractor extractor, IEmbeddingService? embeddings,
-        NativeMediaSamplingService? mediaSampling, NativeDocumentPages? documentPages, NativePresentationPages? presentationPages) : this(repository, extractor, embeddings)
+        NativeMediaSamplingService? mediaSampling, NativeDocumentPages? documentPages, NativePresentationPages? presentationPages,
+        bool allowDeferredStages = false) : this(repository, extractor, embeddings)
     {
-        if (mediaSampling is null && documentPages is null && presentationPages is null) throw new ArgumentNullException(nameof(mediaSampling));
+        // A service with no media/page stages is the deferred text-and-structure pass; it is only valid when
+        // the caller asks for it explicitly, so a genuinely misconfigured caller still fails.
+        if (mediaSampling is null && documentPages is null && presentationPages is null && !allowDeferredStages)
+            throw new ArgumentNullException(nameof(mediaSampling));
         this.mediaSampling = mediaSampling;
         this.documentPages = documentPages;
         this.presentationPages = presentationPages;
@@ -32,7 +36,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
     private sealed class EmbeddingDependencyException(Exception cause, string? mediaSafeMessage = null)
         : IOException(mediaSafeMessage ?? "Embedding service failed: " + Describe(cause), cause);
     private sealed record Candidate(string Path, string Kind, long Size, double Mtime, string? Skip);
-    private sealed record Crawl(string Root, string? Identity, int Entries, IReadOnlyList<IndexingFailure> Failures, HashSet<string> Seen, List<Candidate> Files)
+    private sealed record Crawl(string Root, string? Identity, int Entries, IReadOnlyList<IndexingFailure> Failures, HashSet<string> Seen, List<Candidate> Files, int UnsafeSkipped = 0)
     {
         internal bool Complete => Failures.Count == 0;
     }
@@ -64,6 +68,13 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                 walkedEntries += crawl.Entries;
             }
             var failures = crawls.SelectMany(c => c.Failures).ToList();
+            var unsafeSkipped = crawls.Sum(c => c.UnsafeSkipped);
+            if (unsafeSkipped > 0)
+            {
+                // Cloud placeholders and reparse entries are not indexed; say so instead of dropping them silently.
+                progress?.Report(new IndexProgress("skipped", null, 0, 0, unsafeSkipped,
+                    $"{unsafeSkipped} cloud/offline/reparse entries were skipped; keep them on this device to index them."));
+            }
             var previous = existing.ToDictionary(f => FilePolicy.Normalize(f.Path), StringComparer.OrdinalIgnoreCase);
             var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var completed = 0;
@@ -304,6 +315,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
         var count = 0;
         string? identity = null;
         var files = new List<Candidate>();
+        var skippedUnsafe = 0;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var skips = excluded.Where(p => FilePolicy.Inside(p, root)).ToArray();
         var queue = new Stack<(string Path, int Depth, bool Project, GitKeptFiles.Repository? Repository)>();
@@ -338,6 +350,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                     var attributes = File.GetAttributes(path);
                     if (FilePolicy.Unsafe(attributes))
                     {
+                        skippedUnsafe++;
                         seen.Add(path);
                         if ((attributes & FileAttributes.Directory) != 0)
                         {
@@ -372,7 +385,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                 if (count > remainingEntries) break;
             }
         }
-        return new(root, identity, count, failures, seen, files);
+        return new(root, identity, count, failures, seen, files, skippedUnsafe);
     }
 
     private static bool HasCurrentLexicalRevision(string? info)

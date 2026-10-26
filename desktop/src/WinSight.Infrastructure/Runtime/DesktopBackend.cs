@@ -161,9 +161,36 @@ public sealed partial class DesktopBackend : IDesktopBackend
                         WorkspaceRoot = workspace
                     });
                 }
+                // Deferred (default) keeps the first pass to text and structure: page rasterisation, OCR and
+                // media sampling are the expensive stages and are left to a later pass.
+                var defer = approved.DeferComplexParse;
                 var service = new IndexingService(repository, new ContentExtractor(mediaClient), model,
-                    mediaClient is null ? null : new NativeMediaSamplingService(mediaClient), new NativeDocumentPages(mediaClient), new NativePresentationPages(mediaClient));
-                await service.IndexAsync(approved, progress, token);
+                    defer || mediaClient is null ? null : new NativeMediaSamplingService(mediaClient),
+                    defer ? null : new NativeDocumentPages(mediaClient),
+                    defer ? null : new NativePresentationPages(mediaClient),
+                    allowDeferredStages: defer);
+                if (!defer)
+                {
+                    await service.IndexAsync(approved, progress, token);
+                }
+                else
+                {
+                    // Manual and watcher passes share one durable queue so progress survives a restart.
+                    var queue = new IncrementalIndexQueue(repository,
+                        indexPaths: (roots, paths, code, ct) => service.IndexPathsAsync(roots, paths, code, progress, ct),
+                        onError: error => backgroundError = "queue: " + error.Message);
+                    await queue.InitializeAsync(token);
+                    foreach (var root in approved.Roots)
+                    {
+                        await queue.ReconcileRootAsync(root, approved.Code, force: true, token, requireStabilization: false);
+                    }
+                    while (true)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var processed = await queue.ProcessReadyTasksAsync(400, token, batchSize: 16);
+                        if (processed == 0) break;
+                    }
+                }
             }
             catch (Exception error)
             {
@@ -194,6 +221,15 @@ public sealed partial class DesktopBackend : IDesktopBackend
         ObjectDisposedException.ThrowIf(stopping != 0, this);
         var changed = await indexing.SetPausedAsync(paused, cancellationToken);
         if (changed && !paused && stopping == 0) background?.RequestReconciliation();
+    }
+
+    public async Task<IReadOnlyList<string>> GetFailureSummaryAsync(int limit = 5, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var repository = (await GetRepositoriesAsync(cancellationToken))[0];
+        return repository is SqliteIndexRepository sqlite
+            ? await sqlite.ReadFailureSummaryAsync(limit, cancellationToken).ConfigureAwait(false)
+            : Array.Empty<string>();
     }
 
     public async Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(CancellationToken cancellationToken = default)

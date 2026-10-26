@@ -452,6 +452,37 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         }, cancellationToken);
     }
 
+    public Task AckTaskAsync(string taskPath, CancellationToken cancellationToken = default)
+    {
+        ValidatePath(taskPath);
+        return RunAsync(() =>
+        {
+            Write(cancellationToken, (db, tx) =>
+            {
+                Execute(db, tx, "DELETE FROM index_tasks WHERE path=$path", ("$path", taskPath));
+            });
+            return 0;
+        }, cancellationToken);
+    }
+
+    /// <summary>Aggregated failure reasons (no paths) so the UI can explain why files did not index.</summary>
+    public Task<IReadOnlyList<string>> ReadFailureSummaryAsync(int limit, CancellationToken cancellationToken = default)
+    {
+        if (limit < 1) limit = 1;
+        return RunAsync(() => Read(cancellationToken, (db, tx) =>
+        {
+            using var cmd = Command(db, tx, "SELECT COALESCE(detail,'failed'), COUNT(*) FROM files WHERE state IN ('failed','partial') GROUP BY COALESCE(detail,'failed') ORDER BY COUNT(*) DESC LIMIT $limit", ("$limit", limit));
+            using var reader = cmd.ExecuteReader();
+            var rows = new List<string>();
+            while (reader.Read())
+            {
+                var text = reader.IsDBNull(0) ? "failed" : reader.GetString(0);
+                rows.Add(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{reader.GetInt64(1)}x {text}"));
+            }
+            return (IReadOnlyList<string>)rows;
+        }), cancellationToken);
+    }
+
     public Task<IReadOnlyList<IndexTask>> ReadDueTasksAsync(int limit, CancellationToken cancellationToken = default)
     {
         return RunAsync(() => Read(cancellationToken, (db, tx) =>

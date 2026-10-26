@@ -318,7 +318,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
     // Reconciliation enumerates the whole root, so it is gated: an explicit caller (startup, overflow,
     // resume) forces it, while ordinary file events must not pay for a full diff on every save.
-    public async Task<bool> ReconcileRootAsync(string root, bool code, bool force = false, CancellationToken cancellationToken = default)
+    public async Task<bool> ReconcileRootAsync(string root, bool code, bool force = false, CancellationToken cancellationToken = default, bool requireStabilization = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!Directory.Exists(root)) return false;
@@ -341,9 +341,11 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         var diskPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var pending = new List<IndexTask>();
         var rootDir = new DirectoryInfo(normRoot);
-        async Task FlushAsync(bool force)
+        // A manual pass enumerates settled files; marking them Ready avoids a 300 ms probe per file.
+        var enqueueState = requireStabilization ? "Pending" : "Ready";
+        async Task FlushAsync(bool flushAll)
         {
-            if (pending.Count == 0 || (!force && pending.Count < 500)) return;
+            if (pending.Count == 0 || (!flushAll && pending.Count < 500)) return;
             await repository.EnqueueIndexTasksAsync(pending.ToArray(), cancellationToken).ConfigureAwait(false);
             pending.Clear();
         }
@@ -362,12 +364,12 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                 {
                     continue;
                 }
-                pending.Add(new IndexTask(norm, normRoot, code, "Update", null, "Pending", 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill"));
+                pending.Add(new IndexTask(norm, normRoot, code, "Update", null, enqueueState, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill"));
                 await FlushAsync(false).ConfigureAwait(false);
             }
             else
             {
-                pending.Add(new IndexTask(norm, normRoot, code, "Add", null, "Pending", 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill"));
+                pending.Add(new IndexTask(norm, normRoot, code, "Add", null, enqueueState, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill"));
                 await FlushAsync(false).ConfigureAwait(false);
             }
         }
@@ -375,7 +377,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         foreach (var missing in indexMap.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var delTask = new IndexTask(missing.Path, normRoot, code, "Delete", null, "Pending", 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill");
+            var delTask = new IndexTask(missing.Path, normRoot, code, "Delete", null, enqueueState, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill");
             await EnqueueWithCoalescingAsync(delTask, cancellationToken).ConfigureAwait(false);
         }
 
@@ -552,74 +554,97 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         }
     }
 
-    public async Task<int> ProcessReadyTasksAsync(int limit, CancellationToken cancellationToken = default)
+    public async Task<int> ProcessReadyTasksAsync(int limit, CancellationToken cancellationToken = default, int batchSize = 1)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var dueTasks = await repository.ReadDueTasksAsync(limit, cancellationToken).ConfigureAwait(false);
+        if (batchSize < 1) batchSize = 1;
         if (IsBattery?.Invoke() == true && dueTasks.Count > 1)
         {
             dueTasks = PrioritizeRecentSmallFiles(dueTasks);
         }
         var processed = 0;
+        var ready = new List<IndexTask>();
 
         foreach (var task in dueTasks)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            bool ready = task.State == "Ready";
-            if (!ready)
+            if (task.State == "Ready" || await CheckStabilizationAsync(task, cancellationToken).ConfigureAwait(false))
             {
-                ready = await CheckStabilizationAsync(task, cancellationToken).ConfigureAwait(false);
+                ready.Add(task);
             }
+        }
 
-            if (!ready) continue;
-
-            await repository.UpdateTaskStateAsync(task.Path, "Running", task.Attempts, DateTimeOffset.UtcNow, task.Reason, cancellationToken).ConfigureAwait(false);
-
-            try
+        // Group by (root, scope) so one indexer call covers a batch: IndexPathsAsync reloads the
+        // index snapshot per call, which dominates the cost when driven per file.
+        foreach (var group in ready.GroupBy(t => (t.Root, t.Code)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var deletes = group.Where(t => t.Kind == "Delete").ToArray();
+            foreach (var task in deletes)
             {
-                if (task.Kind == "Delete")
+                try
                 {
                     await repository.AckTaskWithDeleteAsync(task.Path, task.Path, cancellationToken).ConfigureAwait(false);
+                    processed++;
                 }
-                else
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex) { await RecordFailureAsync(task, ex, cancellationToken).ConfigureAwait(false); }
+            }
+
+            var work = group.Where(t => t.Kind != "Delete").ToArray();
+            for (var offset = 0; offset < work.Length; offset += batchSize)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var chunk = work.Skip(offset).Take(batchSize).ToArray();
+                foreach (var task in chunk)
+                {
+                    await repository.UpdateTaskStateAsync(task.Path, "Running", task.Attempts, DateTimeOffset.UtcNow, task.Reason, cancellationToken).ConfigureAwait(false);
+                }
+                try
                 {
                     if (indexPaths != null)
                     {
-                        await indexPaths([task.Root], [task.Path], task.Code, cancellationToken).ConfigureAwait(false);
+                        await indexPaths([group.Key.Root], chunk.Select(t => t.Path).ToArray(), group.Key.Code, cancellationToken).ConfigureAwait(false);
+                        foreach (var task in chunk)
+                        {
+                            await repository.AckTaskAsync(task.Path, cancellationToken).ConfigureAwait(false);
+                        }
                     }
                     else
                     {
-                        var file = await repository.GetFileAsync(task.Path, cancellationToken).ConfigureAwait(false);
-                        if (file != null)
+                        foreach (var task in chunk)
                         {
-                            await repository.AckTaskWithUpsertAsync(file, task.Path, task.Tombstone, cancellationToken).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            await repository.AckTaskWithDeleteAsync(task.Path, task.Path, cancellationToken).ConfigureAwait(false);
+                            var file = await repository.GetFileAsync(task.Path, cancellationToken).ConfigureAwait(false);
+                            if (file != null)
+                            {
+                                await repository.AckTaskWithUpsertAsync(file, task.Path, task.Tombstone, cancellationToken).ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                await repository.AckTaskWithDeleteAsync(task.Path, task.Path, cancellationToken).ConfigureAwait(false);
+                            }
                         }
                     }
+                    processed += chunk.Length;
                 }
-                processed++;
-            }
-            catch (IndexingPausedException) { throw; }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception ex)
-            {
-                var attempts = task.Attempts + 1;
-                if (attempts >= 3)
+                catch (IndexingPausedException) { throw; }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex)
                 {
-                    await repository.UpdateTaskStateAsync(task.Path, "Deferred", attempts, DateTimeOffset.UtcNow.AddMinutes(5), ex.Message, cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    await repository.UpdateTaskStateAsync(task.Path, "Failed", attempts, DateTimeOffset.UtcNow.AddSeconds(5), ex.Message, cancellationToken).ConfigureAwait(false);
+                    foreach (var task in chunk) await RecordFailureAsync(task, ex, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
 
         return processed;
+    }
+
+    private async Task RecordFailureAsync(IndexTask task, Exception error, CancellationToken cancellationToken)
+    {
+        var attempts = task.Attempts + 1;
+        await repository.UpdateTaskStateAsync(task.Path, attempts >= 3 ? "Deferred" : "Failed", attempts,
+            DateTimeOffset.UtcNow.AddSeconds(attempts >= 3 ? 300 : 5), error.Message, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<IReadOnlyDictionary<string, int>> GetTaskCountsAsync(CancellationToken cancellationToken = default) =>
