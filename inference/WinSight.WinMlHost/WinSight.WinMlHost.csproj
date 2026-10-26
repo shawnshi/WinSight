@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RollForward>Disable</RollForward>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <NuGetAudit>false</NuGetAudit>
+    <RootNamespace>WinSight.WinMlHost</RootNamespace>
+    <AssemblyName>WinSight.WinMlHost</AssemblyName>
+  </PropertyGroup>
+  <PropertyGroup>
+    <!-- Same embedding implementation as the default host, compiled against the Windows ML runtime (ORT 1.27). -->
+    <HostSource>$(MSBuildProjectDirectory)/../WinSight.InferenceHost</HostSource>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(HostSource)/EmbeddingEngine.cs" Link="Shared/EmbeddingEngine.cs" />
+    <Compile Include="$(HostSource)/ExecutionProviderManager.cs" Link="Shared/ExecutionProviderManager.cs" />
+    <Compile Include="$(HostSource)/EpQualificationChild.cs" Link="Shared/EpQualificationChild.cs" />
+    <Compile Include="$(HostSource)/ModelManifest.cs" Link="Shared/ModelManifest.cs" />
+    <Compile Include="$(HostSource)/NativeTokenizer.cs" Link="Shared/NativeTokenizer.cs" />
+    <Compile Include="$(HostSource)/StdioServer.cs" Link="Shared/StdioServer.cs" />
+    <Compile Include="$(HostSource)/MediaPreprocessor.cs" Link="Shared/MediaPreprocessor.cs" />
+    <Compile Include="$(HostSource)/MediaBicubic.cs" Link="Shared/MediaBicubic.cs" />
+    <Compile Include="$(HostSource)/MediaImage.cs" Link="Shared/MediaImage.cs" />
+    <Compile Include="$(HostSource)/MediaWic.cs" Link="Shared/MediaWic.cs" />
+    <Compile Include="$(HostSource)/MediaAudio.cs" Link="Shared/MediaAudio.cs" />
+    <Compile Include="$(HostSource)/MediaWave.cs" Link="Shared/MediaWave.cs" />
+    <Compile Include="$(HostSource)/ModelProbe.cs" Link="Shared/ModelProbe.cs" />
+    <Compile Include="$(HostSource)/NativeMediaContracts.cs" Link="Shared/NativeMediaContracts.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The shared manifest reader resolves this resource by name. -->
+    <EmbeddedResource Include="$(HostSource)/model-manifest.json" LogicalName="WinSight.InferenceHost.model-manifest.json" />
+  </ItemGroup>
+  <PropertyGroup>
+    <TokenizerRustTarget Condition="'$(TokenizerRustTarget)' == ''">x86_64-pc-windows-msvc</TokenizerRustTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="../../native/winsight-tokenizer/target/$(TokenizerRustTarget)/release/winsight_tokenizer.dll"
+          Link="runtimes/$(RuntimeIdentifier)/native/winsight_tokenizer.dll"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="../../native/winsight-tokenizer/target/$(TokenizerRustTarget)/release/winsight_tokenizer.dll.source.sha256"
+          Link="runtimes/$(RuntimeIdentifier)/native/winsight_tokenizer.dll.source.sha256"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <PackageReference Include="Microsoft.Windows.AI.MachineLearning" Version="[2.4.89]" />
+  </ItemGroup>
+</Project>
