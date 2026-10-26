@@ -13,6 +13,7 @@ public static class Program
         string? indexPath = null;
         string? pipeName = null;
         string? tokenEnvironment = null;
+        var httpPort = 0;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -27,6 +28,12 @@ public static class Program
             else if (args[i] == "--pipe-token-env" && i + 1 < args.Length)
             {
                 tokenEnvironment = args[++i];
+            }
+            else if (args[i] == "--http-port" && i + 1 < args.Length)
+            {
+                // HTTP stays off unless a port is given explicitly.
+                if (!int.TryParse(args[++i], out httpPort) || httpPort is < 1024 or > 65535)
+                    throw new ArgumentException("--http-port must be an integer between 1024 and 65535.");
             }
         }
 
@@ -87,6 +94,24 @@ public static class Program
                 try
                 {
                     return await PipeTransport.RunAsync(pipeName, token, line => server.DispatchAsync(line, cts.Token), cts.Token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    stateMachine.TransitionTo(McpBridgeState.Stopping);
+                    stateMachine.TransitionTo(McpBridgeState.Disabled);
+                }
+            }
+            if (httpPort != 0)
+            {
+                var token = Environment.GetEnvironmentVariable(tokenEnvironment ?? "WINSIGHT_MCP_TOKEN");
+                if (string.IsNullOrWhiteSpace(token) || token.Length < 32)
+                    throw new InvalidOperationException("HTTP requires a session token of at least 32 characters from the environment.");
+                stateMachine.TransitionTo(McpBridgeState.Starting);
+                stateMachine.TransitionTo(McpBridgeState.Running);
+                Console.Error.WriteLine("[winsight-mcp] Bridge is running (loopback HTTP transport).");
+                try
+                {
+                    return await HttpTransport.RunAsync(httpPort, token, line => server.DispatchAsync(line, cts.Token), cts.Token).ConfigureAwait(false);
                 }
                 finally
                 {
