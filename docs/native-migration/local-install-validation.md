@@ -70,7 +70,17 @@ $desktop = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 - **SCALE-01 关闭**：新增 `EnqueueIndexTasksAsync`（单事务批量 upsert）与核对路径 500 条攒批。20 000 文件实测 cold **43.9s → 0.4s**、warm **88.2s → 0.0s**，仍 20 000 条入队且 warm 不重复入队；Storage 套件 48/48。
 - **STATE-GROWTH-02 修复**：intent/回执内嵌投影状态，每个 release 携带完整文件清单，两 release 记录约 3.5 MiB，而写入与读取边界都是 2 MiB。已把写入边界、`Read-N5Bytes` 默认值与 `$script:N5Limit` 统一提高到 16 MiB（sanity bound，不是安全边界），并保留「只保留上一 release」的裁剪。
-- **UPGRADE-RUNTIME-SET-01 结构部分已生效**：Prepare 会在运行时脚本集变化时把新 runtime 复制到 `controluntime\<sourceHash>`（实测 `ba7a1ad3…` 已落盘），启动器按 binding 的 `sources.sha256` 选择 runtime。
+- **UPGRADE-RUNTIME-SET-01 结构部分已生效**：Prepare 会在运行时脚本集变化时把新 runtime 复制到 `control
+untime\<sourceHash>`（实测 `ba7a1ad3…` 已落盘），启动器按 binding 的 `sources.sha256` 选择 runtime。
 - **仍未完成**：升级事务在记录上限修复后改以 `N5.Transport: pipe EOF` 失败（原生回调管道提前结束），`state`/回执/锚点保持在上一次成功提交，`pending.json` 残留并已按用户批准的受控收尾（证据：state 前进、回执与锚点一致、1076 文件 0 不符）清理并留档于 `.dev/inc-index-01/finalize-cleanup-0{1,2,3}`。该条件已达重试上限，未再盲改。
 - **加速器**：结论不变——本机无加速器通过证据门（DML 17.4ms vs 39.9ms；RyzenAI 无目标 EP 计算节点；VitisAI 子进程崩溃而宿主健康），阈值未放宽。
 - **Release 门禁**：`overall=blocked_pending_required_acceptance`、`releaseApproved=false` 未变；上述升级收尾与加速器证据是仍未满足的条目之一。
+
+## 2026-10-26（三）：对照增量索引需求的收口
+
+- **队列状态真实化**：`IndexingQueueStatus.UsnState` 之前返回占位符 `not-implemented`，现返回队列的真实值；对应的旧断言（断言占位符）已改为断言可观察契约。
+- **内存压力释放缓存**：此前内存压力只减并发并加 `:memory` 标记，未释放模型/向量/预览缓存。现由 `ResourceBudgetController` 的 `onMemoryPressure` 钩子驱动 `DesktopBackend` 在 lifecycle 锁内调用既有 `ReleaseResourcesAsync`；新增两项执行测试（有压力释放一次、无压力不释放）。
+- **核对顺序**：核对先尝试 USN 增量；仅当 USN 不可用/重置/无权限时才回退整树差集，符合「避免故障后重扫整卷」的目标。
+- **电池优先级**：`PrioritizeRecentSmallFiles`（lastWrite 降序 + 大小升序）已接入到期任务排序，仅在电池态生效。
+- **实测**：Storage 48/48；Runtime 含 S1 watcher、S2 预算/抢占、S2-MEM 两项，0 失败；20 000 文件批量入队 cold 0.4s / warm 0.0s。
+- **仍未闭合**：同根升级事务在记录上限修复后仍以 `N5.Transport: pipe EOF` 失败（已按批准收尾并留档）；本机无加速器通过证据门；Release 门禁不变。
