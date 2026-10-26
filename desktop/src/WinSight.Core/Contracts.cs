@@ -29,7 +29,7 @@ public sealed record IndexTask(string Path, string Root, bool Code, string Kind,
 public sealed record IndexRequest(IReadOnlyList<string> Roots, IReadOnlyList<string>? Excluded = null,
     IReadOnlyList<string>? SkipTypes = null, bool Code = false, bool Force = false,
     long MaxFileBytes = 32 * 1024 * 1024, DocumentExtractionOptions? Documents = null, bool AllowPowerPointAutomation = false,
-    bool DeferComplexParse = true, int MaxFileSeconds = 25);
+    bool DeferComplexParse = true, int MaxFileSeconds = 25, bool GeneratePageImages = false);
 public sealed record EngineStatus(int Files, int Done, int Pending, int Partial, int Failed,
     string IndexPath, string? Detail = null, IndexingControlState IndexingState = IndexingControlState.Running);
 public sealed record FoundryProbe(string Sdk, IReadOnlyList<string> DeviceTypes, IReadOnlyList<FoundryProvider> Providers, string? Error = null);
@@ -138,6 +138,8 @@ public sealed class AppSettings
     public bool IndexHoursOn { get; set; }
     public IndexHours IndexHours { get; set; } = new();
     public bool ProcessorOnly { get; set; } = true;
+    /// <summary>Page rasterisation during indexing. Off by default: it dominates a full pass.</summary>
+    public bool GeneratePageImages { get; set; }
     // Deferred parsing indexes text and structure first and leaves page vision, OCR and media parsing
     // to a later pass; turning this off makes every document pay the full parse cost immediately.
     public bool DeferComplexParse { get; set; } = true;
@@ -199,6 +201,7 @@ public interface IDesktopBackend : IAsyncDisposable
     Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<ModelInventory?> GetModelInventoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<ModelInventory?>(null);
     Task<McpConsoleStatus?> GetMcpConsoleStatusAsync(CancellationToken cancellationToken = default) => Task.FromResult<McpConsoleStatus?>(null);
+    Task<string> DescribeVectorScaleAsync(CancellationToken cancellationToken = default) => Task.FromResult(string.Empty);
     Task<IndexMigrationResult?> InspectMigrationAsync(string targetDirectory, CancellationToken cancellationToken = default) => Task.FromResult<IndexMigrationResult?>(null);
     Task<IndexMigrationResult?> MigrateIndexAsync(string targetDirectory, CancellationToken cancellationToken = default) => Task.FromResult<IndexMigrationResult?>(null);
     Task<bool> RebuildNeededAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);

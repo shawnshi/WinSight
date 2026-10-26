@@ -173,4 +173,9 @@ public sealed partial class SettingsPage : Page
     {
         await ViewModel.MigrateIndexAsync();
     }
+
+    private async void OnMeasureVectorsClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.RefreshVectorScaleAsync();
+    }
 }

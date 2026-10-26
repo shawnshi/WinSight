@@ -25,6 +25,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private bool openAtLogin;
     private string accelerator = "auto";
     private bool installExecutionProviders = true;
+    private bool generatePageImages;
     private bool hasHotkeyConflict;
     private string? hotkeyConflictMessage;
     private string statusMessage = string.Empty;
@@ -168,6 +169,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         openAtLogin = s.OpenAtLogin;
         accelerator = s.Accelerator;
         installExecutionProviders = s.InstallExecutionProviders;
+        generatePageImages = s.GeneratePageImages;
 
         OnPropertyChanged(nameof(Hotkey));
         OnPropertyChanged(nameof(BackgroundIndexingEnabled));
@@ -192,7 +194,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             Hotkey = hotkey, BackgroundIndexing = backgroundIndexingEnabled, BackgroundTouched = backgroundIndexingTouched,
             BackgroundRevision = backgroundEditRevision, HoursOn = indexHoursOn, HoursStart = indexHoursStart, HoursEnd = indexHoursEnd,
             ProcessorOnly = processorOnly, TrayClick = trayClick, Theme = theme, CodeEditor = codeEditor, OpenAtLogin = openAtLogin,
-            Accelerator = accelerator, InstallExecutionProviders = installExecutionProviders
+            Accelerator = accelerator, InstallExecutionProviders = installExecutionProviders, GeneratePageImages = generatePageImages
         };
         await saveGate.WaitAsync();
         string? previousHotkey = null;
@@ -398,6 +400,23 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         private set { if (SetProperty(ref clientConfigBusy, value)) OnPropertyChanged(nameof(CanConfigureClient)); }
     }
     public bool CanConfigureClient => !clientConfigBusy;
+
+    /// <summary>Page rasterisation is off by default: it is the stage that made full passes take days.</summary>
+    public bool GeneratePageImages
+    {
+        get => generatePageImages;
+        set => SetProperty(ref generatePageImages, value);
+    }
+
+    public async Task RefreshVectorScaleAsync()
+    {
+        try { vectorScale = await backend.DescribeVectorScaleAsync(); }
+        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException) { vectorScale = "Vector scale unavailable: " + error.Message; }
+        OnPropertyChanged(nameof(VectorScale));
+    }
+
+    private string vectorScale = "Vector corpus size has not been measured yet.";
+    public string VectorScale => vectorScale;
 
     private string modelsSummary = "Models are inspected when you refresh.";
     public string ModelsSummary => modelsSummary;

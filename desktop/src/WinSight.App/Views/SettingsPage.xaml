@@ -274,10 +274,18 @@
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
+                    <TextBlock Text="Page images during indexing: off by default. Turning this on restores page-level visual recall but also restores the expensive Office/PDF rasterisation stage."
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
                     <TextBlock Text="NPU runs on a separate Windows ML host (ORT 1.27) because vendor NPU plugins are built against that runtime; every other choice uses the default host (ORT 1.31). Switching accelerators retires the previous index, since each runtime has its own embedding profile."
                                Style="{ThemeResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>
+                        <ToggleSwitch Grid.Column="1"
+                                      AutomationProperties.AutomationId="PageImagesToggle"
+                                      AutomationProperties.Name="Generate page images during indexing"
+                                      IsOn="{x:Bind ViewModel.GeneratePageImages, Mode=TwoWay}"/>
                         <ToggleSwitch Grid.Column="1"
                                       AutomationProperties.AutomationId="InstallExecutionProvidersToggle"
                                       AutomationProperties.Name="Allow Windows ML to install and register execution providers"
@@ -296,8 +304,15 @@
                     <TextBlock Text="Models and devices" Style="{ThemeResource SubtitleTextBlockStyle}"/>
                     <TextBlock Text="{x:Bind ViewModel.ModelsSummary, Mode=OneWay}" TextWrapping="Wrap"
                                AutomationProperties.AutomationId="ModelsSummary"/>
-                    <Button Content="Refresh models" Click="OnRefreshModelsClick"
-                            AutomationProperties.AutomationId="RefreshModelsButton"/>
+                    <TextBlock Text="{x:Bind ViewModel.VectorScale, Mode=OneWay}" TextWrapping="Wrap"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               AutomationProperties.AutomationId="VectorScaleSummary"/>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Content="Refresh models" Click="OnRefreshModelsClick"
+                                AutomationProperties.AutomationId="RefreshModelsButton"/>
+                        <Button Content="Measure vectors" Click="OnMeasureVectorsClick"
+                                AutomationProperties.AutomationId="MeasureVectorsButton"/>
+                    </StackPanel>
                 </StackPanel>
             </Border>
 

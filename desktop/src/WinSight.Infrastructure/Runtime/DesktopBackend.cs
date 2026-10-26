@@ -147,6 +147,7 @@ public sealed partial class DesktopBackend : IDesktopBackend
                 mediaHost = settings.InferenceExecutable ?? Path.Combine(applicationDirectory, "inference", "WinSight.InferenceHost.exe");
                 approved = request with
                 {
+                    GeneratePageImages = request.GeneratePageImages || settings.GeneratePageImages,
                     Excluded = (request.Excluded ?? []).Concat(request.Code ? settings.CodeSkipped : settings.Skipped)
                         .Append(dataDirectory).Append(IndexDirectory).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
                     SkipTypes = (request.SkipTypes ?? []).Concat(settings.SkipTypes).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
@@ -180,11 +181,14 @@ public sealed partial class DesktopBackend : IDesktopBackend
                 repository = allowRebuild
                     ? await EnsureGenerationAsync(repository, approved, info, mediaClient, defer, token).ConfigureAwait(false)
                     : repository;
+                // Page rasterisation is the expensive stage. It now also needs an explicit opt-in on top of a
+                // strict pass, because it is what made a corpus pass take days rather than minutes.
+                var pages = !defer && approved.GeneratePageImages && mediaClient is not null;
                 var service = new IndexingService(repository, new ContentExtractor(mediaClient), model,
                     defer || mediaClient is null ? null : new NativeMediaSamplingService(mediaClient),
-                    defer ? null : new NativeDocumentPages(mediaClient),
-                    defer ? null : new NativePresentationPages(mediaClient),
-                    allowDeferredStages: defer);
+                    pages ? new NativeDocumentPages(mediaClient!) : null,
+                    pages ? new NativePresentationPages(mediaClient!) : null,
+                    allowDeferredStages: !pages);
                 if (!defer)
                 {
                     await service.IndexAsync(approved, progress, token);
@@ -544,6 +548,24 @@ public sealed partial class DesktopBackend : IDesktopBackend
         return Task.FromResult<McpConsoleStatus?>(new McpConsoleStatus(Count(store.Inbox), Count(store.Claimed), Count(store.Completed), recent, "not running", bridge, notes));
     }
 
+    /// <summary>
+    /// Reports the vector corpus size. The measured warm semantic latency grew from ~32 ms at 20k segments to
+    /// ~155 ms at 100k, so this warns before the path approaches the 500 ms budget.
+    /// </summary>
+    public async Task<string> DescribeVectorScaleAsync(CancellationToken cancellationToken = default)
+    {
+        var repository = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];
+        var files = await repository.ReadFilesAsync(cancellationToken).ConfigureAwait(false);
+        var vectors = files.Sum(file => file.Segments.Count(segment => segment.Vector is not null));
+        var verdict = vectors switch
+        {
+            >= 80_000 => "approaching the measured ceiling: plan sqlite-vec/ANN",
+            >= 40_000 => "within budget but worth watching",
+            _ => "comfortably within the BLOB + cosine path",
+        };
+        return vectors + " vector segment(s); " + verdict + ".";
+    }
+
     /// <summary>Explains what a migration would do, without exporting or touching either directory.</summary>
     public Task<IndexMigrationResult?> InspectMigrationAsync(string targetDirectory, CancellationToken cancellationToken = default)
     {
@@ -557,6 +579,10 @@ public sealed partial class DesktopBackend : IDesktopBackend
     /// </summary>
     public async Task<IndexMigrationResult?> MigrateIndexAsync(string targetDirectory, CancellationToken cancellationToken = default)
     {
+        // The export reads the live database; running it while a pass is writing would copy a moving target.
+        if (indexing.HasWork)
+            return new IndexMigrationResult("Refused", IndexDirectory, targetDirectory,
+                "Indexing is running. Pause or wait for it to finish, then migrate.");
         var outcome = await new IndexMigrationService().MigrateAsync(IndexDirectory, targetDirectory, cancellationToken).ConfigureAwait(false);
         if (outcome.Phase != MigrationPhase.Switched)
             return new IndexMigrationResult(outcome.Phase.ToString(), outcome.Source, outcome.Target, outcome.Detail);
