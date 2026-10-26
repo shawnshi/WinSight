@@ -68,7 +68,9 @@ public static class Program
         var stateMachine = new McpBridgeStateMachine();
         var registry = new AllowedFileRegistry();
         using var reader = new ReadOnlyIndexReader(indexPath, registry, stateMachine);
-        var toolsHandler = new McpToolsHandler(reader);
+        // Maintenance requests are handed to the desktop app; the bridge needs its data directory to do that.
+        var dataDirectory = Directory.GetParent(Directory.GetParent(indexPath)!.FullName)!.FullName;
+        var toolsHandler = new McpToolsHandler(reader, dataDirectory);
         var server = new McpStdioServer(stateMachine, toolsHandler);
 
         using var cts = new CancellationTokenSource();

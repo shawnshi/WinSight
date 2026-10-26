@@ -50,7 +50,8 @@ public sealed record McpCallToolResult(
     [property: JsonPropertyName("error")] McpToolError? Error = null,
     [property: JsonPropertyName("hits")] object? Hits = null,
     [property: JsonPropertyName("file")] object? File = null,
-    [property: JsonPropertyName("status")] object? Status = null);
+    [property: JsonPropertyName("status")] object? Status = null,
+    [property: JsonPropertyName("jobId")] string? JobId = null);
 
 public sealed record McpToolDefinition(
     [property: JsonPropertyName("name")] string Name,
