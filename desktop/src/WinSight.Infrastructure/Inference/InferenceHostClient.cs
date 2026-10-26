@@ -14,7 +14,6 @@ public sealed class InferenceHostClient : IEmbeddingService
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private readonly string executable, modelDirectory, manifestPath;
     private readonly string accelerator;
-    private readonly bool installExecutionProviders;
     private readonly TimeSpan startupTimeout, requestTimeout;
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
@@ -25,17 +24,17 @@ public sealed class InferenceHostClient : IEmbeddingService
     private long nextId;
 
     public InferenceHostClient(string executable, string modelDirectory, string manifestPath,
-        string accelerator = "auto", bool installExecutionProviders = true)
-        : this(executable, modelDirectory, manifestPath, accelerator, installExecutionProviders,
+        string accelerator = "auto")
+        : this(executable, modelDirectory, manifestPath, accelerator,
             TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(120)) { }
 
     public InferenceHostClient(string executable, string modelDirectory, string manifestPath,
         bool automaticProviders)
         : this(executable, modelDirectory, manifestPath, automaticProviders ? "auto" : "cpu",
-            automaticProviders, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(120)) { }
+            TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(120)) { }
 
     internal InferenceHostClient(string executable, string modelDirectory, string manifestPath,
-        string accelerator, bool installExecutionProviders,
+        string accelerator,
         TimeSpan startupTimeout, TimeSpan requestTimeout)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
@@ -47,7 +46,6 @@ public sealed class InferenceHostClient : IEmbeddingService
         this.modelDirectory = modelDirectory;
         this.manifestPath = manifestPath;
         this.accelerator = accelerator;
-        this.installExecutionProviders = installExecutionProviders;
         this.startupTimeout = startupTimeout;
         this.requestTimeout = requestTimeout;
     }
@@ -55,7 +53,7 @@ public sealed class InferenceHostClient : IEmbeddingService
     internal InferenceHostClient(string executable, string modelDirectory, string manifestPath,
         bool automaticProviders, TimeSpan startupTimeout, TimeSpan requestTimeout)
         : this(executable, modelDirectory, manifestPath, automaticProviders ? "auto" : "cpu",
-            automaticProviders, startupTimeout, requestTimeout) { }
+            startupTimeout, requestTimeout) { }
 
     public Task<EmbeddingInfo> GetInfoAsync(CancellationToken cancellationToken = default) => ExecuteAsync(async token =>
     {
@@ -140,15 +138,11 @@ public sealed class InferenceHostClient : IEmbeddingService
     }
 
     internal static IReadOnlyList<string> BuildArguments(string modelDirectory, string manifestPath,
-        string accelerator, bool installExecutionProviders)
+        string accelerator)
     {
-        var args = new List<string> { "--stdio", "--models", modelDirectory, "--manifest", manifestPath, "--device", accelerator };
-        if (!installExecutionProviders)
-        {
-            args.Add("--provider-install");
-            args.Add("false");
-        }
-        return args;
+        // Provider acquisition lives in the isolated Foundry host; the inference host only registers what is
+        // already on the machine, so it takes no install switch.
+        return new List<string> { "--stdio", "--models", modelDirectory, "--manifest", manifestPath, "--device", accelerator };
     }
 
     internal static string ExpectedRequestedProvider(string accelerator) => accelerator switch
@@ -166,7 +160,7 @@ public sealed class InferenceHostClient : IEmbeddingService
         if (session is not null) return;
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var argument in BuildArguments(modelDirectory, manifestPath, accelerator, installExecutionProviders))
+        foreach (var argument in BuildArguments(modelDirectory, manifestPath, accelerator))
             start.ArgumentList.Add(argument);
         session = Session.Start(start);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -235,7 +229,7 @@ public sealed class InferenceHostClient : IEmbeddingService
         var provider = Text(info, "requested_provider");
         var expectedProvider = ExpectedRequestedProvider(accelerator);
         Require(provider == expectedProvider, "Host requested provider mismatch.");
-        Require(Flag(info, "provider_downloads_allowed") == installExecutionProviders, "Host provider download policy mismatch.");
+        Require(!Flag(info, "provider_downloads_allowed"), "Host must never allow provider downloads.");
         var textOnly = Flag(info, "text_only");
         var capabilities = Field(root, "capabilities", JsonValueKind.Object);
         var text = Flag(capabilities, "text");

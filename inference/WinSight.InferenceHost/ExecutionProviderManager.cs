@@ -44,7 +44,6 @@ internal sealed class ExecutionProviderManager : IDisposable
     private sealed record Probe(string Graph, NamedOnnxValue[] Inputs, string Output, GraphResult Reference, int? ExpectedRows, string Signature);
     private readonly ModelManifest models;
     private readonly string preference;
-    private readonly bool providerInstall;
     private readonly Dictionary<string, Slot> slots;
     private readonly BlockingCollection<Probe> probes = new(3);
     private readonly ConcurrentDictionary<string, string> states = new();
@@ -124,13 +123,12 @@ internal sealed class ExecutionProviderManager : IDisposable
     private const int JobObjectExtendedLimitInformation = 9;
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
 
-    internal ExecutionProviderManager(ModelManifest models, string preference = "auto", bool providerInstall = true)
+    internal ExecutionProviderManager(ModelManifest models, string preference = "auto")
     {
         this.models = models;
         this.preference = preference;
-        this.providerInstall = providerInstall;
 
-        InitializeCatalog(providerInstall);
+        InitializeCatalog();
         DiscoverInitialProviders();
 
         slots = new[] { "model_q4.onnx", "vision_encoder_q4.onnx", "audio_encoder_q4.onnx" }
@@ -150,11 +148,11 @@ internal sealed class ExecutionProviderManager : IDisposable
     }
 
     internal ExecutionProviderManager(ModelManifest models, bool automatic)
-        : this(models, automatic ? "auto" : "cpu", automatic)
+        : this(models, automatic ? "auto" : "cpu")
     {
     }
 
-    private void InitializeCatalog(bool allowInstall)
+    private void InitializeCatalog()
     {
         try
         {
@@ -166,29 +164,16 @@ internal sealed class ExecutionProviderManager : IDisposable
                 return;
             }
 
-            if (allowInstall)
+            // Registration into ORT is explicit: WinML only exposes the plugin's library path, and ORT 1.31
+            // must be told about that DLL before the device can be enumerated or used.
+            try
             {
-                try
-                {
-                    var registered = catalog.EnsureAndRegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
-                    states["provider_install"] = $"EnsureAndRegisterCertifiedAsync registered {registered.Count} provider(s): {string.Join(", ", registered.Select(p => p.Name))}";
-                }
-                catch (Exception ex)
-                {
-                    states["provider_install"] = $"EnsureAndRegisterCertifiedAsync failed: {ex.GetType().Name}: {ex.Message}; fallback to CPU";
-                }
+                var registered = catalog.RegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
+                states["catalog_register"] = $"RegisterCertifiedAsync reported {registered.Count} provider(s): {string.Join(", ", registered.Select(p => p.Name))}";
             }
-            else
+            catch (Exception ex)
             {
-                try
-                {
-                    var registered = catalog.RegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
-                    states["provider_install"] = $"--provider-install is false: RegisterCertifiedAsync registered {registered.Count} provider(s): {string.Join(", ", registered.Select(p => p.Name))}";
-                }
-                catch (Exception ex)
-                {
-                    states["provider_install"] = $"RegisterCertifiedAsync failed: {ex.GetType().Name}: {ex.Message}; fallback to CPU";
-                }
+                states["catalog_register"] = $"RegisterCertifiedAsync failed: {ex.GetType().Name}: {ex.Message}";
             }
 
             try
@@ -207,6 +192,26 @@ internal sealed class ExecutionProviderManager : IDisposable
                     };
                 }
                 states["catalog"] = $"catalog found {catalogProviders.Count} provider(s)";
+                var ortRegistrations = new List<string>();
+                foreach (var provider in catalogProviders)
+                {
+                    if (provider.ReadyState != Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyState.Ready) continue;
+                    if (string.IsNullOrWhiteSpace(provider.LibraryPath)) continue;
+                    try
+                    {
+                        OrtEnv.Instance().RegisterExecutionProviderLibrary(provider.Name, provider.LibraryPath);
+                        ortRegistrations.Add(provider.Name + "=" + provider.LibraryPath);
+                    }
+                    catch (Exception ex) when (ex.Message.Contains("already registered", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ortRegistrations.Add(provider.Name + " already registered by the catalog");
+                    }
+                    catch (Exception ex)
+                    {
+                        ortRegistrations.Add(provider.Name + " failed: " + ex.GetType().Name + ": " + ex.Message);
+                    }
+                }
+                states["ort_ep_libraries"] = ortRegistrations.Count == 0 ? "no ready catalog provider library to register" : string.Join("; ", ortRegistrations);
             }
             catch (Exception ex)
             {
@@ -606,7 +611,7 @@ internal sealed class ExecutionProviderManager : IDisposable
                 ReferenceShape = probe.Reference.Shape,
                 CpuMedianMs = cpuTime,
                 InputsPath = inputsPath,
-                ProviderInstallAllowed = providerInstall
+                ProviderInstallAllowed = false
             };
 
             File.WriteAllText(requestPath, JsonSerializer.Serialize(request, new JsonSerializerOptions { WriteIndented = false }));

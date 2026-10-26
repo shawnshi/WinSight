@@ -11,11 +11,11 @@ internal static class StdioServer
     private const int MaxLineBytes = 1024 * 1024;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
-    internal static int Run(string modelRoot, string manifestPath, bool textOnly, string device = "auto", bool providerInstall = true)
+    internal static int Run(string modelRoot, string manifestPath, bool textOnly, string device = "auto")
     {
         var clock = Stopwatch.StartNew();
         EmbeddingEngine engine;
-        try { engine = new EmbeddingEngine(modelRoot, MediaPreprocessor.ProfileVersion, manifestPath, device, providerInstall); }
+        try { engine = new EmbeddingEngine(modelRoot, MediaPreprocessor.ProfileVersion, manifestPath, device); }
         catch (Exception error)
         {
             Console.Error.WriteLine($"Host startup failed: {error.GetType().Name}: {error.Message}");
@@ -70,7 +70,7 @@ internal static class StdioServer
     }
 
     internal static int Run(string modelRoot, string manifestPath, bool textOnly, bool automaticProviders) =>
-        Run(modelRoot, manifestPath, textOnly, automaticProviders ? "auto" : "cpu", automaticProviders);
+        Run(modelRoot, manifestPath, textOnly, automaticProviders ? "auto" : "cpu");
 
     private static object Info(EmbeddingEngine engine, double loadSeconds, bool textOnly) => new
     {

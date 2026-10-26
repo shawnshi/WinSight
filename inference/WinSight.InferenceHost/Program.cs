@@ -80,7 +80,6 @@ internal static class Program
             {
                 string? hostModelRoot = null, manifestPath = null;
                 var device = "auto";
-                var providerInstall = true;
                 var textOnly = false;
                 for (var i = 0; i < args.Length; i++)
                 {
@@ -91,19 +90,14 @@ internal static class Program
                         case "--models" when i + 1 < args.Length: hostModelRoot = args[++i]; break;
                         case "--manifest" when i + 1 < args.Length: manifestPath = args[++i]; break;
                         case "--device" when i + 1 < args.Length: device = args[++i]; break;
-                        case "--provider-install" when i + 1 < args.Length:
-                            var installArg = args[++i];
-                            if (!bool.TryParse(installArg, out providerInstall))
-                                throw new ArgumentException("provider-install must be true or false");
-                            break;
                         default: throw new ArgumentException($"Unknown or incomplete host option: {args[i]}");
                     }
                 }
                 if (hostModelRoot is null || manifestPath is null)
-                    throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu] [--provider-install true|false]");
+                    throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu]");
                 if (device is not ("auto" or "discrete-gpu" or "npu" or "gpu" or "cpu"))
                     throw new ArgumentException("device must be auto, discrete-gpu, npu, gpu or cpu");
-                return StdioServer.Run(hostModelRoot, manifestPath, textOnly, device, providerInstall);
+                return StdioServer.Run(hostModelRoot, manifestPath, textOnly, device);
             }
             if (args is ["embed-tokens", var textModelRoot, var fixturePath, var reportDirectory])
             {
@@ -115,27 +109,9 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(ModelProbe.Inspect(modelRoot), JsonOptions));
                 return 0;
             }
-            bool envProviderInstall = false;
-            if (args.Length > 0 && args[0] == "environment")
+            if (args.Length != 0 && args[0] != "environment")
             {
-                for (var i = 1; i < args.Length; i++)
-                {
-                    if (args[i] == "--provider-install" && i + 1 < args.Length)
-                    {
-                        if (!bool.TryParse(args[++i], out envProviderInstall))
-                            throw new ArgumentException("provider-install must be true or false");
-                    }
-                    else if (args[i].StartsWith("--provider-install=", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var val = args[i].Substring("--provider-install=".Length);
-                        if (!bool.TryParse(val, out envProviderInstall))
-                            throw new ArgumentException("provider-install must be true or false");
-                    }
-                }
-            }
-            else
-            {
-                throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu] [--provider-install true|false] | environment [--provider-install true|false] | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON | render-pdf-page ABSOLUTE_REQUEST_JSON");
+                throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu] | environment | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON | render-pdf-page ABSOLUTE_REQUEST_JSON");
             }
 
             object? catalogInfo = null;
@@ -145,29 +121,23 @@ internal static class Program
                 var catalog = Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog.GetDefault();
                 if (catalog != null)
                 {
-                    if (envProviderInstall)
+                    try
                     {
-                        try
-                        {
-                            var reg = catalog.EnsureAndRegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
-                            registrationStatus = $"EnsureAndRegisterCertifiedAsync registered {reg.Count} provider(s): {string.Join(", ", reg.Select(p => p.Name))}";
-                        }
-                        catch (Exception ex)
-                        {
-                            registrationStatus = $"EnsureAndRegisterCertifiedAsync failed: {ex.GetType().Name}: {ex.Message}";
-                        }
+                        var reg = catalog.RegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
+                        registrationStatus = $"RegisterCertifiedAsync reported {reg.Count} provider(s): {string.Join(", ", reg.Select(p => p.Name))}";
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        try
-                        {
-                            var reg = catalog.RegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
-                            registrationStatus = $"RegisterCertifiedAsync registered {reg.Count} provider(s): {string.Join(", ", reg.Select(p => p.Name))}";
-                        }
-                        catch (Exception ex)
-                        {
-                            registrationStatus = $"RegisterCertifiedAsync failed: {ex.GetType().Name}: {ex.Message}";
-                        }
+                        registrationStatus = $"RegisterCertifiedAsync failed: {ex.GetType().Name}: {ex.Message}";
+                    }
+
+                    foreach (var provider in catalog.FindAllProviders())
+                    {
+                        if (provider.ReadyState != Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyState.Ready) continue;
+                        if (string.IsNullOrWhiteSpace(provider.LibraryPath)) continue;
+                        try { OrtEnv.Instance().RegisterExecutionProviderLibrary(provider.Name, provider.LibraryPath); }
+                        catch (Exception ex) when (ex.Message.Contains("already registered", StringComparison.OrdinalIgnoreCase)) { registrationStatus += $"; {provider.Name} already registered"; }
+                        catch (Exception ex) { registrationStatus += $"; register {provider.Name} failed: {ex.GetType().Name}: {ex.Message}"; }
                     }
 
                     var providers = catalog.FindAllProviders().Select(p => new
@@ -210,7 +180,7 @@ internal static class Program
                 epDevices,
                 loadedOrtModules = loaded,
                 catalog = catalogInfo,
-                providerDownloadsAllowed = envProviderInstall,
+                providerDownloadsAllowed = false,
                 productionConnected = false
             }, JsonOptions));
             return 0;

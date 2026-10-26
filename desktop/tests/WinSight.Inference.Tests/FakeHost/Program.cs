@@ -4,11 +4,10 @@ using System.Text.Json;
 
 // Test-only executable: no ONNX references, model reads, or production inclusion.
 if (args is ["--tree-leaf"]) { await Task.Delay(Timeout.InfiniteTimeSpan); return 0; }
-// Accepts the 7-argument default form and the 9-argument form that also carries --provider-install.
-if (args.Length is not (7 or 9) || args[0] != "--stdio" || args[1] != "--models" || args[3] != "--manifest"
+// The host takes no provider-install switch: acquisition lives in the isolated Foundry host.
+if (args.Length is not 7 || args[0] != "--stdio" || args[1] != "--models" || args[3] != "--manifest"
     || args[5] != "--device" || args[6] is not ("cpu" or "auto" or "discrete-gpu" or "npu" or "gpu")) return 91;
-if (args.Length == 9 && (args[7] != "--provider-install" || args[8] is not ("true" or "false"))) return 91;
-var installAllowed = args.Length == 7 || args[8] == "true";
+const bool installAllowed = false;
 var requestedProvider = args[6] switch
 {
     "cpu" => "CPUExecutionProvider",
@@ -24,7 +23,7 @@ var audit = Path.Combine(directory, "audit.jsonl");
 var first = !File.Exists(audit);
 void Log(object item) => File.AppendAllText(audit, JsonSerializer.Serialize(item) + "\n");
 void Emit(object item) { Console.WriteLine(JsonSerializer.Serialize(item)); Console.Out.Flush(); }
-Log(new { started = Environment.ProcessId, device = args[6], providerInstall = installAllowed });
+Log(new { started = Environment.ProcessId, device = args[6], downloadsAllowed = installAllowed });
 if ((mode is "startup-timeout" or "startup-cancel") && first) await Task.Delay(10000);
 if (mode == "ready-false") { Emit(new { ready = false, protocol = 1, error = "synthetic missing models" }); return 1; }
 if (mode == "stderr") { await Console.Error.WriteAsync(new string('e', 3 * 1024 * 1024)); await Console.Error.FlushAsync(); }

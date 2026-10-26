@@ -272,7 +272,17 @@ internal static class EpQualificationChild
                 else
                 {
                     var registered = catalog.RegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
-                    childCatalogNote = "RegisterCertifiedAsync registered " + registered.Count + " provider(s)";
+                    childCatalogNote = "RegisterCertifiedAsync reported " + registered.Count + " provider(s)";
+                    // Uncensored providers (for example an uncertified vendor EP) are not covered by the
+                    // catalog call, so register every ready library explicitly; duplicates are idempotent.
+                    foreach (var provider in catalog.FindAllProviders())
+                    {
+                        if (provider.ReadyState != Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyState.Ready) continue;
+                        if (string.IsNullOrWhiteSpace(provider.LibraryPath)) continue;
+                        try { OrtEnv.Instance().RegisterExecutionProviderLibrary(provider.Name, provider.LibraryPath); }
+                        catch (Exception inner) when (inner.Message.Contains("already registered", StringComparison.OrdinalIgnoreCase)) { }
+                        catch (Exception inner) { childCatalogNote += $"; {provider.Name} register failed: {inner.GetType().Name}"; }
+                    }
                 }
             }
             catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)

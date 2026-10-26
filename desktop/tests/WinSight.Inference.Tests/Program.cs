@@ -159,12 +159,12 @@ await Test("device preference and provider-install policy reach the host literal
     {
         var directory = Scenario("success");
         await using var client = new InferenceHostClient(fake, directory, Path.Combine(directory, "manifest with spaces &.json"),
-            accelerator, false, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+            accelerator, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
         var info = await client.GetInfoAsync();
         Check(info.RequestedProvider == expected, "Selected preference was not reported literally: " + accelerator);
         var started = Audit(directory).Single(item => item.TryGetProperty("started", out _));
         Check(started.GetProperty("device").GetString() == accelerator, "Device argument differed from the selection.");
-        Check(started.GetProperty("providerInstall").GetBoolean() == false, "Provider install suppression was not passed.");
+        Check(!started.TryGetProperty("providerInstall", out _), "The host must not receive a provider-install switch.");
     }
 });
 await Test("stderr flood is drained without deadlock", async () =>

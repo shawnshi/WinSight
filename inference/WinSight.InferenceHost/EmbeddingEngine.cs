@@ -35,7 +35,7 @@ internal sealed class EmbeddingEngine : IDisposable
         _ => throw new ArgumentException($"Unknown device preference: {preference}")
     };
 
-    internal EmbeddingEngine(string modelRoot, string mediaPreprocessorVersion = "unbound", string? manifestPath = null, string preference = "auto", bool providerInstall = true)
+    internal EmbeddingEngine(string modelRoot, string mediaPreprocessorVersion = "unbound", string? manifestPath = null, string preference = "auto")
     {
         models = new ModelManifest(modelRoot, manifestPath);
         try
@@ -43,8 +43,8 @@ internal sealed class EmbeddingEngine : IDisposable
             Profile = models.Profile(mediaPreprocessorVersion);
             tokenizer = NativeTokenizer.Load(models.TokenizerJson);
             Preference = preference;
-            ProviderDownloadsAllowed = providerInstall;
-            providers = new ExecutionProviderManager(models, preference, providerInstall);
+            ProviderDownloadsAllowed = false;
+            providers = new ExecutionProviderManager(models, preference);
         }
         catch
         {
@@ -54,7 +54,7 @@ internal sealed class EmbeddingEngine : IDisposable
     }
 
     internal EmbeddingEngine(string modelRoot, string mediaPreprocessorVersion, string? manifestPath, bool automaticProviders)
-        : this(modelRoot, mediaPreprocessorVersion, manifestPath, automaticProviders ? "auto" : "cpu", automaticProviders)
+        : this(modelRoot, mediaPreprocessorVersion, manifestPath, automaticProviders ? "auto" : "cpu")
     {
     }
 

@@ -372,8 +372,7 @@ public sealed partial class DesktopBackend : IDesktopBackend
         settings.InferenceExecutable ?? Path.Combine(applicationDirectory, "inference", "WinSight.InferenceHost.exe"),
         settings.ModelDirectory ?? Path.Combine(applicationDirectory, "models"),
         settings.ManifestPath ?? Path.Combine(applicationDirectory, "inference", "model-manifest.json"),
-        settings.Accelerator,
-        settings.InstallExecutionProviders);
+        settings.Accelerator);
 
     private async Task<IReadOnlyList<IIndexRepository>> GetRepositoriesAsync(CancellationToken cancellationToken)
     {
