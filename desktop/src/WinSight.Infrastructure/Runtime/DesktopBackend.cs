@@ -497,6 +497,15 @@ public sealed partial class DesktopBackend : IDesktopBackend
         }
     }
 
+    /// <summary>Counts indexed rows for one subtree so a completion message can state a real number.</summary>
+    private async Task<int> CountIndexedFilesAsync(string root, CancellationToken cancellationToken)
+    {
+        var repository = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];
+        var files = await repository.ReadFilesAsync(cancellationToken).ConfigureAwait(false);
+        var normalized = Path.GetFullPath(root);
+        return files.Count(file => Path.GetFullPath(file.Path).StartsWith(normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static ClientTransport Parse(string transport) =>
         string.Equals(transport, "http", StringComparison.OrdinalIgnoreCase) ? ClientTransport.Http : ClientTransport.Stdio;
 
@@ -545,9 +554,13 @@ public sealed partial class DesktopBackend : IDesktopBackend
             // Accepted means it really runs: the request goes through the same manual indexing path the UI uses.
             try
             {
+                var before = await CountIndexedFilesAsync(job.Root, cancellationToken).ConfigureAwait(false);
                 await IndexAsync(new IndexRequest([job.Root]), null, cancellationToken).ConfigureAwait(false);
-                await JobStore.CompleteAsync(job, true, "accepted: indexed " + job.Root, cancellationToken).ConfigureAwait(false);
-                outcomes.Add(job.Id + ": accepted and indexed");
+                var after = await CountIndexedFilesAsync(job.Root, cancellationToken).ConfigureAwait(false);
+                var added = after - before;
+                var detail = "accepted: " + after + " file(s) indexed under the request, " + added + " new";
+                await JobStore.CompleteAsync(job, true, detail, cancellationToken).ConfigureAwait(false);
+                outcomes.Add(job.Id + ": " + detail);
             }
             catch (Exception error) when (error is IOException or InvalidOperationException or InvalidDataException or UnauthorizedAccessException)
             {
@@ -623,10 +636,17 @@ public sealed partial class DesktopBackend : IDesktopBackend
             await builder.IndexAsync(request, null, cancellationToken).ConfigureAwait(false);
         }, async database =>
         {
+            // The probe must come from the staged data itself: a hardcoded word would fail whenever the
+            // corpus simply does not contain it, blocking a perfectly good rebuild.
             await using var probe = new SqliteIndexRepository(database);
             await probe.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            var hits = await probe.KeywordSearchAsync("index", 3, cancellationToken).ConfigureAwait(false);
-            return hits.Count == 0 ? Array.Empty<string>() : new[] { "keyword:" + hits.Count };
+            var files = await probe.ReadFilesAsync(cancellationToken).ConfigureAwait(false);
+            var sample = files.FirstOrDefault(file => file.State == "done");
+            if (sample is null) return Array.Empty<string>();
+            var term = Path.GetFileNameWithoutExtension(sample.Path);
+            if (term.Length < 2) return new[] { "files:" + files.Count };
+            var hits = await probe.KeywordSearchAsync(term, 3, cancellationToken).ConfigureAwait(false);
+            return hits.Count == 0 ? new[] { "files:" + files.Count } : new[] { "keyword:" + hits.Count };
         }, cancellationToken).ConfigureAwait(false);
         repositories.Clear();
         var reopened = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];

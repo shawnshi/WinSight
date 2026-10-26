@@ -62,7 +62,10 @@ public static class IndexRebuildCoordinator
             await build(stagingRoot).ConfigureAwait(false);
             if (!File.Exists(stagingDatabase)) return new RebuildOutcome(false, null, null, "staging database was not produced");
             var problem = await ValidateAsync(stagingDatabase, fixedQueryProbe, cancellationToken).ConfigureAwait(false);
+            // Pooled connections keep the staging file open; release them before any move.
+            SqliteConnection.ClearAllPools();
             if (problem is not null) return new RebuildOutcome(false, generation, null, problem);
+            SqliteConnection.ClearAllPools();
             var previous = Path.Combine(indexDirectory, "pre-" + generation);
             if (Directory.Exists(previous)) Directory.Delete(previous, true);
             var moved = new List<string>();
