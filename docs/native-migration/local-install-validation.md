@@ -65,3 +65,12 @@ $desktop = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
 - **实测**：Storage 48/48、Indexing 29/29、Runtime 39/39（含 2 项真实 watcher 经生产协调器）；20 000 文件规模：冷核对 43.9s、热核对 88.2s、无重复任务（`SCALE-01`）。
 - **加速器**：本机 `auto` 下 DirectML 实测 CPU 17.4ms vs EP 39.9ms（核显更慢，5% 门拒绝）；RyzenAI NPU 会话可运行但 profile 无目标 EP 计算节点（证据门拒绝）；VitisAI 使子进程原生崩溃而宿主健康。**本机无加速器通过证据门，阈值未放宽，未伪造节点证据。**
 - **仍未闭合**：批量化入队（`SCALE-01`）、改变 runtime 集的升级路径（`UPGRADE-RUNTIME-SET-01`）、大目录端到端吞吐、NPU/GPU 实际合格、完整产品与 Release 门禁。
+
+## 2026-10-26（续）：批量入队、记录上限与升级链的剩余阻塞
+
+- **SCALE-01 关闭**：新增 `EnqueueIndexTasksAsync`（单事务批量 upsert）与核对路径 500 条攒批。20 000 文件实测 cold **43.9s → 0.4s**、warm **88.2s → 0.0s**，仍 20 000 条入队且 warm 不重复入队；Storage 套件 48/48。
+- **STATE-GROWTH-02 修复**：intent/回执内嵌投影状态，每个 release 携带完整文件清单，两 release 记录约 3.5 MiB，而写入与读取边界都是 2 MiB。已把写入边界、`Read-N5Bytes` 默认值与 `$script:N5Limit` 统一提高到 16 MiB（sanity bound，不是安全边界），并保留「只保留上一 release」的裁剪。
+- **UPGRADE-RUNTIME-SET-01 结构部分已生效**：Prepare 会在运行时脚本集变化时把新 runtime 复制到 `controluntime\<sourceHash>`（实测 `ba7a1ad3…` 已落盘），启动器按 binding 的 `sources.sha256` 选择 runtime。
+- **仍未完成**：升级事务在记录上限修复后改以 `N5.Transport: pipe EOF` 失败（原生回调管道提前结束），`state`/回执/锚点保持在上一次成功提交，`pending.json` 残留并已按用户批准的受控收尾（证据：state 前进、回执与锚点一致、1076 文件 0 不符）清理并留档于 `.dev/inc-index-01/finalize-cleanup-0{1,2,3}`。该条件已达重试上限，未再盲改。
+- **加速器**：结论不变——本机无加速器通过证据门（DML 17.4ms vs 39.9ms；RyzenAI 无目标 EP 计算节点；VitisAI 子进程崩溃而宿主健康），阈值未放宽。
+- **Release 门禁**：`overall=blocked_pending_required_acceptance`、`releaseApproved=false` 未变；上述升级收尾与加速器证据是仍未满足的条目之一。
