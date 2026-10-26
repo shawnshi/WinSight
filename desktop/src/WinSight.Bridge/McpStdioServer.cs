@@ -271,8 +271,27 @@ public sealed class McpStdioServer
         WriteLineToStdout(json);
     }
 
+    /// <summary>Set by the pipe transport: responses are captured instead of written to stdout.</summary>
+    private List<string>? captured;
+
+    /// <summary>Handles one JSON-RPC line and returns the reply, or null for notifications. Used by the pipe transport.</summary>
+    public async Task<string?> CaptureLineAsync(string line, CancellationToken cancellationToken)
+    {
+        captured = new List<string>();
+        try
+        {
+            await HandleLineAsync(line, cancellationToken).ConfigureAwait(false);
+            return captured.Count == 0 ? null : captured[^1];
+        }
+        finally
+        {
+            captured = null;
+        }
+    }
+
     private void WriteLineToStdout(string message)
     {
+        if (captured is not null) { captured.Add(message); return; }
         lock (writeGate)
         {
             // MCP Transport rule: stdout ONLY writes legal JSON-RPC messages (one per line, UTF-8, no BOM)

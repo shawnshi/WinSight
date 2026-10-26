@@ -11,12 +11,22 @@ public static class Program
         Console.InputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
         string? indexPath = null;
+        string? pipeName = null;
+        string? tokenEnvironment = null;
 
         for (int i = 0; i < args.Length; i++)
         {
             if ((args[i] == "--index" || args[i] == "-i") && i + 1 < args.Length)
             {
                 indexPath = args[++i];
+            }
+            else if (args[i] == "--pipe" && i + 1 < args.Length)
+            {
+                pipeName = args[++i];
+            }
+            else if (args[i] == "--pipe-token-env" && i + 1 < args.Length)
+            {
+                tokenEnvironment = args[++i];
             }
         }
 
@@ -64,6 +74,26 @@ public static class Program
 
         try
         {
+            if (!string.IsNullOrWhiteSpace(pipeName))
+            {
+                // The pipe carries the same JSON-RPC payloads as stdio; the token is read from the environment
+                // so it never appears in a command line or a log.
+                var token = Environment.GetEnvironmentVariable(tokenEnvironment ?? "WINSIGHT_MCP_TOKEN");
+                if (string.IsNullOrWhiteSpace(token) || token.Length < 32)
+                    throw new InvalidOperationException("A session token of at least 32 characters must be supplied through the environment.");
+                stateMachine.TransitionTo(McpBridgeState.Starting);
+                stateMachine.TransitionTo(McpBridgeState.Running);
+                Console.Error.WriteLine("[winsight-mcp] Bridge is running (named pipe transport).");
+                try
+                {
+                    return await PipeTransport.RunAsync(pipeName, token, line => server.CaptureLineAsync(line, cts.Token)!, cts.Token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    stateMachine.TransitionTo(McpBridgeState.Stopping);
+                    stateMachine.TransitionTo(McpBridgeState.Disabled);
+                }
+            }
             await server.RunAsync(cts.Token).ConfigureAwait(false);
             return 0;
         }
