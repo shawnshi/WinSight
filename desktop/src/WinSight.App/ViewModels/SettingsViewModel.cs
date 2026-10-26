@@ -422,6 +422,41 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     private static string Shorten(string value) => value.Length <= 12 ? value : value[..12] + "…";
 
+    private string rebuildSummary = "Rebuild is only needed when the model or the lexicon changed.";
+    public string RebuildSummary => rebuildSummary;
+
+    public async Task RefreshRebuildStateAsync()
+    {
+        try
+        {
+            var needed = await backend.RebuildNeededAsync();
+            rebuildSummary = needed ? "A rebuild is required before maintenance requests can index." : "The current index generation matches the model and lexicon.";
+            if (backend.RebuildStatus != "idle") rebuildSummary += " Status: " + backend.RebuildStatus + ".";
+        }
+        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or TimeoutException)
+        {
+            rebuildSummary = "Rebuild state unavailable: " + error.Message;
+        }
+        OnPropertyChanged(nameof(RebuildSummary));
+    }
+
+    /// <summary>Starts a whole-corpus rebuild in the background; the window stays responsive.</summary>
+    public async Task StartRebuildAsync()
+    {
+        try
+        {
+            var outcome = await backend.StartRebuildAsync();
+            rebuildSummary = outcome == "started"
+                ? "Rebuild started in the background; progress appears here."
+                : "Rebuild not started: " + outcome;
+        }
+        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or TimeoutException)
+        {
+            rebuildSummary = "Rebuild failed to start: " + error.Message;
+        }
+        OnPropertyChanged(nameof(RebuildSummary));
+    }
+
     private string maintenanceSummary = "Pending requests from MCP clients appear here; Drain hands accepted paths to the indexing queue.";
     private bool maintenanceBusy;
     public string MaintenanceSummary => maintenanceSummary;

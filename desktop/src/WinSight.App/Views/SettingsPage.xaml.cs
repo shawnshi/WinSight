@@ -153,4 +153,14 @@ public sealed partial class SettingsPage : Page
     {
         await ViewModel.RefreshModelsAsync();
     }
+
+    private async void OnRefreshRebuildClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.RefreshRebuildStateAsync();
+    }
+
+    private async void OnStartRebuildClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.StartRebuildAsync();
+    }
 }

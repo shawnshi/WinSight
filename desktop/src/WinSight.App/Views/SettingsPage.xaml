@@ -301,6 +301,25 @@
                 </StackPanel>
             </Border>
 
+            <!-- Index generation -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Index generation" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="{x:Bind ViewModel.RebuildSummary, Mode=OneWay}" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="RebuildSummary"/>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Content="Check" Click="OnRefreshRebuildClick"
+                                AutomationProperties.AutomationId="RefreshRebuildButton"/>
+                        <Button Content="Rebuild index" Click="OnStartRebuildClick"
+                                AutomationProperties.AutomationId="StartRebuildButton"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
             <!-- MCP maintenance authorization -->
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"

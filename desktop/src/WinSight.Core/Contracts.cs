@@ -193,6 +193,9 @@ public interface IDesktopBackend : IAsyncDisposable
     Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<ModelInventory?> GetModelInventoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<ModelInventory?>(null);
+    Task<bool> RebuildNeededAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
+    Task<string> StartRebuildAsync(CancellationToken cancellationToken = default) => Task.FromResult("unsupported");
+    string RebuildStatus => "idle";
     Task<string?> GetMaintenanceGrantAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     Task<string?> GrantMaintenanceAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;

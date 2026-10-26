@@ -114,8 +114,16 @@ public sealed partial class DesktopBackend : IDesktopBackend
         finally { lifecycle.Release(); }
     }
 
-    public async Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+    public Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        IndexCoreAsync(request, progress, allowRebuild: true, cancellationToken);
+
+    /// <summary>
+    /// Runs indexing without ever starting a generation rebuild. Maintenance requests use this: a rebuild can
+    /// take an hour, so it must never be a side effect of a client asking for one folder.
+    /// </summary>
+    private async Task IndexCoreAsync(IndexRequest request, IProgress<IndexProgress>? progress, bool allowRebuild,
+        CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(stopping != 0, this);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetimeStop.Token);
@@ -169,7 +177,9 @@ public sealed partial class DesktopBackend : IDesktopBackend
                 // belong to a different profile. Keep the old index as a backup and start a fresh one instead
                 // of failing every file with a profile mismatch.
                 var info = await model.GetInfoAsync(token).ConfigureAwait(false);
-                repository = await EnsureGenerationAsync(repository, approved, info, mediaClient, defer, token).ConfigureAwait(false);
+                repository = allowRebuild
+                    ? await EnsureGenerationAsync(repository, approved, info, mediaClient, defer, token).ConfigureAwait(false)
+                    : repository;
                 var service = new IndexingService(repository, new ContentExtractor(mediaClient), model,
                     defer || mediaClient is null ? null : new NativeMediaSamplingService(mediaClient),
                     defer ? null : new NativeDocumentPages(mediaClient),
@@ -497,6 +507,88 @@ public sealed partial class DesktopBackend : IDesktopBackend
         }
     }
 
+    private volatile string rebuildStatus = "idle";
+    private volatile bool rebuildRunning;
+
+    /// <summary>True when the live generation no longer matches the model or the lexicon.</summary>
+    public async Task<bool> RebuildNeededAsync(CancellationToken cancellationToken = default)
+    {
+        var info = await GetEmbeddings().GetInfoAsync(cancellationToken).ConfigureAwait(false);
+        var dictionary = NativeSegmenter.Fingerprint(Array.Empty<string>());
+        return IndexRebuildCoordinator.NeedsRebuild(IndexDirectory, info.ProfileId, dictionary);
+    }
+
+    public string RebuildStatus => rebuildStatus;
+    public bool RebuildRunning => rebuildRunning;
+
+    /// <summary>
+    /// Starts a generation rebuild in the background and returns immediately. The request covers every
+    /// authorized root because a generation is the whole corpus; progress is visible through RebuildStatus.
+    /// </summary>
+    public async Task<string> StartRebuildAsync(CancellationToken cancellationToken = default)
+    {
+        if (rebuildRunning) return "already running";
+        var info = await GetEmbeddings().GetInfoAsync(cancellationToken).ConfigureAwait(false);
+        var roots = (settings.Folders ?? new List<string>()).Where(root => IsAuthorizedResult(root, false)).ToArray();
+        if (roots.Length == 0) return "no authorized folders";
+        rebuildRunning = true;
+        rebuildStatus = "running: staging " + roots.Length + " root(s)";
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var dictionary = NativeSegmenter.Fingerprint(Array.Empty<string>());
+                var generation = info.ProfileId[..Math.Min(12, info.ProfileId.Length)] + "-" + dictionary[..8] + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+                var repository = (await GetRepositoriesAsync(CancellationToken.None).ConfigureAwait(false))[0];
+                await repository.DisposeAsync().ConfigureAwait(false);
+                repositories.Clear();
+                var outcome = await IndexRebuildCoordinator.RebuildAsync(IndexDirectory, generation, async stagingRoot =>
+                {
+                    await using var staging = new SqliteIndexRepository(Path.Combine(stagingRoot, "index.sqlite"));
+                    await staging.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                    await staging.SetMetaAsync("profile_id", info.ProfileId, CancellationToken.None).ConfigureAwait(false);
+                    await staging.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, "2", CancellationToken.None).ConfigureAwait(false);
+                    await staging.SetMetaAsync(IndexRebuildCoordinator.DictionaryKey, dictionary, CancellationToken.None).ConfigureAwait(false);
+                    await staging.SetMetaAsync(IndexRebuildCoordinator.GenerationKey, generation, CancellationToken.None).ConfigureAwait(false);
+                    var builder = new IndexingService(staging, new ContentExtractor(GetMediaClient()), embeddings!,
+                        null, null, null, allowDeferredStages: true);
+                    await builder.IndexAsync(new IndexRequest(roots), null, CancellationToken.None).ConfigureAwait(false);
+                }, async database =>
+                {
+                    await using var probe = new SqliteIndexRepository(database);
+                    await probe.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                    var files = await probe.ReadFilesAsync(CancellationToken.None).ConfigureAwait(false);
+                    return files.Count == 0 ? Array.Empty<string>() : new[] { "files:" + files.Count };
+                }, CancellationToken.None).ConfigureAwait(false);
+                repositories.Clear();
+                rebuildStatus = outcome.Switched
+                    ? "done: rebuilt with " + roots.Length + " root(s); previous generation kept as " + Path.GetFileName(outcome.PreviousDirectory ?? "none")
+                    : "failed: " + (outcome.Detail ?? "unknown");
+            }
+            catch (Exception error) when (error is IOException or InvalidOperationException or InvalidDataException)
+            {
+                rebuildStatus = "failed: " + error.GetType().Name + ": " + error.Message;
+            }
+            finally
+            {
+                rebuildRunning = false;
+                repositories.Clear();
+            }
+        }, CancellationToken.None);
+        return "started";
+    }
+
+    private NativeMediaProcessClient? GetMediaClient()
+    {
+        var mediaHost = settings.InferenceExecutable ?? Path.Combine(applicationDirectory, "inference", "WinSight.InferenceHost.exe");
+        if (!File.Exists(mediaHost)) return null;
+        return new NativeMediaProcessClient(new NativeMediaProcessOptions
+        {
+            HostExecutable = mediaHost,
+            WorkspaceRoot = Path.Combine(dataDirectory, "media-tasks")
+        });
+    }
+
     /// <summary>Counts indexed rows for one subtree so a completion message can state a real number.</summary>
     private async Task<int> CountIndexedFilesAsync(string root, CancellationToken cancellationToken)
     {
@@ -554,8 +646,16 @@ public sealed partial class DesktopBackend : IDesktopBackend
             // Accepted means it really runs: the request goes through the same manual indexing path the UI uses.
             try
             {
+                if (await RebuildNeededAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    await JobStore.CompleteAsync(job, false,
+                        "needs_rebuild: the index generation no longer matches the model or lexicon; rebuild it from Settings, then retry",
+                        cancellationToken).ConfigureAwait(false);
+                    outcomes.Add(job.Id + ": needs_rebuild");
+                    continue;
+                }
                 var before = await CountIndexedFilesAsync(job.Root, cancellationToken).ConfigureAwait(false);
-                await IndexAsync(new IndexRequest([job.Root]), null, cancellationToken).ConfigureAwait(false);
+                await IndexCoreAsync(new IndexRequest([job.Root]), null, allowRebuild: false, cancellationToken).ConfigureAwait(false);
                 var after = await CountIndexedFilesAsync(job.Root, cancellationToken).ConfigureAwait(false);
                 var added = after - before;
                 var detail = "accepted: " + after + " file(s) indexed under the request, " + added + " new";
