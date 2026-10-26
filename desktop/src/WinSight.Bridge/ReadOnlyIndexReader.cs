@@ -204,7 +204,6 @@ public sealed class ReadOnlyIndexReader : IDisposable
             // Two lexical sources, same rules as the application: the literal index and the segmented index.
             // Querying only the literal one silently loses every Chinese phrase it cannot serve.
             var segmented = SegmentedPattern(trimmed);
-            Console.Error.WriteLine($"[trace] available={NativeSegmenter.IsAvailable} segmentedLen={segmented.Length} pattern={segmented}");
             var results = new List<FileHit>();
             var seenFiles = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
             (string table, string pattern)[] sources = segmented.Length == 0
@@ -232,7 +231,9 @@ public sealed class ReadOnlyIndexReader : IDisposable
             {
                 using var cmd = connection.CreateCommand();
                 cmd.CommandText = sql.ToString();
-                cmd.Parameters.AddWithValue("$ftsPattern", ftsPattern);
+                // Bind the pattern of the current source: the segmented iteration must not receive the
+                // literal phrase, or the segmented index is queried with the wrong expression.
+                cmd.Parameters.AddWithValue("$ftsPattern", pattern);
                 // Scan up to topK * 10 segments to allow file-level deduplication
                 cmd.Parameters.AddWithValue("$scanLimit", Math.Max(50, topK * 10));
 
