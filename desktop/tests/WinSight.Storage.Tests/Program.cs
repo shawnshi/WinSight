@@ -18,6 +18,33 @@ async Task Test(string name, Func<Task> test)
 }
 string Db(string name) => Path.Combine(root, name + ".sqlite");
 
+await Test("NeedsRebuild reports a stale generation and stays quiet when it matches", async () =>
+{
+    var directory = Path.Combine(root, "needs-rebuild");
+    Directory.CreateDirectory(directory);
+    var repository = new SqliteIndexRepository(Path.Combine(directory, "index.sqlite"));
+    await repository.InitializeAsync();
+    await repository.SetMetaAsync("profile_id", "profile-a");
+    await repository.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, "2");
+    await repository.SetMetaAsync(IndexRebuildCoordinator.DictionaryKey, "dict-a");
+    await repository.DisposeAsync();
+    SqliteConnection.ClearAllPools();
+
+    Check(!IndexRebuildCoordinator.NeedsRebuild(directory, "profile-a", "dict-a"), "A matching generation must not ask for a rebuild.");
+    Check(IndexRebuildCoordinator.NeedsRebuild(directory, "profile-b", "dict-a"), "A changed profile must ask for a rebuild.");
+    Check(IndexRebuildCoordinator.NeedsRebuild(directory, "profile-a", "dict-b"), "A changed dictionary must ask for a rebuild.");
+
+    var legacy = Path.Combine(root, "needs-rebuild-legacy");
+    Directory.CreateDirectory(legacy);
+    var old = new SqliteIndexRepository(Path.Combine(legacy, "index.sqlite"));
+    await old.InitializeAsync();
+    await old.SetMetaAsync("profile_id", "profile-a");
+    await old.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, "1");
+    await old.DisposeAsync();
+    SqliteConnection.ClearAllPools();
+    Check(IndexRebuildCoordinator.NeedsRebuild(legacy, "profile-a", "dict-a"), "A pre-lexicon generation must ask for a rebuild.");
+});
+
 await Test("generation rebuild switches only when the data-derived probe succeeds", async () =>
 {
     var indexDirectory = Path.Combine(root, "rebuild-window");
