@@ -164,6 +164,15 @@ public sealed partial class DesktopBackend : IDesktopBackend
                 // Deferred (default) keeps the first pass to text and structure: page rasterisation, OCR and
                 // media sampling are the expensive stages and are left to a later pass.
                 var defer = approved.DeferComplexParse;
+                // The embedding profile includes the ORT version, so an ORT change makes every stored vector
+                // belong to a different profile. Keep the old index as a backup and start a fresh one instead
+                // of failing every file with a profile mismatch.
+                var info = await model.GetInfoAsync(token).ConfigureAwait(false);
+                var storedProfile = await repository.GetMetaAsync("profile_id", token).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(storedProfile) && storedProfile != info.ProfileId)
+                {
+                    await RetireIndexForProfileChangeAsync(repository, storedProfile, info.ProfileId, token).ConfigureAwait(false);
+                }
                 var service = new IndexingService(repository, new ContentExtractor(mediaClient), model,
                     defer || mediaClient is null ? null : new NativeMediaSamplingService(mediaClient),
                     defer ? null : new NativeDocumentPages(mediaClient),
@@ -221,6 +230,46 @@ public sealed partial class DesktopBackend : IDesktopBackend
         ObjectDisposedException.ThrowIf(stopping != 0, this);
         var changed = await indexing.SetPausedAsync(paused, cancellationToken);
         if (changed && !paused && stopping == 0) background?.RequestReconciliation();
+    }
+
+    /// <summary>
+    /// Runs the isolated Foundry Local host in probe mode: it only discovers providers and never downloads.
+    /// A missing or failing host degrades to an explanatory error instead of failing the page.
+    /// </summary>
+    public async Task<FoundryProbe?> ProbeFoundryAsync(CancellationToken cancellationToken = default)
+    {
+        var executable = Path.Combine(applicationDirectory, "foundry", "WinSight.FoundryHost.exe");
+        if (!File.Exists(executable)) return new FoundryProbe("unavailable", Array.Empty<string>(), Array.Empty<FoundryProvider>(), "Foundry host is not part of this payload.");
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            start.ArgumentList.Add("probe");
+            using var process = System.Diagnostics.Process.Start(start)!;
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            var text = await stdout.ConfigureAwait(false);
+            if (process.ExitCode != 0) return new FoundryProbe("unavailable", Array.Empty<string>(), Array.Empty<FoundryProvider>(), "probe exited " + process.ExitCode + ": " + (await stderr.ConfigureAwait(false)).Trim());
+            using var document = System.Text.Json.JsonDocument.Parse(text);
+            var root = document.RootElement;
+            var sdk = root.TryGetProperty("sdk", out var sdkElement) ? sdkElement.GetString() ?? "unknown" : "unknown";
+            var types = root.TryGetProperty("deviceTypes", out var typeElement) && typeElement.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? typeElement.EnumerateArray().Select(v => v.GetString() ?? "").Where(v => v.Length != 0).ToArray()
+                : Array.Empty<string>();
+            var providers = root.TryGetProperty("providers", out var providerElement) && providerElement.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? providerElement.EnumerateArray()
+                    .Select(p => new FoundryProvider(p.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                        p.TryGetProperty("registered", out var r) && r.ValueKind == System.Text.Json.JsonValueKind.True))
+                    .Where(p => p.Name.Length != 0).ToArray()
+                : Array.Empty<FoundryProvider>();
+            return new FoundryProbe(sdk, types, providers);
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or System.Text.Json.JsonException or OperationCanceledException or System.ComponentModel.Win32Exception)
+        {
+            return new FoundryProbe("unavailable", Array.Empty<string>(), Array.Empty<FoundryProvider>(), error.GetType().Name + ": " + error.Message);
+        }
     }
 
     public async Task<IReadOnlyList<string>> GetFailureSummaryAsync(int limit = 5, CancellationToken cancellationToken = default)
@@ -340,6 +389,27 @@ public sealed partial class DesktopBackend : IDesktopBackend
             await ReleaseResourcesAsync().ConfigureAwait(false);
         }
         finally { lifecycle.Release(); }
+    }
+
+    /// <summary>
+    /// An embedding profile change invalidates stored vectors. The previous database is renamed aside (never
+    /// deleted) and a fresh repository is created so the next pass can index against the new profile.
+    /// </summary>
+    private async Task RetireIndexForProfileChangeAsync(IIndexRepository repository, string storedProfile, string expectedProfile, CancellationToken cancellationToken)
+    {
+        var database = repository.DatabasePath;
+        await repository.DisposeAsync().ConfigureAwait(false);
+        var suffix = ".pre-" + storedProfile[..Math.Min(12, storedProfile.Length)];
+        foreach (var path in new[] { database, database + "-wal", database + "-shm" })
+        {
+            if (!File.Exists(path)) continue;
+            var target = path + suffix;
+            if (File.Exists(target)) File.Delete(target);
+            File.Move(path, target);
+        }
+        repositories.Clear();
+        await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false);
+        backgroundError = $"Index was rebuilt for embedding profile {expectedProfile[..12]}…; the previous database was kept as {Path.GetFileName(database)}{suffix}.";
     }
 
     private async Task ReleaseResourcesAsync()

@@ -116,4 +116,9 @@ public sealed partial class SettingsPage : Page
     }
 
     public Visibility BoolToVisibility(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
+
+    private async void OnProbeFoundryClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.ProbeFoundryAsync();
+    }
 }

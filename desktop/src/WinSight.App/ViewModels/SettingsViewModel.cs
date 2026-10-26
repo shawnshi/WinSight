@@ -294,6 +294,40 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     public string RepositoryUrl => "https://github.com/shawnshi/WinSight";
 
+    private string foundrySummary = "Not probed. Discovery never downloads anything.";
+    private IReadOnlyList<string> foundryProviders = Array.Empty<string>();
+    public string FoundrySummary => foundrySummary;
+    public IReadOnlyList<string> FoundryProviders => foundryProviders;
+
+    /// <summary>Runs the isolated Foundry host in probe mode; it only enumerates providers.</summary>
+    public async Task ProbeFoundryAsync()
+    {
+        foundrySummary = "Probing the isolated Foundry Local host…";
+        OnPropertyChanged(nameof(FoundrySummary));
+        var probe = await backend.ProbeFoundryAsync();
+        if (probe is null)
+        {
+            foundrySummary = "Foundry Local backend is unavailable in this build.";
+            foundryProviders = Array.Empty<string>();
+        }
+        else if (probe.Error is { Length: > 0 } error)
+        {
+            foundrySummary = "Foundry Local unavailable: " + error;
+            foundryProviders = Array.Empty<string>();
+        }
+        else
+        {
+            var registered = probe.Providers.Count(p => p.Registered);
+            foundrySummary = $"Foundry Local SDK {probe.Sdk}; device types {string.Join('/', probe.DeviceTypes)}; "
+                + $"{probe.Providers.Count} provider(s), {registered} registered.";
+            foundryProviders = probe.Providers
+                .Select(p => p.Name + (p.Registered ? " (registered)" : " (not registered)"))
+                .ToArray();
+        }
+        OnPropertyChanged(nameof(FoundrySummary));
+        OnPropertyChanged(nameof(FoundryProviders));
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {

@@ -282,6 +282,33 @@
                 </StackPanel>
             </Border>
 
+            <!-- Foundry Local (isolated backend) -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Foundry Local backend" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="Isolated process that carries the Foundry Local runtime (ORT 1.31). Probing only discovers providers; nothing is downloaded."
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+                    <TextBlock Text="{x:Bind ViewModel.FoundrySummary, Mode=OneWay}" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="FoundrySummary"/>
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.FoundryProviders, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <TextBlock Text="{x:Bind}" Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <Button Content="Probe Foundry Local" Click="OnProbeFoundryClick"
+                            AutomationProperties.AutomationId="ProbeFoundryButton"/>
+                </StackPanel>
+            </Border>
+
             <!-- About -->
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"

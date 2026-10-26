@@ -44,6 +44,11 @@ public partial class App : Application
 
             var settings = await backend.LoadSettingsAsync();
 
+            // The installer ends at its NoCommit checkpoint, so post-install provisioning runs on first
+            // launch instead: silently download/register the Foundry Local providers applicable to this
+            // device, once, in the background. Failures are logged and never block the UI.
+            _ = Task.Run(() => ProvisionFoundryOnceAsync());
+
             hotkeyService = new HotkeyService(settings.Hotkey);
             mainWindow = new MainWindow(backend, settings, hotkeyService, customDataDir);
             trayIconService = new TrayIconService(mainWindow.ViewModel);
@@ -111,6 +116,56 @@ public partial class App : Application
             }
             Environment.ExitCode = 1;
             Exit();
+        }
+    }
+
+    /// <summary>
+    /// One-shot, background provisioning of the isolated Foundry Local backend (execution providers only).
+    /// A marker file keeps it idempotent; the log lives under the data directory.
+    /// </summary>
+    private async Task ProvisionFoundryOnceAsync()
+    {
+        try
+        {
+            var data = customDataDir;
+            if (string.IsNullOrWhiteSpace(data) || !Path.IsPathFullyQualified(data)) return;
+            var marker = Path.Combine(data, "foundry-provision.done");
+            if (File.Exists(marker)) return;
+            var host = Path.Combine(AppContext.BaseDirectory, "foundry", "WinSight.FoundryHost.exe");
+            var log = Path.Combine(data, "logs");
+            Directory.CreateDirectory(log);
+            var logFile = Path.Combine(log, "foundry-provision.log");
+            if (!File.Exists(host))
+            {
+                await File.AppendAllTextAsync(logFile, $"{DateTimeOffset.UtcNow:o} foundry host absent; skipped{Environment.NewLine}");
+                return;
+            }
+            await File.AppendAllTextAsync(logFile, $"{DateTimeOffset.UtcNow:o} provisioning with {host}{Environment.NewLine}");
+            var start = new System.Diagnostics.ProcessStartInfo(host)
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            start.ArgumentList.Add("register");
+            start.ArgumentList.Add("--allow-download");
+            using var process = System.Diagnostics.Process.Start(start);
+            if (process is null) return;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token);
+            await File.AppendAllTextAsync(logFile, $"{DateTimeOffset.UtcNow:o} register exit={process.ExitCode}{Environment.NewLine}{await stdout}{await stderr}");
+            if (process.ExitCode == 0) await File.WriteAllTextAsync(marker, DateTimeOffset.UtcNow.ToString("o"));
+        }
+        catch (Exception error)
+        {
+            try
+            {
+                var log = Path.Combine(customDataDir, "logs");
+                Directory.CreateDirectory(log);
+                await File.AppendAllTextAsync(Path.Combine(log, "foundry-provision.log"), $"{DateTimeOffset.UtcNow:o} failed: {error.Message}{Environment.NewLine}");
+            }
+            catch { /* provisioning is best-effort */ }
         }
     }
 
