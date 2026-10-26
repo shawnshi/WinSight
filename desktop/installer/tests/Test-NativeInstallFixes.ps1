@@ -18,6 +18,15 @@ $coordinator=Join-Path $sourceRoot 'NativeInstallCoordinator.psm1';$coordinatorA
 foreach($name in @('Assert-NLString','Assert-NLPath','Assert-NLNoReparse','Initialize-NLLinkIdentityApi','Get-NLLinkHandleIdentity','Test-NLStoredLinkFields','Read-NLFreshStoredFields')){. ([scriptblock]::Create((FunctionBody $shellAst $name)))}
 foreach($name in @('Get-NativeLiveObservation','Read-NLFreshLink')){Check 'source' ($name+'-uses-actual-predicate') ((FunctionBody $shellAst $name).Contains('Test-NLStoredLinkFields'))}
 $worker=FunctionBody $coordinatorAst 'Invoke-N7LiveWorker'
+foreach($name in @('Assert-N5Hash','Assert-N5Arguments')){. ([scriptblock]::Create((FunctionBody $coordinatorAst $name)))}
+$hash='a'*64
+$base=@{Command='ResumeFinalize';Operation='Apply';BindingPath='C:\b.json';BindingSha256=$hash;TransactionId=('b'*32);IntentSha256=$hash;ExpectedReceiptSha256=$hash}
+$ok=$true;try{Assert-N5Arguments $base}catch{$ok=$false};Check 'resume' 'resume-finalize-accepted-with-receipt-pin' $ok
+$missing=$base.Clone();$null=$missing.Remove('ExpectedReceiptSha256')
+$rejected=$false;try{Assert-N5Arguments $missing}catch{$rejected=$true};Check 'resume' 'resume-finalize-rejected-without-receipt-pin' $rejected
+$inspect=@{Command='Inspect';Operation='Apply';BindingPath='C:\b.json';BindingSha256=$hash}
+$inspectOk=$true;try{Assert-N5Arguments $inspect}catch{$inspectOk=$false};Check 'resume' 'inspect-needs-no-receipt-pin' $inspectOk
+$late=$base.Clone();$late.Command='Finalize';$finalOk=$true;try{Assert-N5Arguments $late}catch{$finalOk=$false};Check 'resume' 'finalize-accepted-with-receipt-pin' $finalOk
 $complete=FunctionBody $coordinatorAst 'Complete-N7LiveTransaction'
 $resume=FunctionBody $coordinatorAst 'Assert-N5Arguments'
 Check 'source' 'resume-finalize-remains-reachable' ($resume.Contains("'ResumeFinalize'") -and $complete.Contains('throw'))
