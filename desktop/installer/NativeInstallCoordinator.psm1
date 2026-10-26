@@ -911,7 +911,14 @@ function Invoke-N5Dispatch($P,$B,$OwnerPlan=$null,$LiveSession=$null) {
             if($process.HasExited -and $r.states[0] -ceq 'Eof' -and $r.states[1] -ceq 'Eof' -and (Get-NativeJobActiveProcesses $job) -eq 0){$complete=$true;break}
             Start-Sleep -Milliseconds 10
         }
-        if(-not $complete){throw 'N5.Deadline: execution/drain exceeded shared budget; explicit recovery required.'}
+        if(-not $complete){
+            # N5-DEADLINE-RECHECK-01: the loop also stops when the shared budget runs out. If the worker had in
+            # fact already exited with both readers drained and no owned processes left, that is completion, not
+            # a timeout: throwing here turned a finished install into a stale pending file.
+            Update-N5Readers $r
+            if($process.HasExited -and $r.states[0] -ceq 'Eof' -and $r.states[1] -ceq 'Eof' -and (Get-NativeJobActiveProcesses $job) -eq 0){$complete=$true}
+            else{throw 'N5.Deadline: execution/drain exceeded shared budget; explicit recovery required.'}
+        }
         if($process.ExitCode -ne 0){throw ('N5.WorkerFailure: exit='+$process.ExitCode+' '+(Limit-N5Message $r.text[1].Trim() 2048))}
         if($r.text[1].Length){throw 'N5.Process: unexpected stderr retained in failure.'}
         $result=ConvertFrom-N5Bytes ($script:N5Utf8.GetBytes($r.text[0].TrimEnd([char[]]@("`r","`n"))))

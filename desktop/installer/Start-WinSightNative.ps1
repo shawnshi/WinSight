@@ -57,8 +57,8 @@ try {
     # These are final source identities, not caller-chosen pins. There is no
     # reverse K->launcher literal hash, so source9 remains cycle-free.
     $known=@{
-        'NativeInstallCoordinator.psm1'='676fb9ad9e3ecf8f2ade87578881e3046a7a0691bdca8bc0cb0089666182f081'
-        'Invoke-NativeInstallCoordinator.ps1'='271582f02a30d67d2f3418ed480629ea559014617a5daddb9f6e50c2cb8e2d91'
+        'NativeInstallCoordinator.psm1'='a44397a8e8c356b58af29b4428bd271cb3155c379cfce024495904af47fb624e'
+        'Invoke-NativeInstallCoordinator.ps1'='6c530bd587750f969a0f5aa4b23997ba6849212424e042382a5876d4ecf162f6'
         'NativeInstaller.psm1'='768e725b9ea3e5193b4d87d2430a63801c98af5b876f1328c31e49c60500c572'
         'NativeDeploymentJob.psm1'='1f5600efadac9afc1f5afb2a7f6158643fcb25aeaf9400f58022674c69763331'
         'NativeStandardLiveShell.psm1'='e0343ec8769a66e0911b65a3d34d72d279f92bc291f0e3d9a46b9070a0f4edba'
