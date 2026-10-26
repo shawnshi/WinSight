@@ -9,7 +9,7 @@ public sealed record SearchHit(long FileId, string Path, string Kind, double Sco
     string? Excerpt = null, double? Location = null, double? LocationEnd = null, string? SegmentKind = null,
     SourceAnchor? Source = null, IReadOnlyList<string>? Channels = null);
 public sealed record SearchResponse(IReadOnlyList<SearchHit> Hits, TimeSpan Elapsed,
-    bool SemanticAvailable, string? Notice = null);
+    bool SemanticAvailable, string? Notice = null, bool LexicalDegraded = false);
 public sealed record IndexSegment(string Kind, string Modality, double? Location, double? LocationEnd,
     string? Excerpt, float[]? Vector = null, SourceAnchor? Source = null);
 public sealed record SearchField(string Name, string Value);

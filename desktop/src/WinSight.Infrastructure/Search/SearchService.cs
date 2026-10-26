@@ -146,7 +146,12 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
                     segment.Excerpt, segment.Location, segment.LocationEnd, segment.Kind, segment.Source, f.Channels.ToArray());
             }).ToArray();
         if (request.Limit > channelLimit) notice = Append(notice, $"Recall capped at{channelLimit} source units per channel before fusion.");
-        return new(hits, clock.Elapsed, queryVector is not null, notice);
+        // The segmented lexical channel depends on a native library; when it is missing the response says so
+        // instead of silently returning weaker results.
+        var degraded = !SearchText.SegmentationAvailable;
+        return new(hits, clock.Elapsed, queryVector is not null,
+            degraded ? (notice is null ? "Chinese segmentation is unavailable; lexical results use the original text index only." : notice + " Chinese segmentation is unavailable; lexical results use the original text index only.") : notice,
+            degraded);
     }
 
     private sealed record Candidate(IndexedFile File, IndexSegment Segment);

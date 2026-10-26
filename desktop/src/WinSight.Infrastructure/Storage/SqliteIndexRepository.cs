@@ -929,7 +929,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 var segment = Segment(rows, 2, false) with { Source = sources[file].GetValueOrDefault(id) };
                 var ranked = segmented.TryGetValue(id, out var hit);
                 evidence.Add(id, new(file, ranked ? hit.Rank : 0, shares.GetValueOrDefault(selectedRow.Key), segment,
-                    ranked ? hit.Snippet : null, ranked));
+                    ranked ? hit.Snippet : null, ranked, ranked));
             }
         }
         return selected.Select(c => evidence.TryGetValue(c.Value.Segment, out var word) ? word
@@ -1093,5 +1093,5 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
 }
 
 internal enum IndexInitializationStage { SchemaCreated, BeforePublish }
-internal sealed record WordEvidence(long FileId, double Rank, double Coverage, IndexSegment Segment, string? Snippet, bool ExactLiteralsVerified = false);
+internal sealed record WordEvidence(long FileId, double Rank, double Coverage, IndexSegment Segment, string? Snippet, bool ExactLiteralsVerified = false, bool Segmented = false);
 internal sealed record SearchSnapshot(IReadOnlyList<IndexedFile> Files, IReadOnlyList<WordEvidence> Words, string? Profile);
