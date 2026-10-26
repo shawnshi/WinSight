@@ -33,7 +33,9 @@ public static class IndexRebuildCoordinator
             if (meta.Count == 0) return false;                       // empty or legacy database: initialise in place
             if (meta.GetValueOrDefault("profile_id") != expectedProfile) return true;
             if (meta.GetValueOrDefault("lexicon_schema") != "2") return true;
-            return meta.GetValueOrDefault("dictionary_fingerprint") != expectedDictionary;
+            var stored = meta.GetValueOrDefault("dictionary_fingerprint");
+            // An unset fingerprint on a database with content means the identity is unknown: rebuild once.
+            return !string.IsNullOrEmpty(stored) && stored != expectedDictionary;
         }
         catch (SqliteException)
         {

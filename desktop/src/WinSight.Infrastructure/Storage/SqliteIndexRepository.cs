@@ -1086,6 +1086,8 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         CREATE TABLE IF NOT EXISTS index_tasks (path TEXT PRIMARY KEY,root TEXT NOT NULL,code INTEGER NOT NULL,kind TEXT NOT NULL,tombstone TEXT,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,due_utc TEXT NOT NULL,seen_utc TEXT NOT NULL,reason TEXT);
         CREATE INDEX IF NOT EXISTS ix_index_tasks_due ON index_tasks(state, due_utc);
         CREATE TABLE IF NOT EXISTS usn_checkpoints (volume_serial TEXT PRIMARY KEY, journal_id TEXT, next_usn TEXT, reconcile_utc TEXT);
+        INSERT OR IGNORE INTO meta(key,value) VALUES('lexicon_schema','2');
+        INSERT OR IGNORE INTO meta(key,value) VALUES('dictionary_fingerprint','');
         PRAGMA user_version=5;
         """;
 }
