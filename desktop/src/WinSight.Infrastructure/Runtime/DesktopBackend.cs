@@ -616,6 +616,12 @@ public sealed partial class DesktopBackend : IDesktopBackend
     {
         var dictionary = NativeSegmenter.Fingerprint(Array.Empty<string>());
         if (!IndexRebuildCoordinator.NeedsRebuild(IndexDirectory, info.ProfileId, dictionary)) return repository;
+        // A generation covers the whole corpus by definition. A single-root request (for example a maintenance
+        // job) must not narrow the new generation to its own folder, or the live index silently shrinks.
+        var rebuildRoots = (settings.Folders ?? Array.Empty<string>())
+            .Where(root => IsAuthorizedResult(root, false))
+            .ToArray();
+        if (rebuildRoots.Length != 0) request = request with { Roots = rebuildRoots };
         var generation = info.ProfileId[..Math.Min(12, info.ProfileId.Length)] + "-" + dictionary[..8] + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
         backgroundError = "Rebuilding the index for the current model and lexicon (one window, old database kept).";
         await repository.DisposeAsync().ConfigureAwait(false);
