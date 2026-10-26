@@ -4,7 +4,6 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using Microsoft.Windows.AI.MachineLearning;
 
 namespace WinSight.InferenceHost;
 
@@ -128,6 +127,7 @@ internal sealed class ExecutionProviderManager : IDisposable
         this.models = models;
         this.preference = preference;
         this.providerInstall = providerInstall;
+        states["provider_install"] = "--provider-install is not applicable: ORT 1.31 has no catalog/download install pipeline";
         slots = new[] { "model_q4.onnx", "vision_encoder_q4.onnx", "audio_encoder_q4.onnx" }
             .ToDictionary(graph => graph, graph => new Slot(() =>
             {
@@ -137,11 +137,11 @@ internal sealed class ExecutionProviderManager : IDisposable
 
         DiscoverInitialProviders();
 
-        if (preference != "cpu" && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 26100))
+        if (preference != "cpu")
             background = Task.Run(PrepareAndValidateAsync);
         else
         {
-            states["catalog"] = preference == "cpu" ? "CPU-only preference" : "CPU: dynamic catalog EPs require Windows 11 24H2+";
+            states["preference"] = "CPU-only preference";
             background = Task.CompletedTask;
         }
     }
@@ -155,80 +155,61 @@ internal sealed class ExecutionProviderManager : IDisposable
     {
         try
         {
-            var catalog = ExecutionProviderCatalog.GetDefault();
-            if (catalog is not null)
+            var ort = OrtEnv.Instance();
+            var available = ort.GetAvailableProviders().ToHashSet(StringComparer.Ordinal);
+            IReadOnlyList<OrtEpDevice> devices;
+            try { devices = ort.GetEpDevices(); } catch { devices = Array.Empty<OrtEpDevice>(); }
+
+            epStatuses["CPUExecutionProvider"] = new EpStatus
             {
-                foreach (var provider in catalog.FindAllProviders())
+                Name = "CPUExecutionProvider",
+                State = "CPU default provider",
+                InstallState = "registered"
+            };
+
+            foreach (var name in Allowed)
+            {
+                if (available.Contains(name))
                 {
-                    var isReady = provider.ReadyState == ExecutionProviderReadyState.Ready;
-                    var installState = isReady ? "ready" : "discovered";
-                    var stateMsg = $"discovered: {provider.ReadyState}";
-
-                    if (preference == "cpu")
+                    if (name == "QNNExecutionProvider" && RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
                     {
-                        installState = "skipped";
-                        stateMsg = "CPU-only preference";
-                    }
-                    else if (provider.Name == "QNNExecutionProvider" && RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
-                    {
-                        installState = "skipped";
-                        stateMsg = "requires native ARM64 host/tokenizer; x64 emulation is not QNN qualification";
-                    }
-                    else if (!providerInstall)
-                    {
-                        if (isReady)
+                        epStatuses[name] = new EpStatus
                         {
-                            try
-                            {
-                                if (provider.TryRegister())
-                                {
-                                    installState = "registered";
-                                    stateMsg = "registered; real-model qualification pending";
-                                }
-                                else
-                                {
-                                    installState = "unavailable";
-                                    stateMsg = "TryRegister returned false";
-                                }
-                            }
-                            catch (Exception ex) when (ex is not OutOfMemoryException and not AccessViolationException)
-                            {
-                                installState = "unavailable";
-                                stateMsg = $"unavailable: {ex.GetType().Name}: {ex.Message}";
-                            }
-                        }
-                        else
-                        {
-                            installState = "skipped";
-                            stateMsg = $"discovered {provider.ReadyState}; download skipped (--provider-install false)";
-                        }
+                            Name = name,
+                            State = "requires native ARM64 host/tokenizer; x64 emulation is not QNN qualification",
+                            InstallState = "unavailable"
+                        };
                     }
-
-                    epStatuses[provider.Name] = new EpStatus
+                    else
                     {
-                        Name = provider.Name,
-                        State = stateMsg,
-                        InstallState = installState
+                        var matchingDeviceCount = devices.Count(d => string.Equals(d.EpName, name, StringComparison.OrdinalIgnoreCase));
+                        epStatuses[name] = new EpStatus
+                        {
+                            Name = name,
+                            State = matchingDeviceCount > 0 ? "registered; real-model qualification pending" : "registered (no devices enumerated)",
+                            InstallState = "registered"
+                        };
+                    }
+                }
+                else
+                {
+                    epStatuses[name] = new EpStatus
+                    {
+                        Name = name,
+                        State = "not discovered in registered ORT providers",
+                        InstallState = "not-discovered"
                     };
                 }
             }
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException and not AccessViolationException)
-        {
-            states["catalog_discovery"] = $"catalog discovery failed: {ex.Message}";
-        }
 
-        try
-        {
-            var ort = OrtEnv.Instance();
-            foreach (var prov in ort.GetAvailableProviders())
+            foreach (var prov in available)
             {
                 if (!epStatuses.ContainsKey(prov))
                 {
                     epStatuses[prov] = new EpStatus
                     {
                         Name = prov,
-                        State = prov == "CPUExecutionProvider" ? "CPU default provider" : "built-in ORT provider registered",
+                        State = "built-in ORT provider registered",
                         InstallState = "registered"
                     };
                 }
@@ -424,101 +405,9 @@ internal sealed class ExecutionProviderManager : IDisposable
     {
         try
         {
-            var catalog = ExecutionProviderCatalog.GetDefault()
-                ?? throw new InvalidOperationException("Windows ML EP catalog unavailable");
-            // FindAllProviders is device-filtered by Windows ML, including compatible not-yet-installed EPs.
-            foreach (var provider in catalog.FindAllProviders().Where(provider => Allowed.Contains(provider.Name)))
-            {
-                if (stopping.IsCancellationRequested) return;
-                if (provider.Name == "QNNExecutionProvider" && RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
-                {
-                    epStatuses[provider.Name] = new EpStatus
-                    {
-                        Name = provider.Name,
-                        State = "requires native ARM64 host/tokenizer; x64 emulation is not QNN qualification",
-                        InstallState = "skipped"
-                    };
-                    continue;
-                }
-                if (!providerInstall)
-                {
-                    if (provider.ReadyState == ExecutionProviderReadyState.Ready)
-                    {
-                        try
-                        {
-                            if (!provider.TryRegister()) throw new InvalidOperationException("TryRegister returned false");
-                            epStatuses[provider.Name] = new EpStatus
-                            {
-                                Name = provider.Name,
-                                State = "registered; real-model qualification pending",
-                                InstallState = "registered"
-                            };
-                        }
-                        catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)
-                        {
-                            epStatuses[provider.Name] = new EpStatus
-                            {
-                                Name = provider.Name,
-                                State = $"unavailable: {error.GetType().Name}: {error.Message} (0x{error.HResult:X8})",
-                                InstallState = "unavailable"
-                            };
-                        }
-                    }
-                    else
-                    {
-                        epStatuses[provider.Name] = new EpStatus
-                        {
-                            Name = provider.Name,
-                            State = $"discovered {provider.ReadyState}; download skipped (--provider-install false)",
-                            InstallState = "skipped"
-                        };
-                    }
-                    continue;
-                }
-                try
-                {
-                    if (provider.ReadyState != ExecutionProviderReadyState.Ready)
-                    {
-                        epStatuses[provider.Name] = new EpStatus
-                        {
-                            Name = provider.Name,
-                            State = "preparing: " + provider.ReadyState,
-                            InstallState = "discovered"
-                        };
-                        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stopping.Token);
-                        timeout.CancelAfter(TimeSpan.FromMinutes(5));
-                        var operation = provider.EnsureReadyAsync();
-                        operation.Progress = (_, percent) =>
-                        {
-                            if (epStatuses.TryGetValue(provider.Name, out var st))
-                                st.State = $"preparing {percent:F0}%";
-                        };
-                        using var cancellation = timeout.Token.Register(() => operation.Cancel());
-                        var prepared = await operation;
-                        if (prepared.Status != ExecutionProviderReadyResultState.Success)
-                            throw new InvalidOperationException($"EP preparation {prepared.Status}: {prepared.ExtendedError}");
-                    }
-                    if (!provider.TryRegister()) throw new InvalidOperationException("TryRegister returned false");
-                    epStatuses[provider.Name] = new EpStatus
-                    {
-                        Name = provider.Name,
-                        State = "registered; real-model qualification pending",
-                        InstallState = "registered"
-                    };
-                }
-                catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)
-                {
-                    epStatuses[provider.Name] = new EpStatus
-                    {
-                        Name = provider.Name,
-                        State = $"unavailable: {error.GetType().Name}: {error.Message} (0x{error.HResult:X8})",
-                        InstallState = "unavailable"
-                    };
-                }
-            }
             foreach (var probe in probes.GetConsumingEnumerable(stopping.Token))
             {
-                // Re-enumerate after registration; never assume a cached device survives driver/catalog changes.
+                if (stopping.IsCancellationRequested) return;
                 var candidates = OrtEnv.Instance().GetEpDevices()
                     .Where(device => Allowed.Contains(device.EpName)
                         && (device.EpName != "QNNExecutionProvider" || RuntimeInformation.ProcessArchitecture == Architecture.Arm64))
@@ -527,6 +416,13 @@ internal sealed class ExecutionProviderManager : IDisposable
                     .OrderBy(pair => pair.Info.Rank)
                     .ThenBy(pair => pair.Info.Ep)
                     .Take(8).ToArray();
+
+                if (candidates.Length == 0)
+                {
+                    states[probe.Graph] = $"CPU fallback: no applicable registered device for preference '{preference}'";
+                    continue;
+                }
+
                 var qualified = false;
                 foreach (var pair in candidates)
                 {
@@ -537,8 +433,8 @@ internal sealed class ExecutionProviderManager : IDisposable
                         break;
                     }
                 }
-                if (!qualified && candidates.Length == 0)
-                    states[probe.Graph] = $"CPU fallback: no applicable registered candidate device for preference '{preference}'";
+                if (!qualified && !states.ContainsKey(probe.Graph))
+                    states[probe.Graph] = $"CPU fallback: no applicable registered device qualified for '{probe.Graph}'";
             }
         }
         catch (OperationCanceledException) when (stopping.IsCancellationRequested) { }

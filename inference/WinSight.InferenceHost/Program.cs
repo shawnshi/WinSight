@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
-using Microsoft.Windows.AI.MachineLearning;
 
 namespace WinSight.InferenceHost;
 
@@ -119,25 +118,24 @@ internal static class Program
             if (args is not ["environment"])
                 throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu] [--provider-install true|false] | environment | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON | render-pdf-page ABSOLUTE_REQUEST_JSON");
 
-            var catalog = ExecutionProviderCatalog.GetDefault()
-                ?? throw new InvalidOperationException("Windows ML execution-provider catalog is unavailable");
-            // Discovery only: never EnsureReady/EnsureAndRegister (those may download providers).
-            var providers = catalog.FindAllProviders().Select(provider => new
-            {
-                name = provider.Name,
-                readyState = provider.ReadyState.ToString()
-            }).ToArray();
             var environment = OrtEnv.Instance();
+            var availableProviders = environment.GetAvailableProviders();
+            var epDevices = environment.GetEpDevices().Select(device => new
+            {
+                ep = device.EpName,
+                deviceType = device.HardwareDevice.Type.ToString(),
+                deviceId = device.HardwareDevice.DeviceId,
+                vendorId = device.HardwareDevice.VendorId
+            }).ToArray();
             var loaded = Process.GetCurrentProcess().Modules.Cast<ProcessModule>()
                 .Where(module => string.Equals(module.ModuleName, "onnxruntime.dll", StringComparison.OrdinalIgnoreCase))
                 .Select(module => module.FileName).ToArray();
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 phase = "P0", ok = true,
-                windowsMlCatalog = catalog.GetType().FullName,
                 ortVersion = environment.GetVersionString(),
-                availableProviders = environment.GetAvailableProviders(),
-                discoveredProviders = providers,
+                availableProviders,
+                epDevices,
                 loadedOrtModules = loaded,
                 providerDownloadsAllowed = false,
                 productionConnected = false
