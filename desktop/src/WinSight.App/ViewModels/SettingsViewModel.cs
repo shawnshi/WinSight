@@ -299,6 +299,48 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public string FoundrySummary => foundrySummary;
     public IReadOnlyList<string> FoundryProviders => foundryProviders;
 
+    private bool foundryBusy;
+    public bool FoundryBusy
+    {
+        get => foundryBusy;
+        private set { if (SetProperty(ref foundryBusy, value)) OnPropertyChanged(nameof(CanInstallFoundryProviders)); }
+    }
+    public bool CanInstallFoundryProviders => !foundryBusy;
+
+    /// <summary>
+    /// Downloads and registers the providers Foundry reports as applicable but not registered. This is the
+    /// only Foundry action that uses the network, and the result is shown verbatim including failures.
+    /// </summary>
+    public async Task InstallFoundryProvidersAsync()
+    {
+        if (foundryBusy) return;
+        FoundryBusy = true;
+        foundrySummary = "Installing the applicable Foundry Local providers… this can take a few minutes.";
+        OnPropertyChanged(nameof(FoundrySummary));
+        try
+        {
+            var result = await backend.InstallFoundryProvidersAsync();
+            if (result is null)
+            {
+                foundrySummary = "This build has no Foundry Local backend to install providers into.";
+            }
+            else
+            {
+                var registered = result.Registered.Count == 0 ? "none" : string.Join(", ", result.Registered);
+                var failed = result.Failed.Count == 0 ? "none" : string.Join(", ", result.Failed);
+                foundrySummary = (result.Success ? "Providers installed. " : "Provider installation reported a problem. ")
+                    + $"status: {result.Status}; registered: {registered}; failed: {failed}"
+                    + (result.Error is { Length: > 0 } error ? "; detail: " + error : "");
+            }
+            OnPropertyChanged(nameof(FoundrySummary));
+            await ProbeFoundryAsync();
+        }
+        finally
+        {
+            FoundryBusy = false;
+        }
+    }
+
     /// <summary>Runs the isolated Foundry host in probe mode; it only enumerates providers.</summary>
     public async Task ProbeFoundryAsync()
     {

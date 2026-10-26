@@ -281,6 +281,49 @@ public sealed partial class DesktopBackend : IDesktopBackend
             : Array.Empty<string>();
     }
 
+    /// <summary>
+    /// Downloads and registers the Foundry Local execution providers that apply to this device. This is the
+    /// only path that touches the network, it is bounded, and it reports which providers failed.
+    /// </summary>
+    public async Task<FoundryInstallResult?> InstallFoundryProvidersAsync(CancellationToken cancellationToken = default)
+    {
+        var executable = Path.Combine(applicationDirectory, "foundry", "WinSight.FoundryHost.exe");
+        if (!File.Exists(executable)) return new FoundryInstallResult(false, "host-absent", Array.Empty<string>(), Array.Empty<string>(), "Foundry host is not part of this payload.");
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            start.ArgumentList.Add("register");
+            start.ArgumentList.Add("--allow-download");
+            using var process = System.Diagnostics.Process.Start(start);
+            if (process is null) return new FoundryInstallResult(false, "start-failed", Array.Empty<string>(), Array.Empty<string>(), "Foundry host did not start.");
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromMinutes(10));
+            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            var text = await stdout.ConfigureAwait(false);
+            var tail = (await stderr.ConfigureAwait(false)).Trim();
+            var jsonStart = text.IndexOf('{', StringComparison.Ordinal);
+            if (jsonStart < 0) return new FoundryInstallResult(false, "no-result", Array.Empty<string>(), Array.Empty<string>(), tail.Length == 0 ? "host produced no result" : tail);
+            using var document = System.Text.Json.JsonDocument.Parse(text[jsonStart..]);
+            var root = document.RootElement;
+            string[] ReadArray(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? value.EnumerateArray().Select(v => v.GetString() ?? "").Where(v => v.Length != 0).ToArray()
+                : Array.Empty<string>();
+            var success = root.TryGetProperty("success", out var flag) && flag.ValueKind == System.Text.Json.JsonValueKind.True;
+            var status = root.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "" : "";
+            return new FoundryInstallResult(success, status, ReadArray("registered"), ReadArray("failed"), tail.Length == 0 ? null : tail);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new FoundryInstallResult(false, "timeout", Array.Empty<string>(), Array.Empty<string>(), "provider installation exceeded 10 minutes");
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or System.Text.Json.JsonException or System.ComponentModel.Win32Exception)
+        {
+            return new FoundryInstallResult(false, "failed", Array.Empty<string>(), Array.Empty<string>(), error.GetType().Name + ": " + error.Message);
+        }
+    }
+
     public async Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();

@@ -17,9 +17,8 @@ if (args.Length == 0 || args[0] is "help" or "--help")
 
 var configuration = new Configuration
 {
-    AppName = "WinSight.FoundryHost",
-    AppDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WinSight", "FoundryLocal"),
-    DisableNonessentialTelemetry = true
+    AppName = "WinSight FoundryHost",
+    AppDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WinSight", "FoundryLocal")
 };
 await FoundryLocalManager.CreateAsync(configuration, NullLogger.Instance, null);
 var manager = FoundryLocalManager.Instance;
@@ -65,19 +64,6 @@ try
             }, json));
             return result.Success ? 0 : 1;
         }
-        case "models":
-        {
-            var catalog = await manager.GetCatalogAsync(CatalogType.Local, null);
-            var cached = await catalog.GetCachedModelsAsync(null);
-            var loaded = await catalog.GetLoadedModelsAsync(null);
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                protocol = 1,
-                cached = cached.Select(m => new { alias = m.Alias, id = m.Id }).ToArray(),
-                loaded = loaded.Select(m => new { alias = m.Alias, id = m.Id }).ToArray()
-            }, json));
-            return 0;
-        }
         default:
             Console.Error.WriteLine("unknown command: " + args[0]);
             return 2;
@@ -85,5 +71,5 @@ try
 }
 finally
 {
-    manager.Shutdown();
+    // 1.2.x exposes no explicit shutdown; the process exit releases the runtime.
 }

@@ -121,4 +121,9 @@ public sealed partial class SettingsPage : Page
     {
         await ViewModel.ProbeFoundryAsync();
     }
+
+    private async void OnInstallFoundryProvidersClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.InstallFoundryProvidersAsync();
+    }
 }

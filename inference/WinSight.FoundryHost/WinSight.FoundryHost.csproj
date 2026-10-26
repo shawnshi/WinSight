@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net11.0-windows10.0.26100.0</TargetFramework>
-    <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+    <TargetFramework>net8.0-windows10.0.18362.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.18362.0</SupportedOSPlatformVersion>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
     <Nullable>enable</Nullable>
@@ -14,6 +14,8 @@
   <ItemGroup>
     <!-- Isolated model backend: this project owns ORT 1.31.0 through Foundry Local and must never be
          referenced by WinSight.InferenceHost, which stays on the Windows ML ORT 1.24.6 runtime. -->
-    <PackageReference Include="Microsoft.AI.Foundry.Local" Version="[2.2.1]" />
+    <!-- WinML flavour: it carries Microsoft.Windows.AI.MachineLearning so execution providers can be
+         downloaded and registered dynamically on Windows. Isolated from the main host on purpose. -->
+    <PackageReference Include="Microsoft.AI.Foundry.Local.WinML" Version="[1.2.4]" />
   </ItemGroup>
 </Project>

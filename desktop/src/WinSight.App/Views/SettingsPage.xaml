@@ -304,8 +304,13 @@
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                    <Button Content="Probe Foundry Local" Click="OnProbeFoundryClick"
-                            AutomationProperties.AutomationId="ProbeFoundryButton"/>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Content="Probe Foundry Local" Click="OnProbeFoundryClick"
+                                AutomationProperties.AutomationId="ProbeFoundryButton"/>
+                        <Button Content="Install providers" Click="OnInstallFoundryProvidersClick"
+                                IsEnabled="{x:Bind ViewModel.CanInstallFoundryProviders, Mode=OneWay}"
+                                AutomationProperties.AutomationId="InstallFoundryProvidersButton"/>
+                    </StackPanel>
                 </StackPanel>
             </Border>
 
