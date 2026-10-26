@@ -286,6 +286,35 @@
                 </StackPanel>
             </Border>
 
+            <!-- MCP maintenance authorization -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="MCP maintenance authorization" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="Clients cannot index anything by themselves. Create a grant, give its identifier to the client, then drain pending requests here; requests outside your configured folders are refused and recorded."
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Content="Create grant" Click="OnGrantMaintenanceClick"
+                                IsEnabled="{x:Bind ViewModel.CanManageMaintenance, Mode=OneWay}"
+                                AutomationProperties.AutomationId="GrantMaintenanceButton"/>
+                        <Button Content="Revoke" Click="OnRevokeMaintenanceClick"
+                                IsEnabled="{x:Bind ViewModel.CanManageMaintenance, Mode=OneWay}"
+                                AutomationProperties.AutomationId="RevokeMaintenanceButton"/>
+                        <Button Content="Drain requests" Click="OnDrainMaintenanceClick"
+                                IsEnabled="{x:Bind ViewModel.CanManageMaintenance, Mode=OneWay}"
+                                AutomationProperties.AutomationId="DrainMaintenanceButton"/>
+                    </StackPanel>
+                    <TextBlock Text="{x:Bind ViewModel.MaintenanceSummary, Mode=OneWay}" TextWrapping="Wrap"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               AutomationProperties.AutomationId="MaintenanceSummary"/>
+                </StackPanel>
+            </Border>
+
             <!-- MCP client configuration -->
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"

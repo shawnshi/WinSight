@@ -189,6 +189,10 @@ public interface IDesktopBackend : IAsyncDisposable
     Task<WinMlProbe?> ProbeWinMlAsync(CancellationToken cancellationToken = default) => Task.FromResult<WinMlProbe?>(null);
     Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
+    Task<string?> GetMaintenanceGrantAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+    Task<string?> GrantMaintenanceAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+    Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    Task<IReadOnlyList<string>> DrainMaintenanceJobsAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<string>>([]);
     Task SetIndexingPausedAsync(bool paused, CancellationToken cancellationToken = default);
     Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancellationToken = default);
     Task<ISourcePreview> PreviewSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>

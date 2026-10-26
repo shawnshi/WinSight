@@ -141,4 +141,19 @@ public sealed partial class SettingsPage : Page
     {
         await ViewModel.ApplyClientConfigAsync();
     }
+
+    private async void OnGrantMaintenanceClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.GrantMaintenanceAsync();
+    }
+
+    private async void OnRevokeMaintenanceClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.RevokeMaintenanceAsync();
+    }
+
+    private async void OnDrainMaintenanceClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.DrainMaintenanceAsync();
+    }
 }

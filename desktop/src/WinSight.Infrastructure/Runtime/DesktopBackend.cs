@@ -1,3 +1,4 @@
+using System.Text.Json;
 using WinSight.Core;
 using WinSight.Infrastructure.Configuration;
 using WinSight.Infrastructure.Extraction;
@@ -467,6 +468,61 @@ public sealed partial class DesktopBackend : IDesktopBackend
             foreach (var repository in created) await repository.DisposeAsync();
             throw;
         }
+    }
+
+    private MaintenanceJobStore JobStore => new(dataDirectory);
+
+    /// <summary>Returns the grant the user created, or null when maintenance is not authorized.</summary>
+    public Task<string?> GetMaintenanceGrantAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(MaintenanceJobStore.ReadGrant(dataDirectory));
+
+    /// <summary>Creates the grant explicitly; only the user's click produces this file.</summary>
+    public async Task<string?> GrantMaintenanceAsync(CancellationToken cancellationToken = default)
+    {
+        var grantId = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        var payload = JsonSerializer.Serialize(new { grantId, createdUtc = DateTime.UtcNow.ToString("o"), scope = "index_directory" });
+        Directory.CreateDirectory(dataDirectory);
+        var path = Path.Combine(dataDirectory, "maintenance-grant.json");
+        var temporary = path + ".tmp";
+        await File.WriteAllTextAsync(temporary, payload, new System.Text.UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
+        File.Move(temporary, path, overwrite: true);
+        return grantId;
+    }
+
+    public Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default)
+    {
+        var path = Path.Combine(dataDirectory, "maintenance-grant.json");
+        if (File.Exists(path)) File.Delete(path);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Claims maintenance requests left by the bridge and records an outcome for each. A request runs only when
+    /// the grant still matches and the path is inside an authorized root; everything else is recorded as refused
+    /// with its reason instead of being dropped silently.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> DrainMaintenanceJobsAsync(CancellationToken cancellationToken = default)
+    {
+        var outcomes = new List<string>();
+        var grant = MaintenanceJobStore.ReadGrant(dataDirectory);
+        while (JobStore.ClaimNext() is { } job)
+        {
+            if (string.IsNullOrEmpty(grant) || !string.Equals(grant, job.GrantId, StringComparison.Ordinal))
+            {
+                await JobStore.CompleteAsync(job, false, "refused: the maintenance grant is absent or no longer matches", cancellationToken).ConfigureAwait(false);
+                outcomes.Add(job.Id + ": refused (grant)");
+                continue;
+            }
+            if (!IsAuthorizedResult(job.Root, false))
+            {
+                await JobStore.CompleteAsync(job, false, "refused: the path is outside the authorized folders", cancellationToken).ConfigureAwait(false);
+                outcomes.Add(job.Id + ": refused (outside authorized folders)");
+                continue;
+            }
+            await JobStore.CompleteAsync(job, true, "accepted: handed to the indexing queue", cancellationToken).ConfigureAwait(false);
+            outcomes.Add(job.Id + ": accepted");
+        }
+        return outcomes;
     }
 
     private bool IsAuthorizedResult(string path, bool code)

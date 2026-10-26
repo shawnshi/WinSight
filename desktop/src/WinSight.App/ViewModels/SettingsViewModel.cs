@@ -371,6 +371,63 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     }
     public bool CanConfigureClient => !clientConfigBusy;
 
+    private string maintenanceSummary = "Maintenance requests from MCP clients are refused until you create a grant.";
+    private bool maintenanceBusy;
+    public string MaintenanceSummary => maintenanceSummary;
+    public bool CanManageMaintenance => !maintenanceBusy;
+
+    /// <summary>Creates the grant an MCP client must present before its index_directory request is accepted.</summary>
+    public async Task GrantMaintenanceAsync()
+    {
+        if (maintenanceBusy) return;
+        maintenanceBusy = true;
+        try
+        {
+            var id = await backend.GrantMaintenanceAsync();
+            maintenanceSummary = id is null
+                ? "This build cannot create a maintenance grant."
+                : "Grant created. Give the client this identifier: " + id + ". Revoke it when you are done.";
+        }
+        catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            maintenanceSummary = "Grant failed: " + error.Message;
+        }
+        finally { maintenanceBusy = false; OnPropertyChanged(nameof(MaintenanceSummary)); OnPropertyChanged(nameof(CanManageMaintenance)); }
+    }
+
+    public async Task RevokeMaintenanceAsync()
+    {
+        if (maintenanceBusy) return;
+        maintenanceBusy = true;
+        try
+        {
+            await backend.RevokeMaintenanceAsync();
+            maintenanceSummary = "Grant revoked; pending and future maintenance requests will be refused.";
+        }
+        catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException)
+        {
+            maintenanceSummary = "Revoke failed: " + error.Message;
+        }
+        finally { maintenanceBusy = false; OnPropertyChanged(nameof(MaintenanceSummary)); OnPropertyChanged(nameof(CanManageMaintenance)); }
+    }
+
+    /// <summary>Drains requests the bridge left behind and reports each outcome.</summary>
+    public async Task DrainMaintenanceAsync()
+    {
+        if (maintenanceBusy) return;
+        maintenanceBusy = true;
+        try
+        {
+            var outcomes = await backend.DrainMaintenanceJobsAsync();
+            maintenanceSummary = outcomes.Count == 0 ? "No pending maintenance requests." : string.Join("; ", outcomes);
+        }
+        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException)
+        {
+            maintenanceSummary = "Drain failed: " + error.Message;
+        }
+        finally { maintenanceBusy = false; OnPropertyChanged(nameof(MaintenanceSummary)); OnPropertyChanged(nameof(CanManageMaintenance)); }
+    }
+
     /// <summary>Reads the named configuration and reports what would change. Nothing is written.</summary>
     public async Task PreviewClientConfigAsync()
     {
