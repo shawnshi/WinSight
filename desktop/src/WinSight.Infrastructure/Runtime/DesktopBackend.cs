@@ -368,11 +368,25 @@ public sealed partial class DesktopBackend : IDesktopBackend
     }
 
     private string IndexDirectory => settings.IndexDirectory ?? Path.Combine(dataDirectory, "index");
+    /// <summary>
+    /// The NPU path runs on the isolated Windows ML host (ORT 1.27), because vendor NPU plugins are built
+    /// against that runtime. Every other preference keeps the default host (ORT 1.31). The choice is stable
+    /// per accelerator setting: each runtime produces its own embedding profile, and switching retires the
+    /// old index instead of mixing vectors.
+    /// </summary>
     private IEmbeddingService GetEmbeddings() => embeddings ??= new InferenceHostClient(
-        settings.InferenceExecutable ?? Path.Combine(applicationDirectory, "inference", "WinSight.InferenceHost.exe"),
+        settings.InferenceExecutable ?? ResolveInferenceExecutable(),
         settings.ModelDirectory ?? Path.Combine(applicationDirectory, "models"),
         settings.ManifestPath ?? Path.Combine(applicationDirectory, "inference", "model-manifest.json"),
         settings.Accelerator);
+
+    private string ResolveInferenceExecutable()
+    {
+        var defaultHost = Path.Combine(applicationDirectory, "inference", "WinSight.InferenceHost.exe");
+        if (!string.Equals(settings.Accelerator, "npu", StringComparison.OrdinalIgnoreCase)) return defaultHost;
+        var winMlHost = Path.Combine(applicationDirectory, "inference", "winml", "WinSight.WinMlHost.exe");
+        return File.Exists(winMlHost) ? winMlHost : defaultHost;
+    }
 
     private async Task<IReadOnlyList<IIndexRepository>> GetRepositoriesAsync(CancellationToken cancellationToken)
     {

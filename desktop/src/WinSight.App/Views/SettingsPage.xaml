@@ -274,6 +274,10 @@
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
+                    <TextBlock Text="NPU runs on a separate Windows ML host (ORT 1.27) because vendor NPU plugins are built against that runtime; every other choice uses the default host (ORT 1.31). Switching accelerators retires the previous index, since each runtime has its own embedding profile."
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
                         <ToggleSwitch Grid.Column="1"
                                       AutomationProperties.AutomationId="InstallExecutionProvidersToggle"
                                       AutomationProperties.Name="Allow Windows ML to install and register execution providers"

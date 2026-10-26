@@ -95,8 +95,8 @@ class NativeSourceTests(unittest.TestCase):
     def test_native_project_references_and_direct_package_locks(self):
         projects = list((ROOT / "desktop/src").glob("*/*.csproj")) + list((ROOT / "inference").glob("*/*.csproj"))
         projects.append(ROOT / "inference/WinSight.OcrHost/vendor/RapidOcrNet/RapidOcrNet.WinSight.csproj")
-        # 8 = 5 desktop + InferenceHost + OcrHost + the isolated Foundry Local backend.
-        self.assertEqual(len(projects), 8)
+        # 9 = 5 desktop + InferenceHost + OcrHost + isolated Foundry Local + isolated Windows ML NPU host.
+        self.assertEqual(len(projects), 9)
         for project in projects:
             tree = ET.parse(project).getroot()
             if tree is None:
