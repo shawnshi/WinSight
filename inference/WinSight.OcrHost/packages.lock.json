@@ -15,16 +15,16 @@
       },
       "Microsoft.ML.OnnxRuntime": {
         "type": "Transitive",
-        "resolved": "1.29.0",
-        "contentHash": "bUO3Ryc42UVkDGByBIYU9/ogRURGHeMOEq96LMWnDBVMQGZpIahBhPRCeu+Qq6+EJh/dfxzFJBKZa0/+yMmpWQ==",
+        "resolved": "1.31.0",
+        "contentHash": "7v58S0xqY1ZmLui5BnK3FQEWagRhmhkR/9yLrxF5rQGppGfcMaw7W0a2wgT1SWnT6ug0dmr1B2I4VWhlY/yvng==",
         "dependencies": {
-          "Microsoft.ML.OnnxRuntime.Managed": "1.29.0"
+          "Microsoft.ML.OnnxRuntime.Managed": "1.31.0"
         }
       },
       "Microsoft.ML.OnnxRuntime.Managed": {
         "type": "Transitive",
-        "resolved": "1.29.0",
-        "contentHash": "jLy5PtzvRQCBFOczzfRY7zpuMVUyLwjO0Jsdd8MBZdmnPIqx5vW9cYDNyCqkrYpwkof8GlqBVaEUMWrMWRtvuw==",
+        "resolved": "1.31.0",
+        "contentHash": "o9nvEiddLLlAMOHN0XZ/06Oal0W6S7iWiSb8lzQAwfQKNOZtX4C8he5/I7Mc/DlSprNfovAW6kCkwX2BAE0JHw==",
         "dependencies": {
           "System.Numerics.Tensors": "9.0.0"
         }
@@ -51,8 +51,8 @@
         "type": "Project",
         "dependencies": {
           "Clipper2": "[2.0.0, 2.0.0]",
-          "Microsoft.ML.OnnxRuntime": "[1.29.0, 1.29.0]",
-          "Microsoft.ML.OnnxRuntime.Managed": "[1.29.0, 1.29.0]",
+          "Microsoft.ML.OnnxRuntime": "[1.31.0, 1.31.0]",
+          "Microsoft.ML.OnnxRuntime.Managed": "[1.31.0, 1.31.0]",
           "SkiaSharp": "[3.119.1, 3.119.1]"
         }
       }
@@ -60,10 +60,10 @@
     "net11.0-windows10.0.26100/win-x64": {
       "Microsoft.ML.OnnxRuntime": {
         "type": "Transitive",
-        "resolved": "1.29.0",
-        "contentHash": "bUO3Ryc42UVkDGByBIYU9/ogRURGHeMOEq96LMWnDBVMQGZpIahBhPRCeu+Qq6+EJh/dfxzFJBKZa0/+yMmpWQ==",
+        "resolved": "1.31.0",
+        "contentHash": "7v58S0xqY1ZmLui5BnK3FQEWagRhmhkR/9yLrxF5rQGppGfcMaw7W0a2wgT1SWnT6ug0dmr1B2I4VWhlY/yvng==",
         "dependencies": {
-          "Microsoft.ML.OnnxRuntime.Managed": "1.29.0"
+          "Microsoft.ML.OnnxRuntime.Managed": "1.31.0"
         }
       },
       "SkiaSharp.NativeAssets.Win32": {
