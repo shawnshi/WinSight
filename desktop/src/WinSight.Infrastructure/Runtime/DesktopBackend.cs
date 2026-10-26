@@ -232,18 +232,18 @@ public sealed partial class DesktopBackend : IDesktopBackend
     /// <summary>
     /// Inspects a client configuration the user pointed at. Nothing is written and no client is scanned for.
     /// </summary>
-    public async Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, CancellationToken cancellationToken = default)
+    public async Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default)
     {
         var bridge = Path.Combine(applicationDirectory, "bridge", "winsight-mcp.exe");
-        var plan = await new Configuration.ClientConfigAssistant().PreviewAsync(configPath, bridge, ClientTransport.Stdio, 0, cancellationToken).ConfigureAwait(false);
+        var plan = await new Configuration.ClientConfigAssistant().PreviewAsync(configPath, bridge, Parse(transport), httpPort, cancellationToken).ConfigureAwait(false);
         return new ClientConfigPreview(plan.FileExists, plan.AlreadyConnected, plan.Blocked, plan.Summary, plan.BlockReason, plan.BackupPath);
     }
 
     /// <summary>Writes the entry after a backup; refuses a conflicting existing entry and never stores a token.</summary>
-    public async Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, CancellationToken cancellationToken = default)
+    public async Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default)
     {
         var bridge = Path.Combine(applicationDirectory, "bridge", "winsight-mcp.exe");
-        var plan = await new Configuration.ClientConfigAssistant().ApplyAsync(configPath, bridge, replaceExisting: false, ClientTransport.Stdio, 0, cancellationToken).ConfigureAwait(false);
+        var plan = await new Configuration.ClientConfigAssistant().ApplyAsync(configPath, bridge, replaceExisting: false, Parse(transport), httpPort, cancellationToken).ConfigureAwait(false);
         return new ClientConfigPreview(plan.FileExists, plan.AlreadyConnected, plan.Blocked, plan.Summary, plan.BlockReason, plan.BackupPath);
     }
 
@@ -497,6 +497,9 @@ public sealed partial class DesktopBackend : IDesktopBackend
         }
     }
 
+    private static ClientTransport Parse(string transport) =>
+        string.Equals(transport, "http", StringComparison.OrdinalIgnoreCase) ? ClientTransport.Http : ClientTransport.Stdio;
+
     private MaintenanceJobStore JobStore => new(dataDirectory);
 
     /// <summary>Returns the grant the user created, or null when maintenance is not authorized.</summary>
@@ -539,8 +542,18 @@ public sealed partial class DesktopBackend : IDesktopBackend
                 outcomes.Add(job.Id + ": refused (outside authorized folders)");
                 continue;
             }
-            await JobStore.CompleteAsync(job, true, "accepted: handed to the indexing queue", cancellationToken).ConfigureAwait(false);
-            outcomes.Add(job.Id + ": accepted");
+            // Accepted means it really runs: the request goes through the same manual indexing path the UI uses.
+            try
+            {
+                await IndexAsync(new IndexRequest([job.Root]), null, cancellationToken).ConfigureAwait(false);
+                await JobStore.CompleteAsync(job, true, "accepted: indexed " + job.Root, cancellationToken).ConfigureAwait(false);
+                outcomes.Add(job.Id + ": accepted and indexed");
+            }
+            catch (Exception error) when (error is IOException or InvalidOperationException or InvalidDataException or UnauthorizedAccessException)
+            {
+                await JobStore.CompleteAsync(job, false, "accepted but indexing failed: " + error.Message, cancellationToken).ConfigureAwait(false);
+                outcomes.Add(job.Id + ": accepted, indexing failed (" + error.GetType().Name + ")");
+            }
         }
         return outcomes;
     }

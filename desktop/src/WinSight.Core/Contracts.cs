@@ -190,8 +190,8 @@ public interface IDesktopBackend : IAsyncDisposable
     Task<FoundryProbe?> ProbeFoundryAsync(CancellationToken cancellationToken = default) => Task.FromResult<FoundryProbe?>(null);
     Task<FoundryInstallResult?> InstallFoundryProvidersAsync(CancellationToken cancellationToken = default) => Task.FromResult<FoundryInstallResult?>(null);
     Task<WinMlProbe?> ProbeWinMlAsync(CancellationToken cancellationToken = default) => Task.FromResult<WinMlProbe?>(null);
-    Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
-    Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
+    Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
+    Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<ModelInventory?> GetModelInventoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<ModelInventory?>(null);
     Task<string?> GetMaintenanceGrantAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     Task<string?> GrantMaintenanceAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);

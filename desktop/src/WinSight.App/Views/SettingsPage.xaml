@@ -336,6 +336,20 @@
                                Style="{ThemeResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Spacing="16">
+                        <RadioButton Content="stdio (recommended)" GroupName="ClientTransport"
+                                     IsChecked="{x:Bind ViewModel.UseStdioTransport, Mode=TwoWay}"
+                                     AutomationProperties.AutomationId="TransportStdioRadio"/>
+                        <RadioButton Content="loopback HTTP" GroupName="ClientTransport"
+                                     IsChecked="{x:Bind ViewModel.UseHttpTransport, Mode=TwoWay}"
+                                     AutomationProperties.AutomationId="TransportHttpRadio"/>
+                        <TextBox Header="Port" Width="110" Text="{x:Bind ViewModel.HttpPortText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.AutomationId="HttpPortBox"/>
+                    </StackPanel>
+                    <TextBlock Text="{x:Bind ViewModel.ClientTransportDescription, Mode=OneWay}" TextWrapping="Wrap"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               AutomationProperties.AutomationId="ClientTransportDescription"/>
                     <TextBox Header="Client configuration file"
                              Text="{x:Bind ViewModel.ClientConfigPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                              PlaceholderText="C:\path	o\client-config.json"

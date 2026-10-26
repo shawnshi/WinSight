@@ -364,6 +364,34 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         set => SetProperty(ref clientConfigPath, value);
     }
     public string ClientConfigSummary => clientConfigSummary;
+
+    private bool useHttpTransport;
+    private string httpPortText = "18771";
+    public bool UseHttpTransport
+    {
+        get => useHttpTransport;
+        set
+        {
+            if (!SetProperty(ref useHttpTransport, value)) return;
+            OnPropertyChanged(nameof(UseStdioTransport));
+            OnPropertyChanged(nameof(ClientTransportDescription));
+        }
+    }
+    public string HttpPortText
+    {
+        get => httpPortText;
+        set => SetProperty(ref httpPortText, value);
+    }
+    /// <summary>Radio-button convenience: selecting stdio is the negation of the HTTP flag.</summary>
+    public bool UseStdioTransport
+    {
+        get => !useHttpTransport;
+        set { if (value) UseHttpTransport = false; }
+    }
+
+    public string ClientTransportDescription => useHttpTransport
+        ? "HTTP entry: the client needs --http-port running and the WINSIGHT_MCP_TOKEN environment variable; the token is never written to the file."
+        : "stdio entry: the client launches the bridge directly; no token is involved.";
     public bool ClientConfigBusy
     {
         get => clientConfigBusy;
@@ -394,7 +422,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     private static string Shorten(string value) => value.Length <= 12 ? value : value[..12] + "…";
 
-    private string maintenanceSummary = "Maintenance requests from MCP clients are refused until you create a grant.";
+    private string maintenanceSummary = "Pending requests from MCP clients appear here; Drain hands accepted paths to the indexing queue.";
     private bool maintenanceBusy;
     public string MaintenanceSummary => maintenanceSummary;
     public bool CanManageMaintenance => !maintenanceBusy;
@@ -459,7 +487,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         ClientConfigBusy = true;
         try
         {
-            var plan = await backend.PreviewClientConfigAsync(clientConfigPath.Trim());
+            var plan = await backend.PreviewClientConfigAsync(clientConfigPath.Trim(), useHttpTransport ? "http" : "stdio", ParsePort());
             clientConfigSummary = Describe(plan, "Preview");
         }
         catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or UnauthorizedAccessException)
@@ -477,7 +505,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         ClientConfigBusy = true;
         try
         {
-            var plan = await backend.ApplyClientConfigAsync(clientConfigPath.Trim());
+            var plan = await backend.ApplyClientConfigAsync(clientConfigPath.Trim(), useHttpTransport ? "http" : "stdio", ParsePort());
             clientConfigSummary = Describe(plan, "Apply");
         }
         catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or UnauthorizedAccessException)
@@ -486,6 +514,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         }
         finally { ClientConfigBusy = false; OnPropertyChanged(nameof(ClientConfigSummary)); }
     }
+
+    private int ParsePort() => int.TryParse(httpPortText, out var port) ? port : 0;
 
     private static string Describe(ClientConfigPreview? plan, string verb)
     {
