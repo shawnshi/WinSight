@@ -355,6 +355,67 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     }
     public bool CanProbeNpu => !npuBusy;
 
+    private string clientConfigPath = "";
+    private string clientConfigSummary = "Point at a client configuration file, then preview before writing.";
+    private bool clientConfigBusy;
+    public string ClientConfigPath
+    {
+        get => clientConfigPath;
+        set => SetProperty(ref clientConfigPath, value);
+    }
+    public string ClientConfigSummary => clientConfigSummary;
+    public bool ClientConfigBusy
+    {
+        get => clientConfigBusy;
+        private set { if (SetProperty(ref clientConfigBusy, value)) OnPropertyChanged(nameof(CanConfigureClient)); }
+    }
+    public bool CanConfigureClient => !clientConfigBusy;
+
+    /// <summary>Reads the named configuration and reports what would change. Nothing is written.</summary>
+    public async Task PreviewClientConfigAsync()
+    {
+        if (clientConfigBusy) return;
+        if (string.IsNullOrWhiteSpace(clientConfigPath)) { clientConfigSummary = "Enter the path of the client configuration file first."; OnPropertyChanged(nameof(ClientConfigSummary)); return; }
+        ClientConfigBusy = true;
+        try
+        {
+            var plan = await backend.PreviewClientConfigAsync(clientConfigPath.Trim());
+            clientConfigSummary = Describe(plan, "Preview");
+        }
+        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            clientConfigSummary = "Preview failed: " + error.Message;
+        }
+        finally { ClientConfigBusy = false; OnPropertyChanged(nameof(ClientConfigSummary)); }
+    }
+
+    /// <summary>Applies the entry after a backup; a conflicting entry is refused rather than overwritten.</summary>
+    public async Task ApplyClientConfigAsync()
+    {
+        if (clientConfigBusy) return;
+        if (string.IsNullOrWhiteSpace(clientConfigPath)) { clientConfigSummary = "Enter the path of the client configuration file first."; OnPropertyChanged(nameof(ClientConfigSummary)); return; }
+        ClientConfigBusy = true;
+        try
+        {
+            var plan = await backend.ApplyClientConfigAsync(clientConfigPath.Trim());
+            clientConfigSummary = Describe(plan, "Apply");
+        }
+        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            clientConfigSummary = "Apply failed: " + error.Message;
+        }
+        finally { ClientConfigBusy = false; OnPropertyChanged(nameof(ClientConfigSummary)); }
+    }
+
+    private static string Describe(ClientConfigPreview? plan, string verb)
+    {
+        if (plan is null) return verb + ": the client configuration assistant is unavailable in this build.";
+        var state = plan.Blocked ? "refused" : plan.AlreadyConnected ? "already connected" : "ready";
+        var backup = plan.BackupPath is { Length: > 0 } path ? " Backup: " + System.IO.Path.GetFileName(path) + "." : "";
+        var reason = plan.BlockReason is { Length: > 0 } detail ? " " + detail : "";
+        return $"{verb}: {state}. {plan.Summary}{reason}{backup}";
+    }
+
     /// <summary>Live view of the isolated Windows ML host: the devices it sees and the gate's own verdict text.</summary>
     public async Task ProbeNpuAsync()
     {

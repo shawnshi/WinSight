@@ -229,6 +229,24 @@ public sealed partial class DesktopBackend : IDesktopBackend
     }
 
     /// <summary>
+    /// Inspects a client configuration the user pointed at. Nothing is written and no client is scanned for.
+    /// </summary>
+    public async Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, CancellationToken cancellationToken = default)
+    {
+        var bridge = Path.Combine(applicationDirectory, "bridge", "winsight-mcp.exe");
+        var plan = await new Configuration.ClientConfigAssistant().PreviewAsync(configPath, bridge, cancellationToken).ConfigureAwait(false);
+        return new ClientConfigPreview(plan.FileExists, plan.AlreadyConnected, plan.Blocked, plan.Summary, plan.BlockReason, plan.BackupPath);
+    }
+
+    /// <summary>Writes the entry after a backup; refuses a conflicting existing entry and never stores a token.</summary>
+    public async Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, CancellationToken cancellationToken = default)
+    {
+        var bridge = Path.Combine(applicationDirectory, "bridge", "winsight-mcp.exe");
+        var plan = await new Configuration.ClientConfigAssistant().ApplyAsync(configPath, bridge, replaceExisting: false, cancellationToken).ConfigureAwait(false);
+        return new ClientConfigPreview(plan.FileExists, plan.AlreadyConnected, plan.Blocked, plan.Summary, plan.BlockReason, plan.BackupPath);
+    }
+
+    /// <summary>
     /// Asks the isolated Windows ML host (ORT 1.27) which devices it can see. Read-only: the host registers
     /// local provider libraries only and never downloads.
     /// </summary>

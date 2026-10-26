@@ -131,4 +131,14 @@ public sealed partial class SettingsPage : Page
     {
         await ViewModel.ProbeNpuAsync();
     }
+
+    private async void OnPreviewClientConfigClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.PreviewClientConfigAsync();
+    }
+
+    private async void OnApplyClientConfigClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.ApplyClientConfigAsync();
+    }
 }

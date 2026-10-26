@@ -286,6 +286,36 @@
                 </StackPanel>
             </Border>
 
+            <!-- MCP client configuration -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Connect an MCP client" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="Point at one client configuration file. Preview reports what would change; Apply backs the file up first and only adds the bridge path with --stdio. No token is written, and an existing different entry is refused."
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+                    <TextBox Header="Client configuration file"
+                             Text="{x:Bind ViewModel.ClientConfigPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             PlaceholderText="C:\path	o\client-config.json"
+                             AutomationProperties.AutomationId="ClientConfigPathBox"/>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Content="Preview" Click="OnPreviewClientConfigClick"
+                                IsEnabled="{x:Bind ViewModel.CanConfigureClient, Mode=OneWay}"
+                                AutomationProperties.AutomationId="PreviewClientConfigButton"/>
+                        <Button Content="Apply" Click="OnApplyClientConfigClick"
+                                IsEnabled="{x:Bind ViewModel.CanConfigureClient, Mode=OneWay}"
+                                AutomationProperties.AutomationId="ApplyClientConfigButton"/>
+                    </StackPanel>
+                    <TextBlock Text="{x:Bind ViewModel.ClientConfigSummary, Mode=OneWay}" TextWrapping="Wrap"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               AutomationProperties.AutomationId="ClientConfigSummary"/>
+                </StackPanel>
+            </Border>
+
             <!-- NPU (isolated Windows ML host) -->
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
