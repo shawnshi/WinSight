@@ -648,7 +648,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
             Dropped: DroppedCount,
             WatcherOverflows: WatcherOverflows,
             LastReconcileUtc: LastReconcileUtc,
-            UsnState: "not-implemented",
+            UsnState: UsnState,
             Budgets: budgets ?? Array.Empty<IndexBudgetState>());
     }
 

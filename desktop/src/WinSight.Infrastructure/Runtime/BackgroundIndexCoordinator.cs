@@ -31,6 +31,16 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     private Task? activePolicyCancellation;
     private int disposed;
     private bool queueReconciled;
+    private readonly Func<CancellationToken, Task>? releaseCaches;
+    private async Task ReleaseCachesAsync()
+    {
+        try
+        {
+            if (releaseCaches is not null) await releaseCaches(stop.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        catch (Exception error) { onError(error); }
+    }
 
     public Task Completion => worker;
     public Exception? Failure => worker.Exception?.GetBaseException();
@@ -46,7 +56,8 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         Func<IReadOnlyList<string>, IReadOnlyList<string>, bool, CancellationToken, Task>? indexPaths = null,
         IncrementalIndexQueue? queue = null,
         HostSignals? hostSignals = null,
-        ResourceBudgetController? budgetController = null)
+        ResourceBudgetController? budgetController = null,
+        Func<CancellationToken, Task>? releaseCaches = null)
     {
         this.settings = settings;
         this.index = index;
@@ -56,6 +67,7 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         this.indexingAllowed = indexingAllowed ?? (() => true);
         this.isOnAcPower = isOnAcPower ?? PowerSource.IsOnAcPower;
         this.policyPoll = policyPoll ?? TimeSpan.FromSeconds(30);
+        this.releaseCaches = releaseCaches;
         this.indexPaths = indexPaths;
         this.queue = queue ?? (repository != null ? new IncrementalIndexQueue(repository, indexPaths, onError, reconcileInterval: reconcile) : null);
         if (hostSignals != null)
@@ -73,7 +85,8 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
             this.hostSignals = new HostSignals(onError: onError);
         }
 
-        this.budgetController = budgetController ?? new ResourceBudgetController(this.hostSignals);
+        this.budgetController = budgetController ?? new ResourceBudgetController(this.hostSignals,
+            onMemoryPressure: releaseCaches is null ? null : () => _ = ReleaseCachesAsync());
         if (this.queue != null)
         {
             this.queue.IsBattery = () => !this.hostSignals.GetPowerInfo().IsAcPower;

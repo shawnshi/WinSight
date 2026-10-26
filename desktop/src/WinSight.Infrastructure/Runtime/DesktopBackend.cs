@@ -294,6 +294,18 @@ public sealed partial class DesktopBackend : IDesktopBackend
             || target.StartsWith(parent + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
+    // Memory pressure must free model, vector and preview caches, not merely halve concurrency.
+    private async Task ReleaseCachesForMemoryPressureAsync(CancellationToken cancellationToken)
+    {
+        await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (stopping != 0 || disposed) return;
+            await ReleaseResourcesAsync().ConfigureAwait(false);
+        }
+        finally { lifecycle.Release(); }
+    }
+
     private async Task ReleaseResourcesAsync()
     {
         var failures = new List<Exception>();
@@ -323,7 +335,8 @@ public sealed partial class DesktopBackend : IDesktopBackend
             error => backgroundError = error.GetType().Name + ": " + error.Message,
             ignoredRoots: [dataDirectory, IndexDirectory],
             indexingAllowed: () => indexing.State == IndexingControlState.Running && stopping == 0,
-            isOnAcPower: isOnAcPower);
+            isOnAcPower: isOnAcPower,
+            releaseCaches: ReleaseCachesForMemoryPressureAsync);
     }
 
     private async Task StopWatchingAsync()

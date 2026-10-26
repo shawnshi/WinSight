@@ -4,7 +4,9 @@
     <TargetFramework>net11.0-windows10.0.26100.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <ActualInfrastructureAssembly Condition="'$(ActualInfrastructureAssembly)' == ''">$(MSBuildProjectDirectory)/../../src/WinSight.Infrastructure/bin/Debug/net11.0-windows10.0.26100.0/WinSight.Infrastructure.dll</ActualInfrastructureAssembly>
+    <ActualCoreAssembly Condition="'$(ActualCoreAssembly)' == ''">$(MSBuildProjectDirectory)/../../src/WinSight.Core/bin/Debug/net11.0/WinSight.Core.dll</ActualCoreAssembly>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="CompositeHost/**/*.cs" />

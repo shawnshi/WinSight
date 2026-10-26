@@ -291,7 +291,9 @@ internal static class BudgetPreemptionCases
             Require(status.Failed == 1, $"Expected Failed=1, got {status.Failed}");
             Require(status.Deferred == 1, $"Expected Deferred=1, got {status.Deferred}");
             Require(status.WatcherOverflows == 1, $"Expected WatcherOverflows=1, got {status.WatcherOverflows}");
-            Require(status.UsnState == "not-implemented", $"Expected UsnState=not-implemented, got {status.UsnState}");
+            // The status must expose the queue's real USN state, not a placeholder.
+            Require(!string.IsNullOrWhiteSpace(status.UsnState) && status.UsnState != "not-implemented",
+                $"Expected a real USN state, got {status.UsnState}");
             Require(status.Budgets.Count == 4, $"Expected 4 budgets, got {status.Budgets.Count}");
         });
     }
