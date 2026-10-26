@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>WinSight.FoundryHost</RootNamespace>
+    <AssemblyName>WinSight.FoundryHost</AssemblyName>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Isolated model backend: this project owns ORT 1.31.0 through Foundry Local and must never be
+         referenced by WinSight.InferenceHost, which stays on the Windows ML ORT 1.24.6 runtime. -->
+    <PackageReference Include="Microsoft.AI.Foundry.Local" Version="[2.2.1]" />
+  </ItemGroup>
+</Project>

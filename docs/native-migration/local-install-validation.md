@@ -84,3 +84,10 @@ untime\<sourceHash>`（实测 `ba7a1ad3…` 已落盘），启动器按 binding 
 - **电池优先级**：`PrioritizeRecentSmallFiles`（lastWrite 降序 + 大小升序）已接入到期任务排序，仅在电池态生效。
 - **实测**：Storage 48/48；Runtime 含 S1 watcher、S2 预算/抢占、S2-MEM 两项，0 失败；20 000 文件批量入队 cold 0.4s / warm 0.0s。
 - **仍未闭合**：同根升级事务在记录上限修复后仍以 `N5.Transport: pipe EOF` 失败（已按批准收尾并留档）；本机无加速器通过证据门；Release 门禁不变。
+
+## 2026-10-26（四）：隔离的 Foundry Local 模型后端
+
+- **引入方式**：新增独立项目 `inference/WinSight.FoundryHost`（独立进程），引用 `Microsoft.AI.Foundry.Local 2.2.1`。它按你的要求把 ORT 固定到该包自带的 **1.31.0**（另有 `Microsoft.ML.OnnxRuntimeGenAI.Foundry 0.18.0`），主 `WinSight.InferenceHost` 仍固定在 Windows ML ORT **1.24.6**，OCR 宿主仍是隔离的 **1.29.0**。三者不共享进程，避免同进程多 ORT 版本冲突。
+- **许可与供应链**：`Microsoft.AI.Foundry.Local` 与 `.Runtime` 均为 **MIT**；主包 660,772 bytes（sha256 `e5af6a36…`）、运行时包 33,491,222 bytes（sha256 `d4b19053…`），来源为 nuget.org 官方 flat container，已写入本地缓存并生成 `packages.lock.json`（17 个直接/传递包）。
+- **能力**：`probe`（仅发现，不下载）实测输出 SDK `2.2.1.0`、设备类型 `Invalid/CPU/GPU/NPU`、提供程序 `MIGraphX / RyzenAILight / VitisAI / WebGpu`（均 `registered=false`，即 Foundry 侧尚未注册）；`register --allow-download [EP...]` 才会联网安装；`models` 只列出已缓存/已加载模型。
+- **未做（明确）**：该宿主**尚未进入安装载荷**，也未被 UI 调用；把它接入打包需要新的载荷清单、固定哈希与验收条目。当前仅为"可编译、可运行、只读发现"的隔离后端。
