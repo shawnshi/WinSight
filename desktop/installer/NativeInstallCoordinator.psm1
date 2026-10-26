@@ -1355,6 +1355,9 @@ function Complete-N7LiveTransaction($S,$WorkerResult){
         Assert-N7LiveRecord $anchor;$null=Write-N7Record ($b.roots.controlRoot+'\removal-anchor.json') $anchor
     }
     $S.phase='Committed';Add-N7Event $S 'Committed' $receiptPin.sha256
+    # N7-POSTCOMMIT-DIAG-01: a failure between commit and finalize used to leave only a stale pending file.
+    # Record the phase and message first so the next run has evidence instead of an empty log.
+    try{
     $after=Get-N7GenuineFresh $S
     if((Get-NativeLiveStableDigest $after) -cne $digest -or ($i.operation -ceq 'Apply' -and $after.anchors.committedReceiptSha256 -cne $receiptPin.sha256)){Add-N7Event $S 'ShellRepairRequired' $receiptPin.sha256;throw 'N7.ShellRepairRequired: postanchor shell changed; receipt immutable, no rollback.'}
     if($i.operation -ceq 'Apply'){Set-N7RegistryAnchor $S 'NativePendingIntentSha256' $S.intentHash $null}
@@ -1365,6 +1368,14 @@ function Complete-N7LiveTransaction($S,$WorkerResult){
     $pending=$b.roots.controlRoot+'\pending.json';if((Get-N5Hash (Read-N5Bytes $pending)) -cne (Get-N7RecordHash (New-N7Pending $S))){throw 'N7.Pending: changed after Finalize.'};[IO.File]::Delete($pending)
     $S.phase='Finalized'
     [pscustomobject]@{protocol='NativeLiveTransactionResult/1';status='Finalized';operation=$i.operation;transactionId=$i.transactionId;intentSha256=$S.intentHash;receipt=$receiptPin;outerResult=$outerPin;restartRecoveryQualified=$false}
+    }
+    catch{
+        try{
+            $failure=[pscustomobject]@{protocol='StandardPostCommitFailure/1';bindingSha256=$S.graph.bindingSha256;intentSha256=$S.intentHash;transactionId=$S.intent.transactionId;operation=$S.intent.operation;receiptSha256=$receiptPin.sha256;phase=$S.phase;errorType=$_.Exception.GetType().Name;errorMessage=[string]$_.Exception.Message}
+            $null=Save-N7Object $S 'failures' $failure
+        }catch{}
+        throw
+    }
 }
 function Invoke-N7LivePermit($Pipe,$Job,$Worker,$Plan,$Nonce,$RequestHash,$S){
     $producerEvent=Receive-N5Pipe $Pipe;Assert-N5Fields $producerEvent @('protocol','event','nonce','requestSha256','childPid','childStartTicks','executableSha256')
