@@ -100,3 +100,13 @@ untime\<sourceHash>`（实测 `ba7a1ad3…` 已落盘），启动器按 binding 
 - **注册是每进程的**：资格验证子进程原先报 `Target EP device not found in OrtEnv`，因为父进程的注册不会继承；子进程改为在枚举设备前先 `RegisterCertifiedAsync()`（只注册、不下载），随后能正确看到 NPU 设备。
 - **ABI 风险被证实并被隔离**：子进程拿到 NPU 设备后，厂商插件（按 ORT 1.27 构建）在 1.31 上以 `0xC0000409` 崩溃；主宿主 exit 0、嵌入正常、回退 CPU，并把原因记为 `rejected: process exited with code 0xC0000409`。即：**目录可用、设备可见、执行仍需匹配 ORT 版本**。
 - **未部署**：该改动只进源码；是否把主宿主切到 WinML 自带的 ORT 1.27.1（以换取 NPU 可用）仍需决策，因此未重新打包安装。
+
+## 2026-10-26（六）：ORT 1.31 上的显式 EP 注册与 NPU 实测
+
+- **注册链路修正**：Windows ML 目录只提供插件路径，ORT 需要显式注册。宿主与资格验证子进程现在都对每个 `Ready` 且带 `LibraryPath` 的 provider 调用 `OrtEnv.RegisterExecutionProviderLibrary(name, path)`；重复注册按幂等处理。`GetEpDevices()` 由 1 个设备变为 4 个（`CPU` / `VitisAI:NPU` / `RyzenAILight:NPU` / `RyzenAILight:GPU`，vendor 4130 与 4098）。
+- **移除 `--provider-install`**：宿主不再接受该参数，客户端不再发送；`provider_downloads_allowed` 恒为 false，下载/安装只存在于隔离的 Foundry/WinML 宿主。
+- **真实 NPU 结论（ORT 1.31）**：
+  - `VitisAIExecutionProvider`：设备可见，但按 ORT 1.27 构建的插件在 1.31 上以 `0xC0000409` 崩溃（子进程隔离，宿主 exit 0 并回落 CPU）。
+  - `RyzenAILightExecutionProvider`：可加载并建会话，但无目标 EP 计算节点证据，按既有门拒绝（`No target-EP compute-node execution evidence`）。
+  - 因此"ORT 1.31 + 厂商 NPU 插件"当前只能发现与加载，不能证明加速；门槛与证据口径未放宽。
+- **决策**：采用方案 C——默认路径继续 ORT 1.31，另设基于 Windows ML（ORT 1.27.1）的独立 NPU 执行宿主，按偏好路由并在失败时回退。
