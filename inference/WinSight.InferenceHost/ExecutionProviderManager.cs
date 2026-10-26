@@ -14,6 +14,8 @@ internal sealed class EpStatus
     public required string Name { get; init; }
     public required string State { get; set; }
     public required string InstallState { get; set; }
+    public string? ReadyState { get; set; }
+    public string? LibraryPath { get; set; }
 }
 
 internal sealed record CandidateDeviceInfo(
@@ -127,15 +129,16 @@ internal sealed class ExecutionProviderManager : IDisposable
         this.models = models;
         this.preference = preference;
         this.providerInstall = providerInstall;
-        states["provider_install"] = "--provider-install is not applicable: ORT 1.31 has no catalog/download install pipeline";
+
+        InitializeCatalog(providerInstall);
+        DiscoverInitialProviders();
+
         slots = new[] { "model_q4.onnx", "vision_encoder_q4.onnx", "audio_encoder_q4.onnx" }
             .ToDictionary(graph => graph, graph => new Slot(() =>
             {
                 using var options = ModelProbe.CpuOptions();
                 return new InferenceSession(models.Graph(graph), options);
             }));
-
-        DiscoverInitialProviders();
 
         if (preference != "cpu")
             background = Task.Run(PrepareAndValidateAsync);
@@ -151,6 +154,72 @@ internal sealed class ExecutionProviderManager : IDisposable
     {
     }
 
+    private void InitializeCatalog(bool allowInstall)
+    {
+        try
+        {
+            var catalog = Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog.GetDefault();
+            if (catalog is null)
+            {
+                states["catalog"] = "ExecutionProviderCatalog.GetDefault returned null";
+                states["provider_install"] = "catalog unavailable: provider acquisition skipped";
+                return;
+            }
+
+            if (allowInstall)
+            {
+                try
+                {
+                    var registered = catalog.EnsureAndRegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
+                    states["provider_install"] = $"EnsureAndRegisterCertifiedAsync registered {registered.Count} provider(s): {string.Join(", ", registered.Select(p => p.Name))}";
+                }
+                catch (Exception ex)
+                {
+                    states["provider_install"] = $"EnsureAndRegisterCertifiedAsync failed: {ex.GetType().Name}: {ex.Message}; fallback to CPU";
+                }
+            }
+            else
+            {
+                try
+                {
+                    var registered = catalog.RegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
+                    states["provider_install"] = $"--provider-install is false: RegisterCertifiedAsync registered {registered.Count} provider(s): {string.Join(", ", registered.Select(p => p.Name))}";
+                }
+                catch (Exception ex)
+                {
+                    states["provider_install"] = $"RegisterCertifiedAsync failed: {ex.GetType().Name}: {ex.Message}; fallback to CPU";
+                }
+            }
+
+            try
+            {
+                var catalogProviders = catalog.FindAllProviders().ToList();
+                foreach (var cp in catalogProviders)
+                {
+                    epStatuses[cp.Name] = new EpStatus
+                    {
+                        Name = cp.Name,
+                        State = $"catalog {cp.ReadyState}; certification={cp.Certification}",
+                        InstallState = cp.ReadyState == Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyState.Ready ? "registered" :
+                                      cp.ReadyState == Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyState.NotPresent ? "not-present" : "not-ready",
+                        ReadyState = cp.ReadyState.ToString(),
+                        LibraryPath = cp.LibraryPath
+                    };
+                }
+                states["catalog"] = $"catalog found {catalogProviders.Count} provider(s)";
+            }
+            catch (Exception ex)
+            {
+                states["catalog"] = $"catalog FindAllProviders failed: {ex.GetType().Name}: {ex.Message}";
+            }
+        }
+        catch (Exception ex)
+        {
+            states["catalog"] = $"catalog initialization failed: {ex.GetType().Name}: {ex.Message}";
+            states["provider_install"] = $"catalog error: {ex.GetType().Name}: {ex.Message}; fallback to CPU";
+        }
+    }
+
     private void DiscoverInitialProviders()
     {
         try
@@ -164,40 +233,61 @@ internal sealed class ExecutionProviderManager : IDisposable
             {
                 Name = "CPUExecutionProvider",
                 State = "CPU default provider",
-                InstallState = "registered"
+                InstallState = "registered",
+                ReadyState = "Ready"
             };
 
             foreach (var name in Allowed)
             {
-                if (available.Contains(name))
+                var matchingDeviceCount = devices.Count(d => string.Equals(d.EpName, name, StringComparison.OrdinalIgnoreCase));
+                if (available.Contains(name) || matchingDeviceCount > 0)
                 {
                     if (name == "QNNExecutionProvider" && RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
                     {
-                        epStatuses[name] = new EpStatus
+                        if (epStatuses.TryGetValue(name, out var status))
                         {
-                            Name = name,
-                            State = "requires native ARM64 host/tokenizer; x64 emulation is not QNN qualification",
-                            InstallState = "unavailable"
-                        };
+                            status.State = "requires native ARM64 host/tokenizer; x64 emulation is not QNN qualification";
+                            status.InstallState = "unavailable";
+                        }
+                        else
+                        {
+                            epStatuses[name] = new EpStatus
+                            {
+                                Name = name,
+                                State = "requires native ARM64 host/tokenizer; x64 emulation is not QNN qualification",
+                                InstallState = "unavailable",
+                                ReadyState = "NotReady"
+                            };
+                        }
                     }
                     else
                     {
-                        var matchingDeviceCount = devices.Count(d => string.Equals(d.EpName, name, StringComparison.OrdinalIgnoreCase));
-                        epStatuses[name] = new EpStatus
+                        if (epStatuses.TryGetValue(name, out var status))
                         {
-                            Name = name,
-                            State = matchingDeviceCount > 0 ? "registered; real-model qualification pending" : "registered (no devices enumerated)",
-                            InstallState = "registered"
-                        };
+                            status.State = matchingDeviceCount > 0 ? "registered; real-model qualification pending" : "registered (no devices enumerated)";
+                            status.InstallState = "registered";
+                            status.ReadyState = "Ready";
+                        }
+                        else
+                        {
+                            epStatuses[name] = new EpStatus
+                            {
+                                Name = name,
+                                State = matchingDeviceCount > 0 ? "registered; real-model qualification pending" : "registered (no devices enumerated)",
+                                InstallState = "registered",
+                                ReadyState = "Ready"
+                            };
+                        }
                     }
                 }
-                else
+                else if (!epStatuses.ContainsKey(name))
                 {
                     epStatuses[name] = new EpStatus
                     {
                         Name = name,
-                        State = "not discovered in registered ORT providers",
-                        InstallState = "not-discovered"
+                        State = "not discovered in registered ORT providers or catalog",
+                        InstallState = "not-discovered",
+                        ReadyState = "NotPresent"
                     };
                 }
             }
@@ -210,7 +300,8 @@ internal sealed class ExecutionProviderManager : IDisposable
                     {
                         Name = prov,
                         State = "built-in ORT provider registered",
-                        InstallState = "registered"
+                        InstallState = "registered",
+                        ReadyState = "Ready"
                     };
                 }
             }
@@ -228,17 +319,17 @@ internal sealed class ExecutionProviderManager : IDisposable
         var vendorId = device.HardwareDevice.VendorId;
         var deviceId = device.HardwareDevice.DeviceId;
 
+        // Hardware device reports NPU, or EP is known NPU EP
+        if (hwType == OrtHardwareDeviceType.NPU || ep.Contains("QNN", StringComparison.OrdinalIgnoreCase) || ep.Contains("RyzenAI", StringComparison.OrdinalIgnoreCase))
+            return new CandidateDeviceInfo(ep, "NPU", false, vendorId, deviceId, "known", 1);
+
         // NvTensorRtRtx=NVIDIA 独显
         if (ep.Contains("NvTensorRtRtx", StringComparison.OrdinalIgnoreCase))
             return new CandidateDeviceInfo(ep, "GPU", true, vendorId, deviceId, "known", 0);
 
-        // VitisAI/MIGraphX=AMD 独显
+        // VitisAI/MIGraphX=AMD 独显 (when not NPU)
         if (ep.Contains("VitisAI", StringComparison.OrdinalIgnoreCase) || ep.Contains("MIGraphX", StringComparison.OrdinalIgnoreCase))
             return new CandidateDeviceInfo(ep, "GPU", true, vendorId, deviceId, "known", 0);
-
-        // NPU (QNN or HardwareDevice.Type == NPU or RyzenAI)
-        if (hwType == OrtHardwareDeviceType.NPU || ep.Contains("QNN", StringComparison.OrdinalIgnoreCase) || ep.Contains("RyzenAI", StringComparison.OrdinalIgnoreCase))
-            return new CandidateDeviceInfo(ep, "NPU", false, vendorId, deviceId, "known", 1);
 
         // OpenVINO=Intel (无法区分独显/核显，标 confidence=unknown 且排在 DML 前但低于已知独显)
         if (ep.Contains("OpenVINO", StringComparison.OrdinalIgnoreCase))
@@ -253,6 +344,7 @@ internal sealed class ExecutionProviderManager : IDisposable
 
         return new CandidateDeviceInfo(ep, "CPU", false, vendorId, deviceId, "known", 4);
     }
+
 
     private static bool MatchesPreference(CandidateDeviceInfo candidate, string preference) => preference switch
     {
@@ -302,7 +394,9 @@ internal sealed class ExecutionProviderManager : IDisposable
             {
                 name = p.Name,
                 state = p.State,
-                install_state = p.InstallState
+                install_state = p.InstallState,
+                ready_state = p.ReadyState,
+                library_path = p.LibraryPath
             }).ToList();
 
             foreach (var kvp in states.OrderBy(p => p.Key))

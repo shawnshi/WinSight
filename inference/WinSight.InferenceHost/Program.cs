@@ -115,8 +115,79 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(ModelProbe.Inspect(modelRoot), JsonOptions));
                 return 0;
             }
-            if (args is not ["environment"])
-                throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu] [--provider-install true|false] | environment | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON | render-pdf-page ABSOLUTE_REQUEST_JSON");
+            bool envProviderInstall = false;
+            if (args.Length > 0 && args[0] == "environment")
+            {
+                for (var i = 1; i < args.Length; i++)
+                {
+                    if (args[i] == "--provider-install" && i + 1 < args.Length)
+                    {
+                        if (!bool.TryParse(args[++i], out envProviderInstall))
+                            throw new ArgumentException("provider-install must be true or false");
+                    }
+                    else if (args[i].StartsWith("--provider-install=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var val = args[i].Substring("--provider-install=".Length);
+                        if (!bool.TryParse(val, out envProviderInstall))
+                            throw new ArgumentException("provider-install must be true or false");
+                    }
+                }
+            }
+            else
+            {
+                throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu] [--provider-install true|false] | environment [--provider-install true|false] | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON | render-pdf-page ABSOLUTE_REQUEST_JSON");
+            }
+
+            object? catalogInfo = null;
+            string? registrationStatus = null;
+            try
+            {
+                var catalog = Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog.GetDefault();
+                if (catalog != null)
+                {
+                    if (envProviderInstall)
+                    {
+                        try
+                        {
+                            var reg = catalog.EnsureAndRegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
+                            registrationStatus = $"EnsureAndRegisterCertifiedAsync registered {reg.Count} provider(s): {string.Join(", ", reg.Select(p => p.Name))}";
+                        }
+                        catch (Exception ex)
+                        {
+                            registrationStatus = $"EnsureAndRegisterCertifiedAsync failed: {ex.GetType().Name}: {ex.Message}";
+                        }
+                    }
+                    else
+                    {
+                        try
+                        {
+                            var reg = catalog.RegisterCertifiedAsync().AsTask().GetAwaiter().GetResult();
+                            registrationStatus = $"RegisterCertifiedAsync registered {reg.Count} provider(s): {string.Join(", ", reg.Select(p => p.Name))}";
+                        }
+                        catch (Exception ex)
+                        {
+                            registrationStatus = $"RegisterCertifiedAsync failed: {ex.GetType().Name}: {ex.Message}";
+                        }
+                    }
+
+                    var providers = catalog.FindAllProviders().Select(p => new
+                    {
+                        name = p.Name,
+                        readyState = p.ReadyState.ToString(),
+                        libraryPath = p.LibraryPath,
+                        certification = p.Certification.ToString()
+                    }).ToArray();
+                    catalogInfo = new { available = true, registrationStatus, providers };
+                }
+                else
+                {
+                    catalogInfo = new { available = false, reason = "GetDefault returned null" };
+                }
+            }
+            catch (Exception ex)
+            {
+                catalogInfo = new { available = false, error = ex.GetType().FullName, message = ex.Message };
+            }
 
             var environment = OrtEnv.Instance();
             var availableProviders = environment.GetAvailableProviders();
@@ -130,6 +201,7 @@ internal static class Program
             var loaded = Process.GetCurrentProcess().Modules.Cast<ProcessModule>()
                 .Where(module => string.Equals(module.ModuleName, "onnxruntime.dll", StringComparison.OrdinalIgnoreCase))
                 .Select(module => module.FileName).ToArray();
+
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 phase = "P0", ok = true,
@@ -137,7 +209,8 @@ internal static class Program
                 availableProviders,
                 epDevices,
                 loadedOrtModules = loaded,
-                providerDownloadsAllowed = false,
+                catalog = catalogInfo,
+                providerDownloadsAllowed = envProviderInstall,
                 productionConnected = false
             }, JsonOptions));
             return 0;
