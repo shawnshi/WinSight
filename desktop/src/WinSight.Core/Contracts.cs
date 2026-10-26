@@ -34,6 +34,9 @@ public sealed record EngineStatus(int Files, int Done, int Pending, int Partial,
     string IndexPath, string? Detail = null, IndexingControlState IndexingState = IndexingControlState.Running);
 public sealed record FoundryProbe(string Sdk, IReadOnlyList<string> DeviceTypes, IReadOnlyList<FoundryProvider> Providers, string? Error = null);
 public sealed record FoundryProvider(string Name, bool Registered);
+public sealed record WinMlProbe(string OrtVersion, IReadOnlyList<string> Libraries, IReadOnlyList<string> Available, IReadOnlyList<WinMlDevice> Devices, string? Error = null);
+public sealed record WinMlDevice(string Ep, string Type, int DeviceId, int VendorId);
+
 public sealed record FoundryInstallResult(bool Success, string Status, IReadOnlyList<string> Registered, IReadOnlyList<string> Failed, string? Error = null);
 
 public sealed record IndexBudgetState(string Class, int ExtractConcurrency, int InferenceConcurrency, string State);
@@ -181,6 +184,7 @@ public interface IDesktopBackend : IAsyncDisposable
         Task.FromResult<IReadOnlyList<string>>([]);
     Task<FoundryProbe?> ProbeFoundryAsync(CancellationToken cancellationToken = default) => Task.FromResult<FoundryProbe?>(null);
     Task<FoundryInstallResult?> InstallFoundryProvidersAsync(CancellationToken cancellationToken = default) => Task.FromResult<FoundryInstallResult?>(null);
+    Task<WinMlProbe?> ProbeWinMlAsync(CancellationToken cancellationToken = default) => Task.FromResult<WinMlProbe?>(null);
     Task SetIndexingPausedAsync(bool paused, CancellationToken cancellationToken = default);
     Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancellationToken = default);
     Task<ISourcePreview> PreviewSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>

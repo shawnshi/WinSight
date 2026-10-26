@@ -126,4 +126,9 @@ public sealed partial class SettingsPage : Page
     {
         await ViewModel.InstallFoundryProvidersAsync();
     }
+
+    private async void OnProbeNpuClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.ProbeNpuAsync();
+    }
 }

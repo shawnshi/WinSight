@@ -341,6 +341,72 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         }
     }
 
+    private string npuSummary = "Not probed. The Windows ML host registers local provider libraries only.";
+    private IReadOnlyList<string> npuDevices = Array.Empty<string>();
+    private string npuQualification = "Qualification runs when the NPU host actually loads a model.";
+    private bool npuBusy;
+    public string NpuSummary => npuSummary;
+    public IReadOnlyList<string> NpuDevices => npuDevices;
+    public string NpuQualification => npuQualification;
+    public bool NpuBusy
+    {
+        get => npuBusy;
+        private set { if (SetProperty(ref npuBusy, value)) OnPropertyChanged(nameof(CanProbeNpu)); }
+    }
+    public bool CanProbeNpu => !npuBusy;
+
+    /// <summary>Live view of the isolated Windows ML host: the devices it sees and the gate's own verdict text.</summary>
+    public async Task ProbeNpuAsync()
+    {
+        if (npuBusy) return;
+        NpuBusy = true;
+        npuSummary = "Probing the Windows ML host…";
+        OnPropertyChanged(nameof(NpuSummary));
+        try
+        {
+            var probe = await backend.ProbeWinMlAsync();
+            if (probe is null || probe.Error is { Length: > 0 })
+            {
+                npuSummary = "Windows ML host unavailable: " + (probe?.Error ?? "no backend");
+                npuDevices = Array.Empty<string>();
+            }
+            else
+            {
+                var accelerated = probe.Devices.Count(d => !string.Equals(d.Type, "CPU", StringComparison.OrdinalIgnoreCase));
+                npuSummary = $"ORT {probe.OrtVersion}; {probe.Devices.Count} device(s), {accelerated} accelerated; this host never downloads providers.";
+                npuDevices = probe.Devices.Select(d => $"{d.Ep} · {d.Type} · device {d.DeviceId} · vendor {d.VendorId}").ToArray();
+            }
+            OnPropertyChanged(nameof(NpuSummary));
+            OnPropertyChanged(nameof(NpuDevices));
+            npuQualification = await DescribeNpuQualificationAsync();
+            OnPropertyChanged(nameof(NpuQualification));
+        }
+        finally
+        {
+            NpuBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// The gate's reasons are produced while a model is actually loaded, so this reports the last recorded
+    /// status verbatim instead of inventing a verdict.
+    /// </summary>
+    private async Task<string> DescribeNpuQualificationAsync()
+    {
+        try
+        {
+            var info = await backend.GetEmbeddingInfoAsync();
+            var status = info.BackendStatus;
+            return string.IsNullOrWhiteSpace(status)
+                ? "No qualification text has been recorded yet; it appears after the NPU host loads a model."
+                : status;
+        }
+        catch (Exception error) when (error is InvalidOperationException or IOException or TimeoutException)
+        {
+            return "Qualification state unavailable: " + error.GetType().Name + ".";
+        }
+    }
+
     /// <summary>Runs the isolated Foundry host in probe mode; it only enumerates providers.</summary>
     public async Task ProbeFoundryAsync()
     {

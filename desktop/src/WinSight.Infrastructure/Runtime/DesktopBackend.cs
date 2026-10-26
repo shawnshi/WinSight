@@ -233,6 +233,50 @@ public sealed partial class DesktopBackend : IDesktopBackend
     }
 
     /// <summary>
+    /// Asks the isolated Windows ML host (ORT 1.27) which devices it can see. Read-only: the host registers
+    /// local provider libraries only and never downloads.
+    /// </summary>
+    public async Task<WinMlProbe?> ProbeWinMlAsync(CancellationToken cancellationToken = default)
+    {
+        var executable = Path.Combine(applicationDirectory, "inference", "winml", "WinSight.WinMlHost.exe");
+        if (!File.Exists(executable)) return new WinMlProbe("unavailable", Array.Empty<string>(), Array.Empty<string>(), Array.Empty<WinMlDevice>(), "The Windows ML host is not part of this payload.");
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            start.ArgumentList.Add("environment");
+            using var process = System.Diagnostics.Process.Start(start)!;
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(90));
+            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            var text = await stdout.ConfigureAwait(false);
+            if (process.ExitCode != 0)
+                return new WinMlProbe("unavailable", Array.Empty<string>(), Array.Empty<string>(), Array.Empty<WinMlDevice>(),
+                    "environment exited " + process.ExitCode + ": " + (await stderr.ConfigureAwait(false)).Trim());
+            using var document = System.Text.Json.JsonDocument.Parse(text);
+            var root = document.RootElement;
+            string[] ReadStrings(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? value.EnumerateArray().Select(v => v.GetString() ?? "").Where(v => v.Length != 0).ToArray()
+                : Array.Empty<string>();
+            var devices = root.TryGetProperty("devices", out var list) && list.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? list.EnumerateArray().Select(d => new WinMlDevice(
+                    d.TryGetProperty("ep", out var ep) ? ep.GetString() ?? "" : "",
+                    d.TryGetProperty("type", out var type) ? type.GetString() ?? "" : "",
+                    d.TryGetProperty("device_id", out var id) && id.TryGetInt32(out var parsedId) ? parsedId : 0,
+                    d.TryGetProperty("vendor_id", out var vendor) && vendor.TryGetInt32(out var parsedVendor) ? parsedVendor : 0))
+                  .Where(d => d.Ep.Length != 0).ToArray()
+                : Array.Empty<WinMlDevice>();
+            var ort = root.TryGetProperty("ort_version", out var version) ? version.GetString() ?? "unknown" : "unknown";
+            return new WinMlProbe(ort, ReadStrings("libraries"), ReadStrings("available"), devices);
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or System.Text.Json.JsonException or OperationCanceledException or System.ComponentModel.Win32Exception)
+        {
+            return new WinMlProbe("unavailable", Array.Empty<string>(), Array.Empty<string>(), Array.Empty<WinMlDevice>(), error.GetType().Name + ": " + error.Message);
+        }
+    }
+
+    /// <summary>
     /// Runs the isolated Foundry Local host in probe mode: it only discovers providers and never downloads.
     /// A missing or failing host degrades to an explanatory error instead of failing the page.
     /// </summary>

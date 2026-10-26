@@ -286,6 +286,37 @@
                 </StackPanel>
             </Border>
 
+            <!-- NPU (isolated Windows ML host) -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="NPU execution host" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="Separate process on Windows ML's own ONNX Runtime (1.27). It registers the vendor NPU libraries that already exist on this machine and reports each device it can see."
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+                    <TextBlock Text="{x:Bind ViewModel.NpuSummary, Mode=OneWay}" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="NpuSummary"/>
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.NpuDevices, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <TextBlock Text="{x:Bind}" Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="{x:Bind ViewModel.NpuQualification, Mode=OneWay}" TextWrapping="Wrap"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               AutomationProperties.AutomationId="NpuQualification"/>
+                    <Button Content="Probe NPU host" Click="OnProbeNpuClick"
+                            IsEnabled="{x:Bind ViewModel.CanProbeNpu, Mode=OneWay}"
+                            AutomationProperties.AutomationId="ProbeNpuButton"/>
+                </StackPanel>
+            </Border>
+
             <!-- Foundry Local (isolated backend) -->
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
