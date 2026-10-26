@@ -86,7 +86,7 @@ public static class Program
                 Console.Error.WriteLine("[winsight-mcp] Bridge is running (named pipe transport).");
                 try
                 {
-                    return await PipeTransport.RunAsync(pipeName, token, line => server.CaptureLineAsync(line, cts.Token)!, cts.Token).ConfigureAwait(false);
+                    return await PipeTransport.RunAsync(pipeName, token, line => server.DispatchAsync(line, cts.Token), cts.Token).ConfigureAwait(false);
                 }
                 finally
                 {

@@ -44,6 +44,7 @@ public sealed class McpStdioServer
                 {
                     Console.Error.WriteLine($"[winsight-mcp] Validation error: incoming message exceeded 1 MiB limit ({lineResult.ByteCount} bytes).");
                     SendErrorResponse(
+                        emit: EmitToStdout,
                         id: null,
                         code: -32600,
                         message: "validation_error: message exceeds 1 MiB limit",
@@ -57,7 +58,7 @@ public sealed class McpStdioServer
                     continue;
                 }
 
-                _ = HandleLineAsync(lineResult.Line, cancellationToken);
+                _ = HandleLineAsync(lineResult.Line, EmitToStdout, cancellationToken);
             }
         }
         catch (OperationCanceledException)
@@ -79,7 +80,7 @@ public sealed class McpStdioServer
         }
     }
 
-    private async Task HandleLineAsync(string line, CancellationToken globalCt)
+    private async Task HandleLineAsync(string line, Action<string> emit, CancellationToken globalCt)
     {
         JsonDocument doc;
         try
@@ -93,6 +94,7 @@ public sealed class McpStdioServer
                 id: null,
                 code: -32700,
                 message: "parse_error: Invalid JSON-RPC 2.0 message",
+                emit: EmitToStdout,
                 data: new { code = McpErrors.ParseError, detail = ex.Message }
             );
             return;
@@ -103,13 +105,13 @@ public sealed class McpStdioServer
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
-                SendErrorResponse(null, -32600, "validation_error: Invalid JSON-RPC 2.0 request", new { code = McpErrors.ValidationError });
+                SendErrorResponse(null, -32600, "validation_error: Invalid JSON-RPC 2.0 request", emit, new { code = McpErrors.ValidationError });
                 return;
             }
 
             if (!root.TryGetProperty("method", out var methodProp) || methodProp.ValueKind != JsonValueKind.String)
             {
-                SendErrorResponse(null, -32600, "validation_error: Missing 'method' in JSON-RPC request", new { code = McpErrors.ValidationError });
+                SendErrorResponse(null, -32600, "validation_error: Missing 'method' in JSON-RPC request", emit, new { code = McpErrors.ValidationError });
                 return;
             }
 
@@ -147,7 +149,7 @@ public sealed class McpStdioServer
 
             try
             {
-                await HandleRequestAsync(idValue, method, paramsProp, reqCts.Token).ConfigureAwait(false);
+                await HandleRequestAsync(idValue, method, paramsProp, emit, reqCts.Token).ConfigureAwait(false);
             }
             finally
             {
@@ -189,7 +191,7 @@ public sealed class McpStdioServer
         }
     }
 
-    private async Task HandleRequestAsync(object? id, string method, JsonElement paramsElement, CancellationToken ct)
+    private async Task HandleRequestAsync(object? id, string method, JsonElement paramsElement, Action<string> emit, CancellationToken ct)
     {
         try
         {
@@ -207,28 +209,28 @@ public sealed class McpStdioServer
                         },
                         ServerInfo: new McpServerInfo("winsight-mcp", "1.0.0")
                     );
-                    SendSuccessResponse(id, initResult);
+                    SendSuccessResponse(id, initResult, emit);
                     break;
 
                 case "ping":
-                    SendSuccessResponse(id, new { });
+                    SendSuccessResponse(id, new { }, emit);
                     break;
 
                 case "tools/list":
                     var tools = McpToolsHandler.GetToolDefinitions();
-                    SendSuccessResponse(id, new McpToolsListResult(tools));
+                    SendSuccessResponse(id, new McpToolsListResult(tools), emit);
                     break;
 
                 case "tools/call":
                     if (paramsElement.ValueKind != JsonValueKind.Object)
                     {
-                        SendErrorResponse(id, -32602, "validation_error: Invalid parameters for tools/call", new { code = McpErrors.ValidationError });
+                        SendErrorResponse(id, -32602, "validation_error: Invalid parameters for tools/call", emit, new { code = McpErrors.ValidationError });
                         return;
                     }
 
                     if (!paramsElement.TryGetProperty("name", out var nameProp) || nameProp.ValueKind != JsonValueKind.String)
                     {
-                        SendErrorResponse(id, -32602, "validation_error: Missing tool 'name'", new { code = McpErrors.ValidationError });
+                        SendErrorResponse(id, -32602, "validation_error: Missing tool 'name'", emit, new { code = McpErrors.ValidationError });
                         return;
                     }
 
@@ -236,62 +238,54 @@ public sealed class McpStdioServer
                     paramsElement.TryGetProperty("arguments", out var argsProp);
 
                     var toolResult = await toolsHandler.CallToolAsync(toolName, argsProp, ct).ConfigureAwait(false);
-                    SendSuccessResponse(id, toolResult);
+                    SendSuccessResponse(id, toolResult, emit);
                     break;
 
                 default:
                     Console.Error.WriteLine($"[winsight-mcp] Unknown method: {method}");
-                    SendErrorResponse(id, -32601, $"Method not found: {method}", new { code = McpErrors.ValidationError });
+                    SendErrorResponse(id, -32601, $"Method not found: {method}", emit, new { code = McpErrors.ValidationError });
                     break;
             }
         }
         catch (OperationCanceledException)
         {
-            SendErrorResponse(id, -32000, "cancelled: Request was cancelled", new { code = McpErrors.Cancelled });
+            SendErrorResponse(id, -32000, "cancelled: Request was cancelled", emit, new { code = McpErrors.Cancelled });
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[winsight-mcp] Error handling request {method}: {ex}");
-            SendErrorResponse(id, -32603, $"internal: {ex.Message}", new { code = McpErrors.Internal });
+            SendErrorResponse(id, -32603, $"internal: {ex.Message}", emit, new { code = McpErrors.Internal });
         }
     }
 
-    private void SendSuccessResponse(object? id, object? result)
+    private void SendSuccessResponse(object? id, object? result, Action<string> emit)
     {
         var response = new JsonRpcResponse("2.0", id, result, null);
         string json = McpJson.Serialize(response);
-        WriteLineToStdout(json);
+        emit(json);
     }
 
-    private void SendErrorResponse(object? id, int code, string message, object? data = null)
+    private void SendErrorResponse(object? id, int code, string message, Action<string> emit, object? data = null)
     {
         var error = new JsonRpcError(code, message, data);
         var response = new JsonRpcResponse("2.0", id, null, error);
         string json = McpJson.Serialize(response);
-        WriteLineToStdout(json);
+        emit(json);
     }
 
-    /// <summary>Set by the pipe transport: responses are captured instead of written to stdout.</summary>
-    private List<string>? captured;
-
-    /// <summary>Handles one JSON-RPC line and returns the reply, or null for notifications. Used by the pipe transport.</summary>
-    public async Task<string?> CaptureLineAsync(string line, CancellationToken cancellationToken)
+    /// <summary>
+    /// Handles one JSON-RPC line and returns the reply instead of writing it. Both transports use this, so a
+    /// reply can never be confused with a previous frame.
+    /// </summary>
+    public async Task<string?> DispatchAsync(string line, CancellationToken cancellationToken)
     {
-        captured = new List<string>();
-        try
-        {
-            await HandleLineAsync(line, cancellationToken).ConfigureAwait(false);
-            return captured.Count == 0 ? null : captured[^1];
-        }
-        finally
-        {
-            captured = null;
-        }
+        string? reply = null;
+        await HandleLineAsync(line, message => reply = message, cancellationToken).ConfigureAwait(false);
+        return reply;
     }
 
-    private void WriteLineToStdout(string message)
+    private void EmitToStdout(string message)
     {
-        if (captured is not null) { captured.Add(message); return; }
         lock (writeGate)
         {
             // MCP Transport rule: stdout ONLY writes legal JSON-RPC messages (one per line, UTF-8, no BOM)

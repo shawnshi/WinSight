@@ -13,7 +13,7 @@ internal sealed class PipeTransport
 {
     private const int MaxFrame = 1024 * 1024;
 
-    internal static async Task<int> RunAsync(string pipeName, string token, Func<string, Task<string>> dispatch, CancellationToken cancellationToken)
+    internal static async Task<int> RunAsync(string pipeName, string token, Func<string, Task<string?>> dispatch, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -55,6 +55,7 @@ internal sealed class PipeTransport
                     continue;
                 }
                 var reply = await dispatch(frame).ConfigureAwait(false);
+                if (reply is null) continue;   // notification: nothing to send back
                 await WriteFrameAsync(server, reply, cancellationToken).ConfigureAwait(false);
             }
             Log("pipe client disconnected");
