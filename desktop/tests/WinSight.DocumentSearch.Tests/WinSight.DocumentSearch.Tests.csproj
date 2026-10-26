@@ -7,5 +7,9 @@
   <ItemGroup>
     <ProjectReference Include="../../src/WinSight.Infrastructure/WinSight.Infrastructure.csproj" />
     <Compile Include="../../src/WinSight.App/Services/PreviewGeometry.cs" Link="PreviewGeometry.cs" />
+    <!-- Lexical indexing needs the shared native segmenter; without it writes fail visibly by design. -->
+    <None Include="../../../native/winsight-segmenter/target/release/winsight_segmenter.dll"
+          Link="runtimes/win-x64/native/winsight_segmenter.dll"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -14,5 +14,9 @@
     <Compile Include="../../src/WinSight.Infrastructure/Indexing/UsnJournal.cs" Link="Indexing/UsnJournal.cs" />
     <Compile Include="../../src/WinSight.Infrastructure/Extraction/FilePolicy.cs" Link="Extraction/FilePolicy.cs" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.13]" />
+    <!-- Lexical indexing shares the native segmenter with the product, so the suite must load the same DLL. -->
+    <None Include="../../../native/winsight-segmenter/target/release/winsight_segmenter.dll"
+          Link="runtimes/win-x64/native/winsight_segmenter.dll"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

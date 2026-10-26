@@ -161,6 +161,17 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
 
     private static void ValidateSchema(SqliteConnection db)
     {
+        // Additive table for existing databases: writing keeps working, and NeedsRebuild() forces a coordinated
+        // generation switch because lexicon_schema is still absent. No silent migration of old rows.
+        // A read-only open (legacy fixtures, inspection) must remain byte-identical, so the create is skipped there.
+        try
+        {
+            Execute(db, null, "CREATE VIRTUAL TABLE IF NOT EXISTS fts_seg USING fts5(tokens, tokenize=\"unicode61 remove_diacritics 2\")");
+        }
+        catch (SqliteException error) when (error.SqliteErrorCode == 8)
+        {
+            // read-only database: nothing to add, validation continues against what is there
+        }
         if (Convert.ToInt64(Scalar(db, null, "PRAGMA user_version")) != 5)
             throw new InvalidDataException("Only schema5 is supported; no automatic migration or clearing is permitted.");
         var columns = new Dictionary<string, string[]>
@@ -202,9 +213,13 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         if (fts == null || !fts.Contains("fts5", StringComparison.OrdinalIgnoreCase) || !fts.Contains(Tokenizer, StringComparison.Ordinal) ||
             !fts.Contains("original UNINDEXED", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Unsupported FTS layout/tokenizer.");
+        string? segmented = Scalar(db, null, "SELECT sql FROM sqlite_master WHERE name='fts_seg' AND type='table'") as string;
+        if (segmented != null && !segmented.Contains("fts5", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Unsupported segmented FTS layout.");
         using var objects = Command(db, null, "SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'");
         using var rows = objects.ExecuteReader();
-        var allowedTables = new HashSet<string>(["meta", "files", "segments", "fts", "fts_data", "fts_idx", "fts_content", "fts_docsize", "fts_config", "index_tasks", "usn_checkpoints"], StringComparer.Ordinal);
+        var allowedTables = new HashSet<string>(["meta", "files", "segments", "fts", "fts_data", "fts_idx", "fts_content", "fts_docsize", "fts_config", "index_tasks", "usn_checkpoints",
+            "fts_seg", "fts_seg_data", "fts_seg_idx", "fts_seg_content", "fts_seg_docsize", "fts_seg_config"], StringComparer.Ordinal);
         while (rows.Read())
             if (rows.GetString(1) is "trigger" or "view" || (rows.GetString(1) == "table" && !allowedTables.Contains(rows.GetString(0))))
                 throw new InvalidDataException("Unknown database objects; refusing an unsafe index.");
@@ -1071,7 +1086,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         CREATE TABLE IF NOT EXISTS index_tasks (path TEXT PRIMARY KEY,root TEXT NOT NULL,code INTEGER NOT NULL,kind TEXT NOT NULL,tombstone TEXT,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,due_utc TEXT NOT NULL,seen_utc TEXT NOT NULL,reason TEXT);
         CREATE INDEX IF NOT EXISTS ix_index_tasks_due ON index_tasks(state, due_utc);
         CREATE TABLE IF NOT EXISTS usn_checkpoints (volume_serial TEXT PRIMARY KEY, journal_id TEXT, next_usn TEXT, reconcile_utc TEXT);
-        PRAGMA user_version=6;
+        PRAGMA user_version=5;
         """;
 }
 

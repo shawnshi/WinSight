@@ -12,9 +12,9 @@
     <PackageReference Include="DocumentFormat.OpenXml" Version="[3.5.1]" />
     <PackageReference Include="PdfPig" Version="[0.1.16]" />
     <!-- Chinese segmenter: the same native library must serve indexing and querying. -->
-    <None Include="../../../native/winsight-segmenter/target/$(SegmenterRustTarget)/release/winsight_segmenter.dll"
+    <None Include="../../../native/winsight-segmenter/target/release/winsight_segmenter.dll"
           Link="runtimes/win-x64/native/winsight_segmenter.dll"
-          Condition="Exists('../../../native/winsight-segmenter/target/$(SegmenterRustTarget)/release/winsight_segmenter.dll')"
+          Condition="Exists('../../../native/winsight-segmenter/target/release/winsight_segmenter.dll')"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
