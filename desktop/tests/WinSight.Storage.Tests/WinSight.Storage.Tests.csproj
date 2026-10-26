@@ -12,6 +12,7 @@
     <!-- S1 queue semantics live in Indexing; the queue deliberately has no runtime dependency. -->
     <Compile Include="../../src/WinSight.Infrastructure/Indexing/IncrementalIndexQueue.cs" Link="Indexing/IncrementalIndexQueue.cs" />
     <Compile Include="../../src/WinSight.Infrastructure/Indexing/UsnJournal.cs" Link="Indexing/UsnJournal.cs" />
+    <Compile Include="../../src/WinSight.Infrastructure/Indexing/MaintenanceJobStore.cs" Link="Indexing/MaintenanceJobStore.cs" />
     <Compile Include="../../src/WinSight.Infrastructure/Extraction/FilePolicy.cs" Link="Extraction/FilePolicy.cs" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.13]" />
     <!-- Lexical indexing shares the native segmenter with the product, so the suite must load the same DLL. -->

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using WinSight.Core;
+using WinSight.Infrastructure.Indexing;
 using WinSight.Infrastructure.Search;
 using WinSight.Infrastructure.Storage;
 using WinSight.Storage.Tests;
@@ -16,6 +17,65 @@ async Task Test(string name, Func<Task> test)
     catch (Exception error) { failed++; Console.WriteLine("FAIL " + name + ": " + error); }
 }
 string Db(string name) => Path.Combine(root, name + ".sqlite");
+
+await Test("generation rebuild switches only when the data-derived probe succeeds", async () =>
+{
+    var indexDirectory = Path.Combine(root, "rebuild-window");
+    Directory.CreateDirectory(indexDirectory);
+    var live = new SqliteIndexRepository(Path.Combine(indexDirectory, "index.sqlite"));
+    await live.InitializeAsync();
+    await live.SetMetaAsync("profile_id", "old-profile");
+    await live.UpsertFileAsync(new IndexedFile(0, Path.Combine(root, "old.txt"), "doc", 3, 0, "done", null, null, [new IndexSegment("chunk", "none", 1, null, "old content")]));
+    await live.DisposeAsync();
+
+    var generation = "gen-test-1";
+    var failed = await IndexRebuildCoordinator.RebuildAsync(indexDirectory, generation, async stagingRoot =>
+    {
+        var staging = new SqliteIndexRepository(Path.Combine(stagingRoot, "index.sqlite"));
+        await staging.InitializeAsync();
+        await staging.SetMetaAsync("profile_id", "new-profile");
+        await staging.UpsertFileAsync(new IndexedFile(0, Path.Combine(root, "new.txt"), "doc", 3, 0, "done", null, null, [new IndexSegment("chunk", "none", 1, null, "brand new words here")]));
+        await staging.DisposeAsync();
+    }, _ => Task.FromResult<IReadOnlyList<string>>([]));
+    Check(!failed.Switched && failed.Detail is not null && failed.Detail.Contains("no hits"), "An empty probe should refuse the switch.");
+    Check(File.Exists(Path.Combine(indexDirectory, "index.sqlite")), "The live database must survive a refused rebuild.");
+
+    var switched = await IndexRebuildCoordinator.RebuildAsync(indexDirectory, generation + "-b", async stagingRoot =>
+    {
+        var staging = new SqliteIndexRepository(Path.Combine(stagingRoot, "index.sqlite"));
+        await staging.InitializeAsync();
+        await staging.SetMetaAsync("profile_id", "new-profile");
+        await staging.UpsertFileAsync(new IndexedFile(0, Path.Combine(root, "new.txt"), "doc", 3, 0, "done", null, null, [new IndexSegment("chunk", "none", 1, null, "brand new words here")]));
+        await staging.DisposeAsync();
+    }, async database =>
+    {
+        var probe = new SqliteIndexRepository(database);
+        await probe.InitializeAsync();
+        var hits = await probe.KeywordSearchAsync("new", 3);
+        await probe.DisposeAsync();
+        return hits.Count == 0 ? Array.Empty<string>() : new[] { "keyword:" + hits.Count };
+    });
+    Check(switched.Switched, "A satisfied probe should switch: " + switched.Detail);
+    Check(switched.PreviousDirectory is not null && Directory.Exists(switched.PreviousDirectory), "The previous generation must be kept.");
+    var reopened = new SqliteIndexRepository(Path.Combine(indexDirectory, "index.sqlite"));
+    await reopened.InitializeAsync();
+    Check(await reopened.GetMetaAsync("profile_id") == "new-profile", "The switched database must carry the new profile.");
+    await reopened.DisposeAsync();
+});
+
+await Test("maintenance requests round-trip through the bridge store", async () =>
+{
+    var data = Path.Combine(root, "maintenance-store");
+    var store = new MaintenanceJobStore(data);
+    var job = await store.SubmitAsync(Path.Combine(root, "docs"), "local");
+    Check(File.Exists(Path.Combine(store.Inbox, job.Id + ".json")), "The request must land in the inbox.");
+    var claimed = store.ClaimNext();
+    Check(claimed is not null && claimed.Id == job.Id, "The request must be claimable exactly once.");
+    Check(store.ClaimNext() is null, "A claimed request must not be handed out twice.");
+    await store.CompleteAsync(claimed!, true, "accepted: 2 file(s) indexed under the request, 2 new");
+    var result = Path.Combine(store.Completed, job.Id + ".result.json");
+    Check(File.Exists(result) && (await File.ReadAllTextAsync(result)).Contains("2 new", StringComparison.Ordinal), "The outcome must record the real count.");
+});
 
 await Test("NM-BR-09 first schema cancellation leaves target absent and same instance can recover", async () =>
 {
