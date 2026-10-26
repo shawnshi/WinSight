@@ -566,6 +566,28 @@ public sealed partial class DesktopBackend : IDesktopBackend
         return vectors + " vector segment(s); " + verdict + ".";
     }
 
+    /// <summary>
+    /// Lists everything that must be idle before an export: an indexing pass, a generation rebuild, or
+    /// maintenance requests the app has not finished. Each entry is a reason a user can act on.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> DescribeMigrationBlockersAsync(CancellationToken cancellationToken = default)
+    {
+        var blockers = await MigrationHostileWorkAsync(cancellationToken).ConfigureAwait(false);
+        return blockers.Count == 0 ? Array.Empty<string>() : blockers;
+    }
+
+    private async Task<List<string>> MigrationHostileWorkAsync(CancellationToken cancellationToken)
+    {
+        var blockers = new List<string>();
+        if (indexing.HasWork) blockers.Add("indexing is running");
+        if (rebuildRunning) blockers.Add("a generation rebuild is running");
+        var store = JobStore;
+        if (Directory.Exists(store.Inbox) && Directory.GetFiles(store.Inbox, "*.json").Length != 0) blockers.Add("maintenance requests are waiting to be drained");
+        if (Directory.Exists(store.Claimed) && Directory.GetFiles(store.Claimed, "*.json").Length != 0) blockers.Add("a maintenance request is in progress");
+        await Task.CompletedTask.ConfigureAwait(false);
+        return blockers;
+    }
+
     /// <summary>Explains what a migration would do, without exporting or touching either directory.</summary>
     public Task<IndexMigrationResult?> InspectMigrationAsync(string targetDirectory, CancellationToken cancellationToken = default)
     {
@@ -580,9 +602,9 @@ public sealed partial class DesktopBackend : IDesktopBackend
     public async Task<IndexMigrationResult?> MigrateIndexAsync(string targetDirectory, CancellationToken cancellationToken = default)
     {
         // The export reads the live database; running it while a pass is writing would copy a moving target.
-        if (indexing.HasWork)
-            return new IndexMigrationResult("Refused", IndexDirectory, targetDirectory,
-                "Indexing is running. Pause or wait for it to finish, then migrate.");
+        var blockers = await MigrationHostileWorkAsync(cancellationToken).ConfigureAwait(false);
+        if (blockers.Count != 0)
+            return new IndexMigrationResult("Refused", IndexDirectory, targetDirectory, "Blocked: " + string.Join("; ", blockers) + ".");
         var outcome = await new IndexMigrationService().MigrateAsync(IndexDirectory, targetDirectory, cancellationToken).ConfigureAwait(false);
         if (outcome.Phase != MigrationPhase.Switched)
             return new IndexMigrationResult(outcome.Phase.ToString(), outcome.Source, outcome.Target, outcome.Detail);

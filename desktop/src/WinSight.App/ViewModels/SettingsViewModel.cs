@@ -467,11 +467,28 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         if (migrationBusy) return;
         if (string.IsNullOrWhiteSpace(migrationTarget)) { migrationSummary = "Enter a target directory first."; OnPropertyChanged(nameof(MigrationSummary)); return; }
         migrationBusy = true;
-        migrationSummary = "Exporting the index…";
-        OnPropertyChanged(nameof(MigrationSummary));
-        try { migrationSummary = Describe(await backend.MigrateIndexAsync(migrationTarget.Trim()), "Migrate"); }
-        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or UnauthorizedAccessException) { migrationSummary = "Migrate failed: " + error.Message; }
-        finally { migrationBusy = false; OnPropertyChanged(nameof(MigrationSummary)); OnPropertyChanged(nameof(CanMigrate)); }
+        try
+        {
+            var blockers = await backend.DescribeMigrationBlockersAsync();
+            if (blockers.Count != 0)
+            {
+                migrationSummary = "Blocked: " + string.Join("; ", blockers) + ". Finish or pause those first.";
+                return;
+            }
+            migrationSummary = "Exporting the index…";
+            OnPropertyChanged(nameof(MigrationSummary));
+            migrationSummary = Describe(await backend.MigrateIndexAsync(migrationTarget.Trim()), "Migrate");
+        }
+        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            migrationSummary = "Migrate failed: " + error.Message;
+        }
+        finally
+        {
+            migrationBusy = false;
+            OnPropertyChanged(nameof(MigrationSummary));
+            OnPropertyChanged(nameof(CanMigrate));
+        }
     }
 
     private static string Describe(IndexMigrationResult? result, string verb) => result is null

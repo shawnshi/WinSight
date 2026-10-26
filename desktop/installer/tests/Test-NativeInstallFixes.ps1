@@ -19,6 +19,8 @@ foreach($name in @('Assert-NLString','Assert-NLPath','Assert-NLNoReparse','Initi
 foreach($name in @('Get-NativeLiveObservation','Read-NLFreshLink')){Check 'source' ($name+'-uses-actual-predicate') ((FunctionBody $shellAst $name).Contains('Test-NLStoredLinkFields'))}
 $worker=FunctionBody $coordinatorAst 'Invoke-N7LiveWorker'
 $complete=FunctionBody $coordinatorAst 'Complete-N7LiveTransaction'
+$resume=FunctionBody $coordinatorAst 'Assert-N5Arguments'
+Check 'source' 'resume-finalize-remains-reachable' ($resume.Contains("'ResumeFinalize'") -and $complete.Contains('throw'))
 Check 'source' 'post-commit-failure-recorded' ($complete.Contains("protocol='StandardPostCommitFailure/1'") -and $complete.Contains("Save-N7Object `$S 'failures' `$failure") -and $complete.Contains('errorType=') -and $complete.Contains('errorMessage='))
 Check 'source' 'peer-close-before-disconnect' ($worker.Contains("Wait-N7CallbackPeerClose `$server`n            `$peer.Dispose();`$peer=`$null;`$server.Disconnect()"))
 foreach($name in @('Wait-N7CallbackConnection','Wait-N7CallbackPeerClose')){$body=FunctionBody $coordinatorAst $name;Check 'source' ($name+'-preserves-shared-clock') (-not$body.Contains('Initialize-N5Clock')-and-not$body.Contains('$script:N5Start=')-and-not$body.Contains('$script:N5Deadline='))}

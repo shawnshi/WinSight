@@ -202,6 +202,7 @@ public interface IDesktopBackend : IAsyncDisposable
     Task<ModelInventory?> GetModelInventoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<ModelInventory?>(null);
     Task<McpConsoleStatus?> GetMcpConsoleStatusAsync(CancellationToken cancellationToken = default) => Task.FromResult<McpConsoleStatus?>(null);
     Task<string> DescribeVectorScaleAsync(CancellationToken cancellationToken = default) => Task.FromResult(string.Empty);
+    Task<IReadOnlyList<string>> DescribeMigrationBlockersAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<string>>([]);
     Task<IndexMigrationResult?> InspectMigrationAsync(string targetDirectory, CancellationToken cancellationToken = default) => Task.FromResult<IndexMigrationResult?>(null);
     Task<IndexMigrationResult?> MigrateIndexAsync(string targetDirectory, CancellationToken cancellationToken = default) => Task.FromResult<IndexMigrationResult?>(null);
     Task<bool> RebuildNeededAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
