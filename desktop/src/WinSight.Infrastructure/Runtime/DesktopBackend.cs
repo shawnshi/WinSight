@@ -168,11 +168,7 @@ public sealed partial class DesktopBackend : IDesktopBackend
                 // belong to a different profile. Keep the old index as a backup and start a fresh one instead
                 // of failing every file with a profile mismatch.
                 var info = await model.GetInfoAsync(token).ConfigureAwait(false);
-                var storedProfile = await repository.GetMetaAsync("profile_id", token).ConfigureAwait(false);
-                if (!string.IsNullOrEmpty(storedProfile) && storedProfile != info.ProfileId)
-                {
-                    await RetireIndexForProfileChangeAsync(repository, storedProfile, info.ProfileId, token).ConfigureAwait(false);
-                }
+                repository = await EnsureGenerationAsync(repository, approved, info, mediaClient, defer, token).ConfigureAwait(false);
                 var service = new IndexingService(repository, new ContentExtractor(mediaClient), model,
                     defer || mediaClient is null ? null : new NativeMediaSamplingService(mediaClient),
                     defer ? null : new NativeDocumentPages(mediaClient),
@@ -492,24 +488,45 @@ public sealed partial class DesktopBackend : IDesktopBackend
     }
 
     /// <summary>
-    /// An embedding profile change invalidates stored vectors. The previous database is renamed aside (never
-    /// deleted) and a fresh repository is created so the next pass can index against the new profile.
+    /// One rebuild window covers both a model change and a lexicon change: staging is built with the new
+    /// profile and the segmented FTS together, validated, then swapped in atomically; the old database is kept.
     /// </summary>
-    private async Task RetireIndexForProfileChangeAsync(IIndexRepository repository, string storedProfile, string expectedProfile, CancellationToken cancellationToken)
+    private async Task<IIndexRepository> EnsureGenerationAsync(IIndexRepository repository, IndexRequest request,
+        EmbeddingInfo info, NativeMediaProcessClient? mediaClient, bool defer, CancellationToken cancellationToken)
     {
-        var database = repository.DatabasePath;
+        var dictionary = NativeSegmenter.Fingerprint(Array.Empty<string>());
+        if (!IndexRebuildCoordinator.NeedsRebuild(IndexDirectory, info.ProfileId, dictionary)) return repository;
+        var generation = info.ProfileId[..Math.Min(12, info.ProfileId.Length)] + "-" + dictionary[..8] + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+        backgroundError = "Rebuilding the index for the current model and lexicon (one window, old database kept).";
         await repository.DisposeAsync().ConfigureAwait(false);
-        var suffix = ".pre-" + storedProfile[..Math.Min(12, storedProfile.Length)];
-        foreach (var path in new[] { database, database + "-wal", database + "-shm" })
-        {
-            if (!File.Exists(path)) continue;
-            var target = path + suffix;
-            if (File.Exists(target)) File.Delete(target);
-            File.Move(path, target);
-        }
         repositories.Clear();
-        await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false);
-        backgroundError = $"Index was rebuilt for embedding profile {expectedProfile[..12]}…; the previous database was kept as {Path.GetFileName(database)}{suffix}.";
+        var outcome = await IndexRebuildCoordinator.RebuildAsync(IndexDirectory, generation, async stagingRoot =>
+        {
+            await using var staging = new SqliteIndexRepository(Path.Combine(stagingRoot, "index.sqlite"));
+            await staging.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await staging.SetMetaAsync("profile_id", info.ProfileId, cancellationToken).ConfigureAwait(false);
+            await staging.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, "2", cancellationToken).ConfigureAwait(false);
+            await staging.SetMetaAsync(IndexRebuildCoordinator.DictionaryKey, dictionary, cancellationToken).ConfigureAwait(false);
+            await staging.SetMetaAsync(IndexRebuildCoordinator.GenerationKey, generation, cancellationToken).ConfigureAwait(false);
+            var builder = new IndexingService(staging, new ContentExtractor(mediaClient), embeddings!,
+                defer || mediaClient is null ? null : new NativeMediaSamplingService(mediaClient),
+                defer ? null : new NativeDocumentPages(mediaClient),
+                defer ? null : new NativePresentationPages(mediaClient),
+                allowDeferredStages: defer);
+            await builder.IndexAsync(request, null, cancellationToken).ConfigureAwait(false);
+        }, async database =>
+        {
+            await using var probe = new SqliteIndexRepository(database);
+            await probe.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            var hits = await probe.KeywordSearchAsync("index", 3, cancellationToken).ConfigureAwait(false);
+            return hits.Count == 0 ? Array.Empty<string>() : new[] { "keyword:" + hits.Count };
+        }, cancellationToken).ConfigureAwait(false);
+        repositories.Clear();
+        var reopened = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];
+        backgroundError = outcome.Switched
+            ? "Index rebuilt for the current model and lexicon; previous database kept as " + Path.GetFileName(outcome.PreviousDirectory ?? "none") + "."
+            : "Index rebuild did not switch: " + (outcome.Detail ?? "unknown");
+        return reopened;
     }
 
     private async Task ReleaseResourcesAsync()
