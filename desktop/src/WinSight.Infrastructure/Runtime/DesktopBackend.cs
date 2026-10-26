@@ -618,7 +618,7 @@ public sealed partial class DesktopBackend : IDesktopBackend
         if (!IndexRebuildCoordinator.NeedsRebuild(IndexDirectory, info.ProfileId, dictionary)) return repository;
         // A generation covers the whole corpus by definition. A single-root request (for example a maintenance
         // job) must not narrow the new generation to its own folder, or the live index silently shrinks.
-        var rebuildRoots = (settings.Folders ?? Array.Empty<string>())
+        var rebuildRoots = (settings.Folders ?? new List<string>())
             .Where(root => IsAuthorizedResult(root, false))
             .ToArray();
         if (rebuildRoots.Length != 0) request = request with { Roots = rebuildRoots };
