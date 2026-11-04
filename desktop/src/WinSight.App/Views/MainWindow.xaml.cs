@@ -12,6 +12,7 @@ public sealed partial class MainWindow : Window
 {
     public MainWindowViewModel ViewModel { get; }
     private readonly IDesktopBackend backend;
+    private readonly string? dataDirectory;
     private readonly AppSettings settings;
     private readonly HotkeyService? hotkeyService;
     private readonly IntPtr windowHandle;
@@ -23,16 +24,27 @@ public sealed partial class MainWindow : Window
     public MainWindow(IDesktopBackend backend, AppSettings? settings = null, HotkeyService? hotkeyService = null, string? dataDirectory = null)
     {
         this.backend = backend;
+        this.dataDirectory = dataDirectory;
         this.settings = settings ?? new AppSettings();
         this.hotkeyService = hotkeyService;
         ViewModel = new MainWindowViewModel(backend, this.settings, dataDirectory);
 
         InitializeComponent();
 
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
+
         windowHandle = WindowNative.GetWindowHandle(this);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(windowHandle);
         appWindow = AppWindow.GetFromWindowId(windowId);
         appWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "WinSight.ico"));
+
+        if (AppWindowTitleBar.IsCustomizationSupported())
+        {
+            var titleBar = appWindow.TitleBar;
+            titleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+            titleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+        }
 
         appWindow.Closing += OnAppWindowClosing;
 
@@ -119,7 +131,7 @@ public sealed partial class MainWindow : Window
                 ContentFrame.Content = new McpConsolePage(backend);
                 break;
             case "settings":
-                ContentFrame.Content = new SettingsPage(backend, settings, hotkeyService, ApplyTheme);
+                ContentFrame.Content = new SettingsPage(backend, settings, hotkeyService, ApplyTheme, dataDirectory);
                 break;
         }
     }

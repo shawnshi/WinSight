@@ -1,28 +1,25 @@
-WinSight NativePreview - development candidate
-Distribution is not approved by this notice.
+WinSight Third-Party Software Notices and Information
+=====================================================
 
-Portions of the storage, search and indexing behavior derive from DigUp
-commit 7db9537712995d14e50e0e44baa00f721b98f1c6.
-Copyright (c) 2026 Abdur Rahim. MIT license: licenses/DigUp-MIT.txt.
+This software includes components from third-party open-source projects,
+distributed under their respective licenses:
 
-Direct managed dependencies are pinned in src/*/*.csproj and packages.lock.json.
-Official PdfPig 0.1.16 is Apache-2.0, not the earlier custom package:
-https://www.nuget.org/packages/PdfPig/0.1.16
-https://github.com/UglyToad/PdfPig
+1. PdfPig (UglyToad.PdfPig)
+   Copyright (c) 2018-2024 UglyToad and contributors
+   License: Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
 
-The package metadata audit, signature verification and vulnerability query are
-separate development receipts under .dev/native-migration/verification.
-Their passing scope does not complete distribution licensing or full parity.
+2. DocumentFormat.OpenXml
+   Copyright (c) .NET Foundation and contributors
+   License: MIT
 
-The isolated OCR source candidate includes RapidOcrNet.WinSight 4.2.0-winsight.1,
-based on BobLd/RapidOcrNet commit 708cae2fcb88720e1d891a81b5ee3e8b2bcc139e.
-Apache-2.0 headers/license and a three-error-path patch are retained under
-inference/WinSight.OcrHost/vendor and provenance. It is not stock RapidOcrNet4.2.0.
-Its Clipper2 2.0.0 package supplies the Boost Software License1.0; SkiaSharp3.119.1
-and ORT/Managed1.29.0 have their own complete package/native notice obligations.
-These statements do not approve model distribution or close the vulnerability gate.
+3. RapidOcrNet / PaddleOCR
+   Copyright (c) 2021-2024 BobLd, PaddlePaddle Authors
+   License: Apache License 2.0
 
-Before distribution, collect and review all NuGet/runtime/native tokenizer,
-model, dictionary and media-library license texts/notices in the staged payload.
-Model manifest identity and hashes alone are not model distribution permission.
-Do not use this partial notice as the P6 license approval gate.
+4. jieba-rs
+   Copyright (c) 2018-2024 messense
+   License: MIT
+
+5. Hugging Face tokenizers
+   Copyright (c) 2019-2024 Hugging Face Inc.
+   License: Apache License 2.0

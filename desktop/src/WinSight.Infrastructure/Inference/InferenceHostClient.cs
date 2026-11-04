@@ -158,6 +158,10 @@ public sealed class InferenceHostClient : IEmbeddingService
     private async Task EnsureStartedAsync(CancellationToken token)
     {
         if (session is not null) return;
+        if (!File.Exists(executable))
+        {
+            throw new FileNotFoundException($"Inference host executable not found: '{executable}'. Please check installation.", executable);
+        }
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (var argument in BuildArguments(modelDirectory, manifestPath, accelerator))
@@ -387,7 +391,7 @@ public sealed class InferenceHostClient : IEmbeddingService
         {
             Process = process;
             output = process.StandardOutput.BaseStream;
-            if (OperatingSystem.IsWindows()) job = WindowsChildJob.Attach(process);
+            if (OperatingSystem.IsWindows()) job = WindowsChildJob.Attach(process, lowPriority: true);
             stderr = DrainAsync(process.StandardError.BaseStream);
             onExit = (_, _) => Kill();
             AppDomain.CurrentDomain.ProcessExit += onExit;
@@ -401,12 +405,13 @@ public sealed class InferenceHostClient : IEmbeddingService
                 if (!process.Start()) throw new IOException("Inference host did not start.");
                 return new Session(process);
             }
-            catch
+            catch (Exception ex)
             {
                 try { if (!process.HasExited) process.Kill(true); }
                 catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
                 process.Dispose();
-                throw;
+                if (ex is IOException) throw;
+                throw new IOException($"Failed to start inference process '{start.FileName}': {ex.Message}", ex);
             }
         }
 

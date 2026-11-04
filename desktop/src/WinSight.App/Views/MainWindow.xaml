@@ -5,25 +5,38 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
-    Title="WinSight (Native Migration Preview)">
+    Title="WinSight 智寻 (原生预览版)">
 
-    <Grid x:Name="RootGrid" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+    <Window.SystemBackdrop>
+        <MicaBackdrop Kind="BaseAlt"/>
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid" Background="Transparent">
         <Grid.RowDefinitions>
+            <RowDefinition Height="32"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
+        <!-- Custom TitleBar drag region -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="Transparent" Padding="12,0,0,0">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <Image Source="ms-appx:///Assets/WinSight.png" Width="16" Height="16" AutomationProperties.Name="WinSight logo"/>
+                <TextBlock Text="WinSight 智寻" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+
         <!-- Preview status is informational; runtime failures are reported separately. -->
-        <InfoBar Grid.Row="0"
+        <InfoBar Grid.Row="1"
                  IsOpen="True"
                  IsClosable="False"
                  Severity="Informational"
-                 Title="WinSight Native Preview"
+                 Title="WinSight 原生预览版"
                  Message="{x:Bind ViewModel.PreviewNotice}"/>
 
         <!-- Main Navigation View -->
-        <NavigationView Grid.Row="1"
+        <NavigationView Grid.Row="2"
                         x:Name="NavView"
                         IsBackButtonVisible="Collapsed"
                         IsSettingsVisible="False"
@@ -39,21 +52,21 @@
                 </StackPanel>
             </NavigationView.PaneHeader>
             <NavigationView.MenuItems>
-                <NavigationViewItem Content="Search" Tag="search" Icon="Find"/>
-                <NavigationViewItem Content="Folders" Tag="folders" Icon="Folder"/>
-                <NavigationViewItem Content="Storage &amp; Model" Tag="storage" Icon="Library"/>
-                <NavigationViewItem Content="MCP console" Tag="mcp" Icon="Globe"/>
+                <NavigationViewItem Content="搜索" Tag="search" Icon="Find"/>
+                <NavigationViewItem Content="目录管理" Tag="folders" Icon="Folder"/>
+                <NavigationViewItem Content="存储与模型" Tag="storage" Icon="Library"/>
+                <NavigationViewItem Content="MCP 控制台" Tag="mcp" Icon="Globe"/>
             </NavigationView.MenuItems>
 
             <NavigationView.FooterMenuItems>
-                <NavigationViewItem Content="Settings" Tag="settings" Icon="Setting"/>
+                <NavigationViewItem Content="设置" Tag="settings" Icon="Setting"/>
             </NavigationView.FooterMenuItems>
 
             <Frame x:Name="ContentFrame"/>
         </NavigationView>
 
         <!-- Bottom Status Bar -->
-        <Border Grid.Row="2"
+        <Border Grid.Row="3"
                 Background="{ThemeResource LayerFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"
@@ -88,10 +101,10 @@
                             IsEnabled="{x:Bind ViewModel.CanToggleIndexingPause, Mode=OneWay}"
                             Click="OnPauseIndexingClick"
                             AutomationProperties.AutomationId="PauseIndexingButton"
-                            ToolTipService.ToolTip="Pause or resume indexing for this session; search remains available"
+                            ToolTipService.ToolTip="暂停或恢复本次会话的索引；搜索仍保持可用"
                             Padding="12,4"/>
 
-                    <Button x:Name="IndexNowButton" Content="Index Now"
+                    <Button x:Name="IndexNowButton" Content="立即索引"
                             Click="OnIndexNowClick"
                             IsEnabled="{x:Bind ViewModel.CanIndexNow, Mode=OneWay}"
                             Style="{ThemeResource AccentButtonStyle}"

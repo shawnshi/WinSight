@@ -67,7 +67,7 @@ public sealed class IndexMigrationService
         await using var source = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = sourceDatabase,
-            Mode = SqliteOpenMode.ReadOnly,
+            Mode = SqliteOpenMode.ReadOnly, Pooling = false,
         }.ToString());
         await source.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = source.CreateCommand();
@@ -83,7 +83,7 @@ public sealed class IndexMigrationService
         var sourceCounts = await CountsAsync(sourceDatabase, cancellationToken).ConfigureAwait(false);
         var targetCounts = await CountsAsync(targetDatabase, cancellationToken).ConfigureAwait(false);
         if (sourceCounts != targetCounts) return $"Reconciliation failed: source {sourceCounts}, target {targetCounts}.";
-        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = targetDatabase, Mode = SqliteOpenMode.ReadOnly }.ToString());
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = targetDatabase, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         if (await ScalarAsync(connection, "PRAGMA integrity_check", cancellationToken).ConfigureAwait(false) != "ok") return "integrity_check failed on the export.";
         if (await ScalarAsync(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check", cancellationToken).ConfigureAwait(false) != "0") return "foreign_key_check failed on the export.";
@@ -93,7 +93,7 @@ public sealed class IndexMigrationService
 
     private static async Task<string> CountsAsync(string database, CancellationToken cancellationToken)
     {
-        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Mode = SqliteOpenMode.ReadOnly }.ToString());
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         var files = await ScalarAsync(connection, "SELECT COUNT(*) FROM files", cancellationToken).ConfigureAwait(false);
         var segments = await ScalarAsync(connection, "SELECT COUNT(*) FROM segments", cancellationToken).ConfigureAwait(false);

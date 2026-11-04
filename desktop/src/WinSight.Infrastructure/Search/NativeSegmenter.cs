@@ -47,13 +47,30 @@ public static class NativeSegmenter
         }
     }
 
-    /// <summary>Segments text into stable, de-duplicated tokens. Throws when the native library is unusable.</summary>
-    public static IReadOnlyList<string> Segment(string text)
+    /// <summary>
+    /// Query-mode segmentation (precise, HMM on). Order-stable and NOT de-duplicated. The text is used as given;
+    /// call <see cref="SegmentQuery"/> to apply the shared lexical normalization first.
+    /// Throws when the native library is unusable.
+    /// </summary>
+    public static IReadOnlyList<string> Segment(string text) => SegmentCore(text, QueryMode);
+
+    /// <summary>Normalizes like the lexical index, then segments in query mode. Throws when the library is unusable.</summary>
+    public static IReadOnlyList<string> SegmentQuery(string text) => SegmentCore(SearchText.Normalize(text ?? ""), QueryMode);
+
+    /// <summary>
+    /// Index-mode segmentation (jieba search mode: whole words plus their sub-words, HMM on). Duplicates are kept so
+    /// BM25 sees real term frequency. The text must already be normalized by the caller.
+    /// </summary>
+    internal static IReadOnlyList<string> SegmentForIndex(string normalizedText) => SegmentCore(normalizedText, IndexMode);
+
+    private const uint QueryMode = 0, IndexMode = 1;
+
+    private static IReadOnlyList<string> SegmentCore(string text, uint mode)
     {
         if (string.IsNullOrEmpty(text)) return Array.Empty<string>();
         var handle = LoadHandle();
         var bytes = Encoding.UTF8.GetBytes(text);
-        var status = ws_segment_text(handle, bytes, (nuint)bytes.Length, out var tokens, out var length);
+        var status = ws_segment_text_ex(handle, bytes, (nuint)bytes.Length, mode, out var tokens, out var length);
         if (status != 0)
         {
             if (tokens != IntPtr.Zero) ws_segment_free_tokens(tokens, length);
@@ -76,7 +93,7 @@ public static class NativeSegmenter
     public static string Fingerprint(IEnumerable<string> userWords)
     {
         var ordered = userWords.Distinct(StringComparer.Ordinal).OrderBy(w => w, StringComparer.Ordinal).ToArray();
-        var payload = Encoding.UTF8.GetBytes("jieba-rs=0.11.0|schema=2|user=" + string.Join('\u0001', ordered));
+        var payload = Encoding.UTF8.GetBytes("jieba-rs=0.11.0|schema=3|hmm=on|index=search|tf=kept|norm=shared|user=" + string.Join('\u0001', ordered));
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant();
     }
 
@@ -105,7 +122,7 @@ public static class NativeSegmenter
     private static extern int ws_segment_new(byte[] dictJsonUtf8, nuint length, out IntPtr handle);
 
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int ws_segment_text(IntPtr handle, byte[] textUtf8, nuint length, out IntPtr tokens, out nuint tokenLength);
+    private static extern int ws_segment_text_ex(IntPtr handle, byte[] textUtf8, nuint length, uint mode, out IntPtr tokens, out nuint tokenLength);
 
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern void ws_segment_free_tokens(IntPtr tokens, nuint length);

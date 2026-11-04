@@ -296,6 +296,7 @@ internal sealed partial class Suite
             await index.IndexAsync(new([])); Check(repo.Writes == 0, "Invalid/empty roots wrote data.");
         });
         await ReviewRegressionsAsync();
+        await ChunkingRegressionsAsync();
         Console.WriteLine($"RESULT {passed} passed; 0 failed. Synthetic fixtures retained at {fixtures}");
     }
     private static void MakePdf(string path, string text)

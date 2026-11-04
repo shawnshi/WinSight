@@ -312,5 +312,20 @@ if (OperatingSystem.IsWindows())
         }
         finally { if (!parent.HasExited) parent.Kill(true); }
     });
+await Test("child job lowers CPU priority only when asked", async () =>
+{
+    var ping = Path.Combine(Environment.SystemDirectory, "ping.exe");
+    ProcessStartInfo Start() { var s = new ProcessStartInfo(ping) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true }; foreach (var a in new[] { "-n", "20", "127.0.0.1" }) s.ArgumentList.Add(a); return s; }
+    using var normal = Process.Start(Start())!;
+    using var normalJob = WindowsChildJob.Attach(normal);
+    using var low = Process.Start(Start())!;
+    using var lowJob = WindowsChildJob.Attach(low, lowPriority: true);
+    try
+    {
+        if (low.PriorityClass != ProcessPriorityClass.BelowNormal) throw new Exception("Low-priority child runs at " + low.PriorityClass);
+        if (normal.PriorityClass != ProcessPriorityClass.Normal) throw new Exception("Default child changed priority to " + normal.PriorityClass);
+    }
+    finally { foreach (var p in new[] { normal, low }) { try { p.Kill(true); } catch (InvalidOperationException) { } } await Task.CompletedTask; }
+});
 Console.WriteLine($"RESULT passed={passed} failed={failed}; synthetic-only; artifacts={testRoot}");
 return failed == 0 ? 0 : 1;

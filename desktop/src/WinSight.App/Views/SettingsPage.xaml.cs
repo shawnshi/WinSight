@@ -3,21 +3,66 @@ using Microsoft.UI.Xaml.Controls;
 using WinSight.App.Services;
 using WinSight.App.ViewModels;
 using WinSight.Core;
+using WinSight.Core.Diagnostics;
+using WinSight.Core.Updates;
 
 namespace WinSight.App.Views;
 
 public sealed partial class SettingsPage : Page
 {
     public SettingsViewModel ViewModel { get; }
+
+    /// <summary>Manual update check against the configured feed; nothing is downloaded or installed.</summary>
+    private async void OnCheckForUpdatesClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            UpdateStatus.Text = "Checking...";
+            UpdateLink.Visibility = Visibility.Collapsed;
+            var result = await UpdateChecker.CheckAsync(ViewModel.UpdateFeedUrl, ViewModel.AppVersion);
+            UpdateStatus.Text = result.Message;
+            if (result.UpdateAvailable && result.DownloadUrl is not null && Uri.TryCreate(result.DownloadUrl, UriKind.Absolute, out var link))
+            {
+                UpdateLink.NavigateUri = link;
+                UpdateLink.Visibility = Visibility.Visible;
+            }
+        }
+        catch (Exception error) when (error is OperationCanceledException or InvalidOperationException or UriFormatException)
+        {
+            AppLog.Warn("update check failed", error);
+            UpdateStatus.Text = "The update check failed: " + error.Message;
+        }
+    }
+
+    /// <summary>Builds the redacted support bundle off the UI thread and reveals it in Explorer.</summary>
+    private async void OnExportDiagnosticsClick(object sender, RoutedEventArgs e)
+    {
+        if (dataDirectory is null) { DiagnosticsStatus.Text = "The data directory is unavailable."; return; }
+        try
+        {
+            DiagnosticsStatus.Text = "Collecting logs...";
+            var path = await Task.Run(() => DiagnosticsBundle.Create(dataDirectory));
+            DiagnosticsStatus.Text = "Saved " + path + ". It holds logs, settings and a file listing with user names redacted; no documents or index content.";
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true });
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            AppLog.Error("diagnostics export failed", error);
+            DiagnosticsStatus.Text = "Export failed: " + error.Message;
+        }
+    }
     private readonly HotkeyService? hotkeyService;
     private readonly Action<string>? onThemeChanged;
+    private readonly string? dataDirectory;
 
     public SettingsPage(
         IDesktopBackend backend,
         AppSettings? settings = null,
         HotkeyService? hotkeyService = null,
-        Action<string>? onThemeChanged = null)
+        Action<string>? onThemeChanged = null,
+        string? dataDirectory = null)
     {
+        this.dataDirectory = dataDirectory;
         ViewModel = new SettingsViewModel(backend, settings, hotkeyService);
         this.hotkeyService = hotkeyService;
         this.onThemeChanged = onThemeChanged;
@@ -119,44 +164,44 @@ public sealed partial class SettingsPage : Page
 
     private async void OnProbeFoundryClick(object sender, RoutedEventArgs e)
     {
-        await ViewModel.ProbeFoundryAsync();
+        try { await ViewModel.ProbeFoundryAsync(); } catch (Exception ex) { AppLog.Error("OnProbeFoundryClick failed", ex); }
     }
 
     private async void OnInstallFoundryProvidersClick(object sender, RoutedEventArgs e)
     {
-        await ViewModel.InstallFoundryProvidersAsync();
+        try { await ViewModel.InstallFoundryProvidersAsync(); } catch (Exception ex) { AppLog.Error("OnInstallFoundryProvidersClick failed", ex); }
     }
 
     private async void OnProbeNpuClick(object sender, RoutedEventArgs e)
     {
-        await ViewModel.ProbeNpuAsync();
+        try { await ViewModel.ProbeNpuAsync(); } catch (Exception ex) { AppLog.Error("OnProbeNpuClick failed", ex); }
     }
 
     private async void OnPreviewClientConfigClick(object sender, RoutedEventArgs e)
     {
-        await ViewModel.PreviewClientConfigAsync();
+        try { await ViewModel.PreviewClientConfigAsync(); } catch (Exception ex) { AppLog.Error("OnPreviewClientConfigClick failed", ex); }
     }
 
     private async void OnApplyClientConfigClick(object sender, RoutedEventArgs e)
     {
-        await ViewModel.ApplyClientConfigAsync();
+        try { await ViewModel.ApplyClientConfigAsync(); } catch (Exception ex) { AppLog.Error("OnApplyClientConfigClick failed", ex); }
     }
 
 
 
     private async void OnDrainMaintenanceClick(object sender, RoutedEventArgs e)
     {
-        await ViewModel.DrainMaintenanceAsync();
+        try { await ViewModel.DrainMaintenanceAsync(); } catch (Exception ex) { AppLog.Error("OnDrainMaintenanceClick failed", ex); }
     }
 
     private async void OnRefreshModelsClick(object sender, RoutedEventArgs e)
     {
-        await ViewModel.RefreshModelsAsync();
+        try { await ViewModel.RefreshModelsAsync(); } catch (Exception ex) { AppLog.Error("OnRefreshModelsClick failed", ex); }
     }
 
     private async void OnRefreshRebuildClick(object sender, RoutedEventArgs e)
     {
-        await ViewModel.RefreshRebuildStateAsync();
+        try { await ViewModel.RefreshRebuildStateAsync(); } catch (Exception ex) { AppLog.Error("OnRefreshRebuildClick failed", ex); }
     }
 
     private async void OnStartRebuildClick(object sender, RoutedEventArgs e)

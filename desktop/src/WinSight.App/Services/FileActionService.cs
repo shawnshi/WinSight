@@ -8,13 +8,6 @@ public sealed record ActionResult(bool Success, string? Message);
 
 public static class FileActionService
 {
-    public static bool IsSafePath(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) return false;
-        if (path.StartsWith(@"\\.\", StringComparison.Ordinal) || path.StartsWith(@"\\?\GLOBALROOT", StringComparison.OrdinalIgnoreCase)) return false;
-        return File.Exists(path) || Directory.Exists(path);
-    }
-
     public static async Task<ActionResult> ExecutePlanAsync(ActionPlan plan)
     {
         if (!plan.IsAuthorized)

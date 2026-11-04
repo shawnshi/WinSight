@@ -12,7 +12,7 @@ public sealed partial class FoldersPage : Page
     private readonly IntPtr windowHandle;
     private bool pickerActive;
 
-    public FoldersPage(IDesktopBackend backend, AppSettings? settings = null, IntPtr hwnd = default)
+    public FoldersPage(ISettingsBackend backend, AppSettings? settings = null, IntPtr hwnd = default)
     {
         ViewModel = new FoldersViewModel(backend, settings);
         windowHandle = hwnd;

@@ -1,3 +1,4 @@
+using WinSight.Core.Diagnostics;
 using System.ComponentModel;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -23,6 +24,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string theme = "Default";
     private string codeEditor = "default";
     private bool openAtLogin;
+    private string updateFeedUrl = "";
     private string accelerator = "auto";
     private bool installExecutionProviders = true;
     private bool generatePageImages;
@@ -103,6 +105,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         set => SetProperty(ref openAtLogin, value);
     }
 
+    public string UpdateFeedUrl
+    {
+        get => updateFeedUrl;
+        set => SetProperty(ref updateFeedUrl, value ?? "");
+    }
+
     public string Accelerator
     {
         get => accelerator;
@@ -167,6 +175,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         theme = s.Theme;
         codeEditor = s.CodeEditor;
         openAtLogin = s.OpenAtLogin;
+        updateFeedUrl = s.UpdateFeedUrl ?? "";
         accelerator = s.Accelerator;
         installExecutionProviders = s.InstallExecutionProviders;
         generatePageImages = s.GeneratePageImages;
@@ -183,6 +192,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(Theme));
         OnPropertyChanged(nameof(CodeEditor));
         OnPropertyChanged(nameof(OpenAtLogin));
+        OnPropertyChanged(nameof(UpdateFeedUrl));
         OnPropertyChanged(nameof(Accelerator));
         OnPropertyChanged(nameof(InstallExecutionProviders));
     }
@@ -193,7 +203,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         {
             Hotkey = hotkey, BackgroundIndexing = backgroundIndexingEnabled, BackgroundTouched = backgroundIndexingTouched,
             BackgroundRevision = backgroundEditRevision, HoursOn = indexHoursOn, HoursStart = indexHoursStart, HoursEnd = indexHoursEnd,
-            ProcessorOnly = processorOnly, TrayClick = trayClick, Theme = theme, CodeEditor = codeEditor, OpenAtLogin = openAtLogin,
+            ProcessorOnly = processorOnly, TrayClick = trayClick, Theme = theme, CodeEditor = codeEditor, OpenAtLogin = openAtLogin, UpdateFeedUrl = updateFeedUrl,
             Accelerator = accelerator, InstallExecutionProviders = installExecutionProviders, GeneratePageImages = generatePageImages
         };
         await saveGate.WaitAsync();
@@ -252,6 +262,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             latest.Theme = input.Theme;
             latest.CodeEditor = input.CodeEditor;
             latest.OpenAtLogin = input.OpenAtLogin;
+            latest.UpdateFeedUrl = string.IsNullOrWhiteSpace(input.UpdateFeedUrl) ? null : input.UpdateFeedUrl.Trim();
             latest.Accelerator = input.Accelerator;
             latest.InstallExecutionProviders = input.InstallExecutionProviders;
             await backend.SaveSettingsAsync(latest);
@@ -427,13 +438,25 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         try
         {
             var inventory = await backend.GetModelInventoryAsync();
-            modelsSummary = inventory is null
-                ? "The model inventory is unavailable in this build."
-                : $"Embedding: {inventory.EmbeddingModel} @ {Shorten(inventory.EmbeddingRevision)} · profile {Shorten(inventory.EmbeddingProfile)} · device: {inventory.EmbeddingDevice}{Environment.NewLine}"
-                  + $"OCR: {inventory.OcrEngine} {inventory.OcrVersion} · profile {Shorten(inventory.OcrProfile)} · device: {inventory.OcrDevice}";
+            if (inventory is null)
+            {
+                modelsSummary = "当前版本模型清单不可用。";
+            }
+            else if (inventory.EmbeddingModel == "unavailable")
+            {
+                modelsSummary = $"嵌入模型（文本/多模态）：未就绪{Environment.NewLine}"
+                    + $"状态说明：{inventory.EmbeddingDevice}{Environment.NewLine}"
+                    + $"OCR 引擎：{inventory.OcrEngine} {inventory.OcrVersion} · 画像 {Shorten(inventory.OcrProfile)} · 设备: {inventory.OcrDevice}";
+            }
+            else
+            {
+                modelsSummary = $"嵌入模型：{inventory.EmbeddingModel} @ {Shorten(inventory.EmbeddingRevision)} · 画像 {Shorten(inventory.EmbeddingProfile)} · 设备: {inventory.EmbeddingDevice}{Environment.NewLine}"
+                    + $"OCR 引擎：{inventory.OcrEngine} {inventory.OcrVersion} · 画像 {Shorten(inventory.OcrProfile)} · 设备: {inventory.OcrDevice}";
+            }
         }
-        catch (Exception error) when (error is System.IO.IOException or InvalidOperationException or TimeoutException)
+        catch (Exception error)
         {
+            AppLog.Error("RefreshModelsAsync failed", error);
             modelsSummary = "Model inspection failed: " + error.Message;
         }
         OnPropertyChanged(nameof(ModelsSummary));

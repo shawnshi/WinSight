@@ -157,6 +157,7 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool DestroyIcon(IntPtr icon);
 
-    [DllImport("user32.dll")]
-    public static extern uint GetDpiForWindow(IntPtr hWnd);
+    /// <summary>Registers a window message; "TaskbarCreated" is broadcast when Explorer (re)creates the taskbar.</summary>
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern uint RegisterWindowMessage(string name);
 }

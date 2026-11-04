@@ -16,12 +16,6 @@ public static class McpJson
     public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Options);
 }
 
-public sealed record JsonRpcRequest(
-    [property: JsonPropertyName("jsonrpc")] string JsonRpc,
-    [property: JsonPropertyName("id")] JsonElement? Id,
-    [property: JsonPropertyName("method")] string Method,
-    [property: JsonPropertyName("params")] JsonElement? Params);
-
 public sealed record JsonRpcResponse(
     [property: JsonPropertyName("jsonrpc")] string JsonRpc,
     [property: JsonPropertyName("id")] object? Id,

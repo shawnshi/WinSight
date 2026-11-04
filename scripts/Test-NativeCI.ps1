@@ -141,7 +141,7 @@ try {
         $null = Assert-NativeCIPlainPath $env:DOTNET_CLI_HOME
         if (-not $CheckpointWorker) { throw 'Every Build invocation, including PublicHosted, must use Invoke-NativeCICheckpoint.ps1 for the whole-invocation deadline.' }
         $null = New-Item -ItemType Directory -Path $workspace
-        foreach ($tree in @('desktop','inference','native/winsight-tokenizer')) {
+        foreach ($tree in @('desktop','inference','native/winsight-tokenizer','native/winsight-segmenter')) {
             $source = Assert-NativeCIPlainPath (Join-Path $repository $tree)
             # The copy keeps hard-coded native target/FakeHost layouts valid without touching original build trees.
             $pending = [Collections.Generic.Queue[string]]::new()
@@ -160,7 +160,7 @@ try {
                 }
             }
         }
-        foreach ($path in @('desktop/src/WinSight.App/packages.lock.json','desktop/src/WinSight.Cli/packages.lock.json','inference/WinSight.InferenceHost/packages.lock.json','native/winsight-tokenizer/Cargo.lock','desktop/tests/WinSight.MediaBackend.Tests/packages.lock.json','desktop/tests/WinSight.MediaProcess.Tests/packages.lock.json')) {
+        foreach ($path in @('desktop/src/WinSight.App/packages.lock.json','desktop/src/WinSight.Cli/packages.lock.json','desktop/src/WinSight.Bridge/packages.lock.json','inference/WinSight.InferenceHost/packages.lock.json','native/winsight-tokenizer/Cargo.lock','native/winsight-segmenter/Cargo.lock','desktop/tests/WinSight.MediaBackend.Tests/packages.lock.json','desktop/tests/WinSight.MediaProcess.Tests/packages.lock.json')) {
             if (-not (Test-Path -LiteralPath (Join-Path $workspace $path))) { throw "Required frozen lock missing: $path" }
         }
         foreach ($sdkPath in @('desktop/global.json','inference/global.json')) {
@@ -207,10 +207,22 @@ try {
             if ([IO.File]::ReadAllText("$log.stdout.log") -notmatch '1 passed; 0 failed') { throw "Rust synthetic test was not executed: $test" }
         }
     }
+    Invoke-Gate 'SegmenterBuild' {
+        # The csproj files copy native/winsight-segmenter/target/release/winsight_segmenter.dll (Storage/Indexing/Bridge suites
+        # and the production publish). Build it for the runner's own x64 MSVC host so that exact path is produced; no emulated fallback.
+        $segmenter = Join-Path $workspace 'native/winsight-segmenter'
+        $segmenterArgs = @('build','--release','--locked','--manifest-path',(Join-Path $segmenter 'Cargo.toml'))
+        if ($DependencyMode -eq 'Offline') { $segmenterArgs += '--offline' }
+        $null = Run $cargo $segmenterArgs $segmenter
+        if (-not (Test-Path -LiteralPath (Join-Path $segmenter 'target/release/winsight_segmenter.dll') -PathType Leaf)) { throw 'Native segmenter DLL missing.' }
+        Assert-LocksUnchanged
+    }
     $production = @(
         @{ project = 'src/WinSight.App/WinSight.App.csproj'; directory = 'desktop'; output = 'app' },
         @{ project = 'src/WinSight.Cli/WinSight.Cli.csproj'; directory = 'desktop'; output = 'cli' },
-        @{ project = 'WinSight.InferenceHost/WinSight.InferenceHost.csproj'; directory = 'inference'; output = 'inference' }
+        @{ project = 'WinSight.InferenceHost/WinSight.InferenceHost.csproj'; directory = 'inference'; output = 'inference' },
+        # The local MCP bridge ships inside the app payload as app/bridge/winsight-mcp.exe; it must publish after the app.
+        @{ project = 'src/WinSight.Bridge/WinSight.Bridge.csproj'; directory = 'desktop'; output = 'app/bridge' }
     )
     Invoke-Gate 'ProductionRestore' {
         foreach ($item in $production) {
@@ -321,7 +333,7 @@ try {
     }
     Invoke-Gate 'ArtifactInventory' {
         Assert-LocksUnchanged
-        foreach ($requiredFile in @('app/WinSight.App.exe','app/WinSight.App.pri','cli/winsight-native.exe','inference/WinSight.InferenceHost.exe','inference/model-manifest.json','inference/runtimes/win-x64/native/winsight_tokenizer.dll','THIRD-PARTY-NOTICES.txt')) {
+        foreach ($requiredFile in @('app/WinSight.App.exe','app/WinSight.App.pri','app/bridge/winsight-mcp.exe','cli/winsight-native.exe','inference/WinSight.InferenceHost.exe','inference/model-manifest.json','inference/runtimes/win-x64/native/winsight_tokenizer.dll','THIRD-PARTY-NOTICES.txt')) {
             if (-not (Test-Path -LiteralPath (Join-Path $out "candidate/$requiredFile") -PathType Leaf)) { throw "Candidate payload missing: $requiredFile" }
         }
         if (@(Get-ChildItem -LiteralPath (Join-Path $out 'candidate/app') -Filter '*.xbf' -Recurse -File).Count -eq 0) { throw 'Compiled XAML resources missing.' }

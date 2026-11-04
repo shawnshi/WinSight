@@ -1,5 +1,15 @@
 # WinSight inference source candidate
 
+## Host roles (three executables, one embedding path)
+
+| Host | Role | In a release payload |
+| --- | --- | --- |
+| `WinSight.InferenceHost` | The default embedding, media and OCR-bridge host (Windows ML ORT 1.24.6). Always used unless the Windows ML host below exists. | Always (`app/inference`). |
+| `WinSight.WinMlHost` | The same embedding code compiled against the newer Windows ML runtime (ORT 1.27). If `app/inference/winml/WinSight.WinMlHost.exe` exists the app uses it instead of the default host and Settings can probe devices. | Only with `Prepare-NativeRelease.ps1 -IncludeWindowsMlHost` (about 150 MiB). |
+| `WinSight.FoundryHost` | Never embeds. Lists and registers execution providers through Foundry Local (ORT 1.31, isolated so its runtime cannot clash with the others). Registration downloads from the network, so the app runs it only when the user allowed it in Settings. | Only with `Prepare-NativeRelease.ps1 -IncludeFoundryHost` (about 180 MiB). |
+
+Without the optional hosts the app reports them as unavailable instead of failing; the embedding path is unchanged.
+
 The Windows ML embedding Host and isolated RapidOCR helper are different processes/directories. Do not copy RapidOCR ORT/Skia dependencies into the Windows ML directory.
 
 Use the exact .NET11 RC2 SDK in `global.json`. `scripts/build-inference-host.ps1 -OcrModelRoot ABSOLUTE_PREPARED_ASSET_ROOT` stages a framework-dependent development output under `.dev/`, with locked matching native Rust DLL and the four explicitly pinned OCR assets. It performs no restore, tool/model download or runtime acceptance. The full candidate preparation script separately requires `-OcrModelDirectory`; its frozen-payload branch is unchanged. Publishing scripts have not been executed for this candidate.

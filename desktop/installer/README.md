@@ -1,48 +1,35 @@
-# Native installer source status
+# WinSight Installer Documentation
 
-This directory contains the controlled installer kernel and **unmaterialized,
-fail-closed standard-install/recovery templates**, not a ready-to-run installer.
+## Mainline Per-User Installer
 
-The original development copies carried private source/run roots, interpreter
-paths, machine identities and frozen bindings. Public source replaces these
-capabilities with explicit unconfigured markers and rejects the standard
-entrypoints before using the private graph. Do not remove those guards and
-assume the result is qualified. Environment variables or caller JSON must not
-select executable code or silently adopt another target.
+The maintained, canonical installation path for WinSight is **`WinSight.iss`** (aliased by `WinSight.Simple.iss`), compiled via **`scripts/Build-NativeInstaller.ps1`** (or `scripts/Build-SimpleInstaller.ps1`) using Inno Setup 6.
 
-The source includes bounded atomic-directory publication retry, callback clock
-initialization, early nonzero-producer failure reporting, buffered-pipe peer-close
-settlement, Inno 6.7.3 callback-output logging, and case-only shortcut Target
-comparison by simultaneous volume/128-bit FileID. Arguments and working directory
-remain exact. Fixed sibling hashes close over these source bytes; no previous
-bundle, binding, journal, installed-state record or approval is reused.
+### Key Architectural Characteristics
+- **Scope & Privileges**: Standard Windows per-user installation (`PrivilegesRequired=lowest`). Runs entirely in standard user token; zero UAC administrative prompts or system-wide modifications.
+- **Binary Installation Directory**: `%LOCALAPPDATA%\Programs\WinSight\` (read-only application binaries and model weights).
+- **Mutable User Data Separation**: `%LOCALAPPDATA%\WinSight\NativePreview\` (SQLite database, settings, logs, crash reports, MCP bridge exchange). Binaries and mutable state are strictly isolated.
+- **Shortcuts & Shell Integration**:
+  - Start Menu shortcut points directly to `WinSight.App.exe` (native WinUI 3 process, zero console popup or launcher script delays).
+  - Desktop shortcut is opt-in (unchecked by default).
+  - Optional Task: `addtopath` allows users to optionally add `%LOCALAPPDATA%\Programs\WinSight` to the current user's `PATH` (`HKCU\Environment\Path`) for convenient CLI invocation.
+- **Process Termination**: Leverages Windows Restart Manager (`CloseApplications=yes`) with `CloseApplicationsFilter` covering all 7 WinSight execution roles:
+  `WinSight.App.exe, winsight-native.exe, winsight-mcp.exe, WinSight.InferenceHost.exe, WinSight.OcrHost.exe, WinSight.WinMlHost.exe, WinSight.FoundryHost.exe`.
+- **Uninstall Hygiene**:
+  - Automatically cleans up the user's `HKCU\...\Run` startup key.
+  - Automatically purges `{app}` from user `PATH`.
+  - Prompts interactively before removing index/settings/logs (defaulting to keep user data safe; silent uninstall preserves data).
 
-A separately materialized private package completed a real local standard install
-and responsive GUI startup. This is maintainer-local evidence, not qualification
-of a fresh public checkout or a downloadable release. See
-[local validation scope](../../docs/native-migration/local-install-validation.md).
-Portable component tests are `tests/Test-NativeInstallFixes.ps1` and
-`tests/Invoke-OwnedPipeFixture.ps1`; run them in x64 Desktop PowerShell 5.1 with a
-fresh owned output directory. They use synthetic pipes and file/LNK fixtures, not
-native owner/NoCommit capabilities or live program/registry/menu writes.
+### How to Build
+```powershell
+# 1. Prepare stage payload
+./scripts/Prepare-NativeRelease.ps1 -StageDirectory <stage-dir> -ModelDirectory <models-dir> -OcrModelDirectory <ocr-dir>
 
-`NativeInstaller.psm1` remains the library for explicitly scoped, synthetic kernel
-tests. `NativeInstallCoordinator.psm1` can be parsed and its isolated clock/guard
-helpers tested without an installation. Public standard-live/shell launch and
-build entrypoints, and historical frozen qualification scripts, intentionally
-refuse use until a separately reviewed private graph is materialized and all
-source, manifest, runtime, compiler, shell, bundle and binding pins are rebuilt.
+# 2. Build installer with optional Authenticode signing
+./scripts/Build-NativeInstaller.ps1 -StageDirectory <stage-dir> [-CompilerPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"] [-CertificateThumbprint <sha1>]
+```
 
-`PreparedAbortCopy.py` and `InvokePreparedAbortCopy.py` are hash-referenced helper
-sources and are retained; their interpreter capability is unconfigured. Unused
-one-off recovery scripts and raw local qualification artifacts are not published.
+---
 
-A future installation task still requires explicit target ownership, a recovery
-point, physical process settlement, real callback/NoCommit checks, installation,
-upgrade/uninstall acceptance and all applicable approval/retry gates. Source
-publication is not installation or release approval, and does not authorize an
-additional installation attempt.
+## Historical Coordinator Archive (`legacy/`)
 
-See [the root README](../../README.md),
-[standard installation contract](../../docs/native-migration/standard-per-user-installer-contract.md)
-and [release acceptance contract](../../docs/native-migration/release-acceptance-contract.md).
+The `legacy/` subfolder contains archived templates from an earlier experimental multi-stage transaction coordinator (`NativeInstallCoordinator.psm1`, `Start-WinSightNative.ps1`, etc.). These files are preserved exclusively to satisfy frozen regression checks (`desktop/installer/tests/Test-NativeInstallFixes.ps1`). They are not active deployment code. Do not base new deployment work on them.

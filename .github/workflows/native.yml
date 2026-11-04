@@ -77,95 +77,101 @@ jobs:
           $hostPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
           & $hostPath -NoLogo -NoProfile -NonInteractive -File ./desktop/installer/tests/Test-NativeInstallFixes.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'winsight-native/installer-fixes')
           if ($LASTEXITCODE -ne 0) { throw 'Installer component regressions failed.' }
-      # Finite plan: 5 toolchain + 3 Rust + 6 production + 15 core + 15 media.
-      # At most one new command per invocation, 44 total. No polling/batching.
-      - name: Advance native checkpoint 01 of 44
+      # Finite plan: 5 toolchain + 4 Rust + 8 production + 15 core + 15 media.
+      # At most one new command per invocation, 47 total. No polling/batching.
+      - name: Advance native checkpoint 01 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1 -Start
-      - name: Advance native checkpoint 02 of 44
+      - name: Advance native checkpoint 02 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 03 of 44
+      - name: Advance native checkpoint 03 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 04 of 44
+      - name: Advance native checkpoint 04 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 05 of 44
+      - name: Advance native checkpoint 05 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 06 of 44
+      - name: Advance native checkpoint 06 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 07 of 44
+      - name: Advance native checkpoint 07 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 08 of 44
+      - name: Advance native checkpoint 08 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 09 of 44
+      - name: Advance native checkpoint 09 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 10 of 44
+      - name: Advance native checkpoint 10 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 11 of 44
+      - name: Advance native checkpoint 11 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 12 of 44
+      - name: Advance native checkpoint 12 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 13 of 44
+      - name: Advance native checkpoint 13 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 14 of 44
+      - name: Advance native checkpoint 14 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 15 of 44
+      - name: Advance native checkpoint 15 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 16 of 44
+      - name: Advance native checkpoint 16 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 17 of 44
+      - name: Advance native checkpoint 17 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 18 of 44
+      - name: Advance native checkpoint 18 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 19 of 44
+      - name: Advance native checkpoint 19 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 20 of 44
+      - name: Advance native checkpoint 20 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 21 of 44
+      - name: Advance native checkpoint 21 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 22 of 44
+      - name: Advance native checkpoint 22 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 23 of 44
+      - name: Advance native checkpoint 23 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 24 of 44
+      - name: Advance native checkpoint 24 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 25 of 44
+      - name: Advance native checkpoint 25 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 26 of 44
+      - name: Advance native checkpoint 26 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 27 of 44
+      - name: Advance native checkpoint 27 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 28 of 44
+      - name: Advance native checkpoint 28 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 29 of 44
+      - name: Advance native checkpoint 29 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 30 of 44
+      - name: Advance native checkpoint 30 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 31 of 44
+      - name: Advance native checkpoint 31 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 32 of 44
+      - name: Advance native checkpoint 32 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 33 of 44
+      - name: Advance native checkpoint 33 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 34 of 44
+      - name: Advance native checkpoint 34 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 35 of 44
+      - name: Advance native checkpoint 35 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 36 of 44
+      - name: Advance native checkpoint 36 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 37 of 44
+      - name: Advance native checkpoint 37 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 38 of 44
+      - name: Advance native checkpoint 38 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 39 of 44
+      - name: Advance native checkpoint 39 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 40 of 44
+      - name: Advance native checkpoint 40 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 41 of 44
+      - name: Advance native checkpoint 41 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 42 of 44
+      - name: Advance native checkpoint 42 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 43 of 44
+      - name: Advance native checkpoint 43 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
-      - name: Advance native checkpoint 44 of 44
+      - name: Advance native checkpoint 44 of 47
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 45 of 47
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 46 of 47
+        run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
+      - name: Advance native checkpoint 47 of 47
         run: ./scripts/native-ci/Advance-NativeCIHosted.ps1
       - name: Require complete native validation and revalidated candidate
         run: |

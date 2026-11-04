@@ -29,8 +29,8 @@ public sealed partial class QuickSearchWindow : Window
         var windowId = Win32Interop.GetWindowIdFromWindow(windowHandle);
         appWindow = AppWindow.GetFromWindowId(windowId);
 
-        // Size to 680x440 and center
-        appWindow.Resize(new SizeInt32(680, 440));
+        // Standard HUD specs: 800x520 per ui.md
+        appWindow.Resize(new SizeInt32(800, 520));
         CenterOnScreen();
 
         // NM-UI-08: Intercept close (Alt+F4 / system close) to hide rather than destroy window
@@ -65,8 +65,8 @@ public sealed partial class QuickSearchWindow : Window
         if (displayArea != null)
         {
             var workArea = displayArea.WorkArea;
-            int x = workArea.X + (workArea.Width - 680) / 2;
-            int y = workArea.Y + (workArea.Height - 440) / 3; // slightly above center
+            int x = workArea.X + (workArea.Width - 800) / 2;
+            int y = workArea.Y + (workArea.Height - 520) / 3; // vertically biased to upper third
             appWindow.Move(new PointInt32(x, y));
         }
     }
@@ -163,15 +163,36 @@ public sealed partial class QuickSearchWindow : Window
         }
         else if (e.Key == VirtualKey.C && Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down))
         {
-            _ = ViewModel.CopyCurrentAsync();
+            bool shiftHeld = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+            if (shiftHeld)
+            {
+                // Ctrl+Shift+C: copy full file path
+                _ = ViewModel.CopyCurrentAsync();
+            }
+            else
+            {
+                // Ctrl+C: copy excerpt if present, otherwise copy full path
+                if (!string.IsNullOrEmpty(ViewModel.SelectedItem?.Excerpt))
+                {
+                    var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
+                    dataPackage.SetText(ViewModel.SelectedItem.Excerpt);
+                    Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
+                    ViewModel.StatusText = "已复制摘要到剪贴板";
+                }
+                else
+                {
+                    _ = ViewModel.CopyCurrentAsync();
+                }
+            }
             e.Handled = true;
         }
     }
 
     private async void HandleOpenAction()
     {
+        bool ctrlHeld = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
         bool shiftHeld = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
-        if (shiftHeld)
+        if (ctrlHeld || shiftHeld)
         {
             await ViewModel.RevealCurrentAsync();
         }
@@ -190,6 +211,14 @@ public sealed partial class QuickSearchWindow : Window
             HidePanel();
         }
     }
+
+    private void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Triggers UI rebind for preview pane
+    }
+
+    public Visibility SelectedToEmptyVisibility(object? item) => item == null ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility SelectedToDetailVisibility(object? item) => item != null ? Visibility.Visible : Visibility.Collapsed;
 
     private void OnFilterClick(object sender, RoutedEventArgs e)
     {

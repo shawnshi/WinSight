@@ -20,7 +20,7 @@ Write-set：`Package.swift`；`Sources/winsight/main.swift`、`DownloadModel.swi
 - 不自动清空旧索引。旧索引不兼容时明确报告；用户之后可显式重建。本轮不执行重建。
 - 默认模型清单改为宿主固定的 11 个 ONNX/tokenizer/config 文件，包含音频图与 external data。下载器支持 `onnx/` 子目录，实际下载不在本轮执行。
 - 文本、图像、音频、视频画面和时间窗声轨调用保留。失败项不标完成；协议超时/畸形响应继续报错。
-- 开发/分发依赖改为私有推理宿主 + tokenizer DLL + Windows ML 库；当前 CPU 路线不声称 GPU/NPU 验收。framework-dependent 宿主需 .NET 10；不静默安装运行时。
+- 开发/分发依赖改为私有推理宿主 + tokenizer DLL + Windows ML 库；当前 CPU 路线不声称 GPU/NPU 验收。当前宿主为 net11.0 自包含发布；不静默安装运行时（本条原写 .NET 10，已统一为 .NET 11）。
 
 ## 失败模式与未执行断言
 

@@ -3,6 +3,8 @@ using Microsoft.UI.Xaml;
 using WinSight.App.Services;
 using WinSight.App.Views;
 using WinSight.Core;
+using WinSight.Core.Diagnostics;
+using WinSight.Infrastructure.Runtime;
 
 namespace WinSight.App;
 
@@ -11,6 +13,7 @@ public partial class App : Application
     private readonly string customDataDir;
     private readonly bool isSmokeTest;
     private readonly bool isToggle;
+    private readonly bool isAutostart;
 
     private IDesktopBackend? backend;
     private MainWindow? mainWindow;
@@ -23,12 +26,15 @@ public partial class App : Application
 
     public App() : this(string.Empty, false, false, null) { }
 
-    public App(string dataDir, bool smokeTest, bool toggle, SingleInstanceService? singleInstance = null)
+    public App(string dataDir, bool smokeTest, bool toggle, SingleInstanceService? singleInstance = null, bool autostart = false)
     {
         customDataDir = dataDir;
         isSmokeTest = smokeTest;
         isToggle = toggle;
+        isAutostart = autostart;
         singleInstanceService = singleInstance;
+        // Log first: an unhandled UI exception ends the process, and without this it would leave no trace at all.
+        UnhandledException += (_, args) => AppLog.WriteCrashReport(args.Exception, "WinUI.UnhandledException: " + args.Message);
         InitializeComponent();
     }
 
@@ -36,6 +42,8 @@ public partial class App : Application
     {
         base.OnLaunched(args);
         dispatcherQueue = DispatcherQueue.GetForCurrentThread();
+        // Enable subtle Fluent interaction audio feedback
+        ElementSoundPlayer.State = ElementSoundPlayerState.On;
 
         try
         {
@@ -43,11 +51,17 @@ public partial class App : Application
             backend = await DesktopRuntime.CreateAsync(customDataDir);
 
             var settings = await backend.LoadSettingsAsync();
+            AppLog.Info($"started; autostart={isAutostart}; smoke={isSmokeTest}; data={customDataDir}");
 
-            // The installer ends at its NoCommit checkpoint, so post-install provisioning runs on first
-            // launch instead: silently download/register the Foundry Local providers applicable to this
-            // device, once, in the background. Failures are logged and never block the UI.
-            _ = Task.Run(() => ProvisionFoundryOnceAsync());
+            ApplyAutostart(settings.OpenAtLogin);
+            if (backend is DesktopBackend concrete)
+                concrete.SettingsSaved += saved =>
+                {
+                    ApplyAutostart(saved.OpenAtLogin);
+                    _ = ProvisionExecutionProvidersAsync(saved.InstallExecutionProviders);
+                };
+            // Downloads components over the network, so it is gated by the user's setting and backs off after failures.
+            _ = Task.Run(() => ProvisionExecutionProvidersAsync(settings.InstallExecutionProviders));
 
             hotkeyService = new HotkeyService(settings.Hotkey);
             mainWindow = new MainWindow(backend, settings, hotkeyService, customDataDir);
@@ -101,13 +115,15 @@ public partial class App : Application
             {
                 await RunSmokeTestAsync();
             }
-            else if (!settings.OpenAtLogin)
+            else if (!isAutostart)
             {
+                // A manual launch always shows the window; only the login item starts quietly in the tray.
                 mainWindow.ShowAndActivate();
             }
         }
         catch (Exception ex)
         {
+            AppLog.WriteCrashReport(ex, "launch failure");
             Console.Error.WriteLine($"[FATAL] WinSight application failed to launch: {ex}");
             if (isSmokeTest)
             {
@@ -120,98 +136,32 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// One-shot, background provisioning of the isolated Foundry Local backend (execution providers only).
-    /// A marker file keeps it idempotent; the log lives under the data directory.
+    /// Brings the login item in line with the setting. The command is rewritten on every start so a moved or upgraded
+    /// installation does not leave a stale path behind.
     /// </summary>
-    private async Task ProvisionFoundryOnceAsync()
+    private void ApplyAutostart(bool enabled)
     {
+        if (isSmokeTest || Environment.ProcessPath is not { } executable) return;
+        new AutostartRegistration().Apply(enabled, AutostartRegistration.CommandFor(executable, customDataDir, CommandLineParser.DefaultDataDirectory));
+    }
+
+    /// <summary>Runs the network-using provisioning only when the user allowed it; failures back off and never block the UI.</summary>
+    private async Task ProvisionExecutionProvidersAsync(bool allowed)
+    {
+        if (isSmokeTest) return;
         try
         {
-            var data = customDataDir;
-            if (string.IsNullOrWhiteSpace(data) || !Path.IsPathFullyQualified(data)) return;
-            var marker = Path.Combine(data, "foundry-provision.done");
-            if (File.Exists(marker)) return;
             var host = Path.Combine(AppContext.BaseDirectory, "foundry", "WinSight.FoundryHost.exe");
-            var log = Path.Combine(data, "logs");
-            Directory.CreateDirectory(log);
-            var logFile = Path.Combine(log, "foundry-provision.log");
-            if (!File.Exists(host))
-            {
-                await File.AppendAllTextAsync(logFile, $"{DateTimeOffset.UtcNow:o} foundry host absent; skipped{Environment.NewLine}");
-                return;
-            }
-            await File.AppendAllTextAsync(logFile, $"{DateTimeOffset.UtcNow:o} provisioning with {host}{Environment.NewLine}");
-            var start = new System.Diagnostics.ProcessStartInfo(host)
-            {
-                UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardOutput = true, RedirectStandardError = true
-            };
-            start.ArgumentList.Add("register");
-            start.ArgumentList.Add("--allow-download");
-            using var process = System.Diagnostics.Process.Start(start);
-            if (process is null) return;
-            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
-            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-            await process.WaitForExitAsync(timeout.Token);
-            await File.AppendAllTextAsync(logFile, $"{DateTimeOffset.UtcNow:o} register exit={process.ExitCode}{Environment.NewLine}{await stdout}{await stderr}");
-            if (process.ExitCode == 0) await File.WriteAllTextAsync(marker, DateTimeOffset.UtcNow.ToString("o"));
+            var outcome = await new ExecutionProviderProvisioner(customDataDir, host).RunAsync(allowed);
+            AppLog.Info($"execution-provider provisioning: {outcome.Status} - {outcome.Detail}");
         }
-        catch (Exception error)
+        catch (Exception error) when (error is not OutOfMemoryException)
         {
-            try
-            {
-                var log = Path.Combine(customDataDir, "logs");
-                Directory.CreateDirectory(log);
-                await File.AppendAllTextAsync(Path.Combine(log, "foundry-provision.log"), $"{DateTimeOffset.UtcNow:o} failed: {error.Message}{Environment.NewLine}");
-            }
-            catch { /* provisioning is best-effort */ }
+            AppLog.Error("execution-provider provisioning crashed", error);
         }
     }
 
-    private async Task RunSmokeTestAsync()
-    {
-        int exitCode = 0;
-        try
-        {
-            await mainWindow!.ViewModel.InitializeAsync();
-            await mainWindow.ViewModel.ToggleIndexingPauseAsync();
-            var paused = await backend!.GetStatusAsync();
-            if (paused.IndexingState != IndexingControlState.Paused || mainWindow.ViewModel.CanIndexNow
-                || trayIconService!.PauseMenuText != "Resume indexing" || !trayIconService.IsPauseMenuEnabled)
-                throw new InvalidOperationException("Main-window/tray pause state did not converge to the real backend.");
-            var searchRes = await backend.SearchAsync(new SearchRequest("smoke-test", Limit: 10, Mode: SearchMode.Keyword));
-            await trayIconService.ToggleIndexingPauseAsync();
-            var status = await backend.GetStatusAsync();
-            if (status.IndexingState != IndexingControlState.Running
-                || mainWindow.ViewModel.IndexingState != IndexingControlState.Running
-                || trayIconService.PauseMenuText != "Pause indexing")
-                throw new InvalidOperationException("Tray resume did not converge to the real main-window/backend state.");
-            Console.WriteLine("[SMOKE-PAUSE] Main-window pause, keyword search while paused, and shared tray resume passed.");
-            using var process = System.Diagnostics.Process.GetCurrentProcess();
-            var modules = process.Modules.Cast<System.Diagnostics.ProcessModule>()
-                .Where(module => module.ModuleName.Equals("coreclr.dll", StringComparison.OrdinalIgnoreCase)
-                    || module.ModuleName.Equals("Microsoft.UI.Xaml.dll", StringComparison.OrdinalIgnoreCase))
-                .ToDictionary(module => module.ModuleName, module => module.FileName, StringComparer.OrdinalIgnoreCase);
-            Console.WriteLine("[SMOKE-RUNTIME] " + System.Text.Json.JsonSerializer.Serialize(new
-            {
-                coreLib = typeof(object).Assembly.Location,
-                framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
-                modules
-            }));
-            Console.WriteLine($"[SMOKE-TEST] Status: {status.Files} files, {status.Done} indexed. Search hits: {searchRes.Hits.Count} in {searchRes.Elapsed.TotalMilliseconds:F1} ms.");
-            exitCode = 0;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[SMOKE-TEST-ERROR] {ex}");
-            exitCode = 2;
-        }
-        finally
-        {
-            await QuitAppAsync(exitCode);
-        }
-    }
+    private async Task RunSmokeTestAsync() => await QuitAppAsync(await SmokeTest.RunAsync(backend!, mainWindow!, trayIconService!));
 
     public void QuitApp() => _ = QuitAppAsync();
 
@@ -239,6 +189,7 @@ public partial class App : Application
             }
             catch (Exception ex)
             {
+                AppLog.Error("error disposing backend", ex);
                 Console.Error.WriteLine($"Error disposing backend: {ex.Message}");
             }
             backend = null;

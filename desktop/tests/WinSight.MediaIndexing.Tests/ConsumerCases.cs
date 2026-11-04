@@ -5,7 +5,7 @@ namespace WinSight.MediaIndexing.Tests;
 
 internal sealed class ConsumerHarness
 {
-    internal const string Fingerprint = "native-extraction-v1|documents1800-overlap200-pdfpig0.1.16-imagehost";
+    internal const string Fingerprint = "native-extraction-v2|documents-tok450-ov50-pdfpig0.1.16-imagehost";
     internal readonly Dictionary<string, string> Metadata = new(StringComparer.Ordinal);
     internal readonly Dictionary<string, object> Files = new(StringComparer.OrdinalIgnoreCase);
     internal readonly List<string> Writes = [];

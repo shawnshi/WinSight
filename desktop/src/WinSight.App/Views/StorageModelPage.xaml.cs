@@ -30,6 +30,7 @@ public sealed partial class StorageModelPage : Page
     public string FormatDone(int count) => $"Indexed: {count}";
     public string FormatPending(int count) => $"Pending: {count}";
     public string FormatFailed(int count) => $"Failed: {count}";
+    public double ComputePercent(int done, int total) => total > 0 ? Math.Clamp((double)done * 100 / total, 0, 100) : 0;
     public bool Invert(bool value) => !value;
     public bool HasError(string? error) => !string.IsNullOrEmpty(error);
     public Visibility BoolToVisibility(bool value) => value ? Visibility.Visible : Visibility.Collapsed;

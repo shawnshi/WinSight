@@ -81,7 +81,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     public string StatusText
     {
         get => statusText;
-        private set => SetProperty(ref statusText, value);
+        internal set => SetProperty(ref statusText, value);
     }
 
     public SearchItemViewModel? SelectedItem =>

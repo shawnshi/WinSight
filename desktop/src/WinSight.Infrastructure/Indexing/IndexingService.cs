@@ -300,7 +300,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
 
     private async Task GuardMetadataAsync(IReadOnlyList<IndexedFile> files, EmbeddingInfo? info, bool code, CancellationToken token)
     {
-        var fingerprint = "native-extraction-v1|" + (code ? "code-lines1800-cells" : "documents1800-overlap200-pdfpig0.1.16-imagehost");
+        var fingerprint = "native-extraction-v2|" + (code ? "code-lines1800-cells" : "documents-tok450-ov50-pdfpig0.1.16-imagehost");
         var stored = await repository.GetMetaAsync("indexing_fingerprint", token);
         var profile = await repository.GetMetaAsync("profile_id", token);
         if (stored is not null && stored != fingerprint || stored is null && files.Count != 0)

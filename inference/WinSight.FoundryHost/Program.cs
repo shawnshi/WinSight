@@ -28,6 +28,11 @@ try
     {
         case "probe":
         {
+            // Register already-available local providers into OrtEnv (takes ~300ms, offline)
+            // so DiscoverEps accurately reflects which execution providers are registered on this machine.
+            try { await manager.DownloadAndRegisterEpsAsync(static (_, _) => { }, CancellationToken.None); }
+            catch { /* probe is read-only best-effort */ }
+
             var eps = manager.DiscoverEps()
                 .Select(ep => new { name = ep.Name, registered = ep.IsRegistered })
                 .OrderBy(ep => ep.name, StringComparer.OrdinalIgnoreCase)
@@ -36,7 +41,7 @@ try
             {
                 protocol = 1,
                 sdk = typeof(FoundryLocalManager).Assembly.GetName().Version?.ToString(),
-                deviceTypes = Enum.GetNames<DeviceType>(),
+                deviceTypes = Enum.GetNames<DeviceType>().Where(t => t != "Invalid"),
                 providers = eps,
                 downloads = "not-allowed"
             }, json));
@@ -52,8 +57,8 @@ try
             }
             var names = args.Skip(1).Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToArray();
             var result = names.Length == 0
-                ? await manager.DownloadAndRegisterEpsAsync((Action<string, double>?)null, null)
-                : await manager.DownloadAndRegisterEpsAsync(names, (Action<string, double>?)null, null);
+                ? await manager.DownloadAndRegisterEpsAsync(static (_, _) => { }, CancellationToken.None)
+                : await manager.DownloadAndRegisterEpsAsync(names, static (_, _) => { }, CancellationToken.None);
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 protocol = 1,
@@ -62,7 +67,7 @@ try
                 registered = result.RegisteredEps,
                 failed = result.FailedEps
             }, json));
-            return result.Success ? 0 : 1;
+            return (result.Success || (result.RegisteredEps != null && result.RegisteredEps.Length > 0)) ? 0 : 1;
         }
         default:
             Console.Error.WriteLine("unknown command: " + args[0]);

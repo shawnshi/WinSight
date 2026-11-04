@@ -116,7 +116,6 @@ public sealed partial class SourcePreviewPane : UserControl
         double offset=PreviewScroll.VerticalOffset+RasterArea.TransformToVisual(PreviewScroll).TransformPoint(new Windows.Foundation.Point()).Y;
         PreviewScroll.ChangeView(null,Math.Clamp(offset,0,PreviewScroll.ScrollableHeight),null,true);
     }
-    internal FrameworkElement ScrollViewport=>PreviewScroll;
     internal bool HasActivePreview=>preview is not null;
     internal int OverlayCount=>rectangles.Count;
     internal IReadOnlyList<Rectangle> OverlayRectangles=>rectangles;

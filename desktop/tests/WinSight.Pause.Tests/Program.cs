@@ -215,7 +215,7 @@ await Test("BACKEND-PENDING-AND-QUEUED-CANCEL-NO-FALSE-DONE-PROFILE-PRESERVED", 
     await using var backend = fixture.Backend;
     var settingsBytes = await File.ReadAllBytesAsync(Path.Combine(fixture.Data, "settings.json"));
     var active = backend.IndexAsync(new IndexRequest([fixture.Documents]));
-    await WaitFor(() => File.Exists(fixture.Audit) && File.ReadAllText(fixture.Audit).Contains("\"op\":\"text\""));
+    await WaitFor(() => File.Exists(fixture.Audit) && ReadShared(fixture.Audit).Contains("\"op\":\"text\""));
     var queued = backend.IndexAsync(new IndexRequest([fixture.Documents], Force: true));
     await backend.SetIndexingPausedAsync(true);
     await Throws<OperationCanceledException>(() => active);
@@ -227,11 +227,11 @@ await Test("BACKEND-PENDING-AND-QUEUED-CANCEL-NO-FALSE-DONE-PROFILE-PRESERVED", 
     await using var repository = new SqliteIndexRepository(db); await repository.InitializeAsync();
     var profile = await repository.GetMetaAsync("profile_id");
     var before = Snapshot(fixture.Data);
-    var auditBefore = File.ReadAllText(fixture.Audit);
+    var auditBefore = ReadShared(fixture.Audit);
     await Throws<IndexingPausedException>(() => backend.IndexAsync(new IndexRequest([fixture.Documents])));
     await Throws<IndexingPausedException>(() => backend.IndexAsync(new IndexRequest([fixture.Documents], Force: true)));
     await Task.Delay(150);
-    Check(before == Snapshot(fixture.Data) && auditBefore == File.ReadAllText(fixture.Audit), "Paused rejection wrote data or restarted model.");
+    Check(before == Snapshot(fixture.Data) && auditBefore == ReadShared(fixture.Audit), "Paused rejection wrote data or restarted model.");
     await backend.SearchAsync(new SearchRequest("synthetic", Mode: SearchMode.Keyword));
     await backend.SetIndexingPausedAsync(false);
     await backend.IndexAsync(new IndexRequest([fixture.Documents]));
@@ -248,15 +248,15 @@ await Test("BACKEND-AUTHORIZED-BG-RESUME-RECONCILES-AFTER-PAUSED-SAVE", async ()
 {
     var fixture = await Fixture("background", "cancel", true);
     await using var backend = fixture.Backend;
-    await WaitFor(() => File.Exists(fixture.Audit) && File.ReadAllText(fixture.Audit).Contains("\"op\":\"text\""));
+    await WaitFor(() => File.Exists(fixture.Audit) && ReadShared(fixture.Audit).Contains("\"op\":\"text\""));
     await backend.SetIndexingPausedAsync(true);
     var before = await backend.LoadSettingsAsync();
     before.Theme = "Light";
     await backend.SaveSettingsAsync(before);
-    var audit = File.ReadAllText(fixture.Audit);
+    var audit = ReadShared(fixture.Audit);
     await File.WriteAllTextAsync(Path.Combine(fixture.Documents, "second.txt"), "synthetic second document");
     await Task.Delay(800);
-    Check(audit == File.ReadAllText(fixture.Audit), "Paused save/watcher started model.");
+    Check(audit == ReadShared(fixture.Audit), "Paused save/watcher started model.");
     Check((await backend.GetStatusAsync()).IndexingState == IndexingControlState.Paused, "Paused save lost state.");
     var saved = await File.ReadAllBytesAsync(Path.Combine(fixture.Data, "settings.json"));
     await backend.SetIndexingPausedAsync(false);
@@ -265,10 +265,10 @@ await Test("BACKEND-AUTHORIZED-BG-RESUME-RECONCILES-AFTER-PAUSED-SAVE", async ()
     var status = await backend.GetStatusAsync();
     Check(!status.Detail!.Contains("Background indexing failed"), "Intentional pause poisoned coordinator.");
     await Task.Delay(700);
-    var settledAudit = File.ReadAllText(fixture.Audit);
+    var settledAudit = ReadShared(fixture.Audit);
     await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => backend.SetIndexingPausedAsync(false)));
     await Task.Delay(700);
-    Check(settledAudit == File.ReadAllText(fixture.Audit), "Duplicate resume scheduled duplicate reconciliation.");
+    Check(settledAudit == ReadShared(fixture.Audit), "Duplicate resume scheduled duplicate reconciliation.");
 });
 
 await Test("BACKEND-SHUTDOWN-CANCELS-ACTIVE-QUEUED-AND-EXITS-FAKE-HOST", async () =>
@@ -276,7 +276,7 @@ await Test("BACKEND-SHUTDOWN-CANCELS-ACTIVE-QUEUED-AND-EXITS-FAKE-HOST", async (
     var fixture = await Fixture("shutdown", "cancel", false);
     var backend = fixture.Backend;
     var active = backend.IndexAsync(new IndexRequest([fixture.Documents]));
-    await WaitFor(() => File.Exists(fixture.Audit) && File.ReadAllText(fixture.Audit).Contains("\"op\":\"text\""));
+    await WaitFor(() => File.Exists(fixture.Audit) && ReadShared(fixture.Audit).Contains("\"op\":\"text\""));
     var queued = backend.IndexAsync(new IndexRequest([fixture.Documents]));
     var pause = backend.SetIndexingPausedAsync(true);
     await backend.DisposeAsync();
@@ -285,7 +285,7 @@ await Test("BACKEND-SHUTDOWN-CANCELS-ACTIVE-QUEUED-AND-EXITS-FAKE-HOST", async (
     await pause;
     await Throws<ObjectDisposedException>(() => backend.SetIndexingPausedAsync(false));
     await backend.DisposeAsync();
-    foreach (var line in File.ReadAllLines(fixture.Audit))
+    foreach (var line in ReadShared(fixture.Audit).Split('\n', StringSplitOptions.RemoveEmptyEntries))
     {
         using var json = JsonDocument.Parse(line);
         if (!json.RootElement.TryGetProperty("started", out var pid)) continue;
@@ -367,6 +367,13 @@ static string Snapshot(string directory) => string.Join("|", Directory.GetFiles(
         return file + ":" + Convert.ToHexString(SHA256.HashData(stream));
     }));
 static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+// The fake host appends to the audit while the test polls it; a plain ReadAllText takes a non-sharing handle and fails when they meet.
+static string ReadShared(string path)
+{
+    using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+    using var reader = new StreamReader(stream);
+    return reader.ReadToEnd();
+}
 static void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 static async Task Throws<T>(Func<Task> action) where T : Exception
 {

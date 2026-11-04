@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <!-- Single product version and unified compilation baseline across all inference hosts. -->
+    <VersionPrefix>0.3.0</VersionPrefix>
+    <VersionSuffix></VersionSuffix>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RollForward>Disable</RollForward>
+  </PropertyGroup>
+</Project>

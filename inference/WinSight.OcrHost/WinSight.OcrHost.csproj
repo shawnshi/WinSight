@@ -19,12 +19,12 @@
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="[10.0.26100.9169]" />
     <EmbeddedResource Include="model-manifest.json" />
     <None Update="model-manifest.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <None Include="$(OcrModelRoot)/models/v6/PP-OCRv6_det_small.onnx" Condition="'$(OcrModelRoot)' != ''" Link="models/v6/PP-OCRv6_det_small.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <None Include="$(OcrModelRoot)/models/v6/PP-OCRv6_rec_small.onnx" Condition="'$(OcrModelRoot)' != ''" Link="models/v6/PP-OCRv6_rec_small.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <None Include="$(OcrModelRoot)/models/v5/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx" Condition="'$(OcrModelRoot)' != ''" Link="models/v5/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <None Include="$(OcrModelRoot)/models/v6/ppocrv6_dict.txt" Condition="'$(OcrModelRoot)' != ''" Link="models/v6/ppocrv6_dict.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(OcrModelRoot)/models/v6/PP-OCRv6_det_small.onnx" Condition="'$(OcrModelRoot)' != '' and Exists('$(OcrModelRoot)/models/v6/PP-OCRv6_det_small.onnx')" Link="models/v6/PP-OCRv6_det_small.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(OcrModelRoot)/models/v6/PP-OCRv6_rec_small.onnx" Condition="'$(OcrModelRoot)' != '' and Exists('$(OcrModelRoot)/models/v6/PP-OCRv6_det_small.onnx')" Link="models/v6/PP-OCRv6_rec_small.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(OcrModelRoot)/models/v5/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx" Condition="'$(OcrModelRoot)' != '' and Exists('$(OcrModelRoot)/models/v6/PP-OCRv6_det_small.onnx')" Link="models/v5/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(OcrModelRoot)/models/v6/ppocrv6_dict.txt" Condition="'$(OcrModelRoot)' != '' and Exists('$(OcrModelRoot)/models/v6/PP-OCRv6_det_small.onnx')" Link="models/v6/ppocrv6_dict.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="RequirePinnedOcrAssetsForPublish" BeforeTargets="Publish">
-    <Error Condition="'$(OcrModelRoot)' == ''" Text="Publishing requires explicit OcrModelRoot with the four pinned OCR assets; no download/default fallback." />
+    <Error Condition="'$(RequireOcrModels)' != 'false' and '$(OcrModelRoot)' == ''" Text="Publishing requires explicit OcrModelRoot with the four pinned OCR assets; no download/default fallback." />
   </Target>
 </Project>

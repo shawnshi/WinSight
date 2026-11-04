@@ -28,7 +28,7 @@ await using (var repository = new SqliteIndexRepository(database))
 {
     await repository.InitializeAsync();
     await repository.SetMetaAsync("profile_id", "bridge-fixture-profile");
-    await repository.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, "2");
+    await repository.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, IndexRebuildCoordinator.LexiconSchema);
     await using var embeddings = new FixtureEmbeddings();
     await new IndexingService(repository, new ContentExtractor(), embeddings).IndexAsync(new IndexRequest([docs]));
 }

@@ -6,10 +6,14 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:vm="using:WinSight.App.ViewModels"
     mc:Ignorable="d"
-    Title="WinSight Quick Search">
+    Title="WinSight 快捷搜索">
+
+    <Window.SystemBackdrop>
+        <DesktopAcrylicBackdrop/>
+    </Window.SystemBackdrop>
 
     <Grid x:Name="RootGrid"
-          Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+          Background="Transparent"
           BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
           BorderThickness="1">
         <Grid.RowDefinitions>
@@ -20,7 +24,7 @@
         </Grid.RowDefinitions>
 
         <!-- Search Input Header -->
-        <Grid Grid.Row="0" Padding="16,16,16,8" ColumnSpacing="12">
+        <Grid Grid.Row="0" Padding="16,14,16,8" ColumnSpacing="12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
@@ -36,7 +40,7 @@
             <TextBox Grid.Column="1"
                      x:Name="SearchBox"
                      Text="{x:Bind ViewModel.Query, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                     PlaceholderText="Search files, documents, media and code..."
+                     PlaceholderText="搜索文件、文档、媒体与代码..."
                      FontSize="16"
                      BorderThickness="0"
                      Background="Transparent"
@@ -44,7 +48,7 @@
                      VerticalAlignment="Center"/>
 
             <Button Grid.Column="2"
-                    ToolTipService.ToolTip="Open in Full WinSight Window (Ctrl+O)"
+                    ToolTipService.ToolTip="在完整窗口中打开 (Ctrl+O)"
                     Click="OnOpenInFullWindowClick"
                     Background="Transparent"
                     BorderThickness="0"
@@ -55,85 +59,155 @@
 
         <!-- Category Filters -->
         <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6" Padding="16,0,16,8">
-            <Button x:Name="FilterAllBtn" Content="All" Click="OnFilterClick" Tag="all" Style="{ThemeResource AccentButtonStyle}"/>
-            <Button x:Name="FilterDocBtn" Content="Docs" Click="OnFilterClick" Tag="doc"/>
+            <Button x:Name="FilterAllBtn" Content="全部" Click="OnFilterClick" Tag="all" Style="{ThemeResource AccentButtonStyle}"/>
+            <Button x:Name="FilterDocBtn" Content="文档" Click="OnFilterClick" Tag="doc"/>
             <Button x:Name="FilterPdfBtn" Content="PDF" Click="OnFilterClick" Tag="pdf"/>
-            <Button x:Name="FilterImgBtn" Content="Images" Click="OnFilterClick" Tag="image"/>
-            <Button x:Name="FilterVideoBtn" Content="Video" Click="OnFilterClick" Tag="video"/>
-            <Button x:Name="FilterCodeBtn" Content="Code" Click="OnFilterClick" Tag="code"/>
+            <Button x:Name="FilterImgBtn" Content="图片" Click="OnFilterClick" Tag="image"/>
+            <Button x:Name="FilterVideoBtn" Content="视频" Click="OnFilterClick" Tag="video"/>
+            <Button x:Name="FilterCodeBtn" Content="代码" Click="OnFilterClick" Tag="code"/>
         </StackPanel>
 
-        <!-- Results Area -->
+        <!-- Results Area (Master-Detail Dual Column) -->
         <Grid Grid.Row="2" Background="{ThemeResource LayerFillColorDefaultBrush}">
-            <!-- Loading Indicator -->
-            <ProgressRing IsActive="{x:Bind ViewModel.IsLoading, Mode=OneWay}"
-                          HorizontalAlignment="Center"
-                          VerticalAlignment="Center"
-                          Width="36" Height="36"/>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="4.5*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="5.5*"/>
+            </Grid.ColumnDefinitions>
 
-            <!-- Notice / Status Banner -->
-            <InfoBar IsOpen="{x:Bind ViewModel.HasNotice, Mode=OneWay}"
-                     Severity="Informational"
-                     Message="{x:Bind ViewModel.NoticeText, Mode=OneWay}"
-                     IsClosable="False"/>
+            <!-- Left: Virtualized Results List -->
+            <Grid Grid.Column="0">
+                <ProgressRing IsActive="{x:Bind ViewModel.IsLoading, Mode=OneWay}"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center"
+                              Width="36" Height="36"/>
 
-            <!-- Virtualized Results List -->
-            <ListView x:Name="ResultsListView"
-                      ItemsSource="{x:Bind ViewModel.Hits, Mode=OneWay}"
-                      SelectedIndex="{x:Bind ViewModel.SelectedIndex, Mode=TwoWay}"
-                      SelectionMode="Single"
-                      IsItemClickEnabled="True"
-                      ItemClick="OnItemClick"
-                      KeyDown="OnListViewKeyDown">
-                <ListView.ItemTemplate>
-                    <DataTemplate x:DataType="vm:SearchItemViewModel">
-                        <Grid Padding="12,8" ColumnSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
+                <InfoBar IsOpen="{x:Bind ViewModel.HasNotice, Mode=OneWay}"
+                         Severity="Informational"
+                         Message="{x:Bind ViewModel.NoticeText, Mode=OneWay}"
+                         IsClosable="False"/>
 
-                            <FontIcon Grid.Column="0"
-                                      Glyph="{x:Bind IconGlyph}"
-                                      FontSize="20"
-                                      Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
-                                      VerticalAlignment="Center"/>
+                <ListView x:Name="ResultsListView"
+                          ItemsSource="{x:Bind ViewModel.Hits, Mode=OneWay}"
+                          SelectedIndex="{x:Bind ViewModel.SelectedIndex, Mode=TwoWay}"
+                          SelectionMode="Single"
+                          IsItemClickEnabled="True"
+                          ItemClick="OnItemClick"
+                          SelectionChanged="OnSelectionChanged"
+                          KeyDown="OnListViewKeyDown">
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="vm:SearchItemViewModel">
+                            <Grid Padding="10,8" ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
 
-                            <StackPanel Grid.Column="1" Spacing="2">
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <TextBlock Text="{x:Bind FileName}"
-                                               Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                <FontIcon Grid.Column="0"
+                                          Glyph="{x:Bind IconGlyph}"
+                                          FontSize="18"
+                                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                          VerticalAlignment="Center"/>
+
+                                <StackPanel Grid.Column="1" Spacing="2">
+                                    <Grid ColumnSpacing="6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{x:Bind FileName}"
+                                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                   MaxLines="1"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{x:Bind LocationDisplay}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+
+                                    <TextBlock Text="{x:Bind DirectoryPath}"
+                                               Style="{ThemeResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                MaxLines="1"
                                                TextTrimming="CharacterEllipsis"/>
-                                    <TextBlock Text="{x:Bind LocationDisplay}"
+
+                                    <TextBlock Text="{x:Bind Excerpt}"
                                                Style="{ThemeResource CaptionTextBlockStyle}"
-                                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
-                                               VerticalAlignment="Center"/>
+                                               MaxLines="1"
+                                               TextTrimming="CharacterEllipsis"
+                                               Visibility="{x:Bind ExcerptVisibility}"/>
                                 </StackPanel>
 
-                                <TextBlock Text="{x:Bind DirectoryPath}"
+                                <TextBlock Grid.Column="2"
+                                           Text="{x:Bind ScoreDisplay}" Typography.NumeralAlignment="Tabular"
                                            Style="{ThemeResource CaptionTextBlockStyle}"
-                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                           MaxLines="1"
-                                           TextTrimming="CharacterEllipsis"/>
+                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Grid>
 
-                                <TextBlock Text="{x:Bind Excerpt}"
-                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                           MaxLines="1"
-                                           TextTrimming="CharacterEllipsis"
-                                           Visibility="{x:Bind ExcerptVisibility}"/>
+            <!-- Column Separator -->
+            <Border Grid.Column="1" Width="1" Background="{ThemeResource CardStrokeColorDefaultBrush}"/>
+
+            <!-- Right: Instant Context Preview Panel -->
+            <Grid Grid.Column="2" Padding="14,12" Background="{ThemeResource ControlAltFillColorSecondaryBrush}">
+                <!-- Empty state when nothing is selected -->
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8"
+                            Visibility="{x:Bind SelectedToEmptyVisibility(ViewModel.SelectedItem), Mode=OneWay}">
+                    <FontIcon Glyph="&#xE8A5;" FontSize="32" Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+                    <TextBlock Text="选择结果项即时查阅上下文" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                </StackPanel>
+
+                <!-- Detail card when an item is selected -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                              Visibility="{x:Bind SelectedToDetailVisibility(ViewModel.SelectedItem), Mode=OneWay}">
+                    <StackPanel Spacing="10">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="{x:Bind ViewModel.SelectedItem.FileName, Mode=OneWay}"
+                                       Style="{ThemeResource SubtitleTextBlockStyle}" TextWrapping="Wrap"/>
+                            <TextBlock Text="{x:Bind ViewModel.SelectedItem.DirectoryPath, Mode=OneWay}"
+                                       Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
+                        </StackPanel>
+
+                        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1" CornerRadius="6" Padding="10">
+                            <StackPanel Spacing="4">
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="匹配类型:" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.SelectedItem.MatchType, Mode=OneWay}" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold"/>
+                                </Grid>
+                                <Grid ColumnSpacing="8" Visibility="{x:Bind ViewModel.SelectedItem.ExcerptVisibility, Mode=OneWay}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="位置标定:" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.SelectedItem.LocationDisplay, Mode=OneWay}" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+                                </Grid>
                             </StackPanel>
+                        </Border>
 
-                            <TextBlock Grid.Column="2"
-                                       Text="{x:Bind ScoreDisplay}"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                       VerticalAlignment="Center"/>
-                        </Grid>
-                    </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
+                        <TextBlock Text="命中文档上下文片段" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1" CornerRadius="6" Padding="12">
+                            <TextBlock Text="{x:Bind ViewModel.SelectedItem.Excerpt, Mode=OneWay}"
+                                       IsTextSelectionEnabled="True" TextWrapping="Wrap"
+                                       Style="{ThemeResource BodyTextBlockStyle}" LineHeight="20"/>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
         </Grid>
 
         <!-- Footer Shortcuts Help -->
@@ -148,11 +222,12 @@
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                            VerticalAlignment="Center"/>
 
-                <StackPanel Orientation="Horizontal" Spacing="16" HorizontalAlignment="Right">
-                    <TextBlock Text="↵ Open" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock Text="⇧↵ Reveal" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock Text="Ctrl+C Copy" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock Text="Esc Hide" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <StackPanel Orientation="Horizontal" Spacing="14" HorizontalAlignment="Right">
+                    <TextBlock Text="↵ 打开" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock Text="Ctrl+↵ 定位" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock Text="Ctrl+C 复制摘要" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock Text="Ctrl+⇧+C 复制路径" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock Text="Esc 隐藏" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 </StackPanel>
             </Grid>
         </Border>

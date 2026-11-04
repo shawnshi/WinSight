@@ -95,6 +95,8 @@ public sealed class JsonSettingsStore(string settingsPath) : ISettingsStore
             throw new InvalidDataException("Theme must be Default, Light or Dark.");
         if (settings.IndexHours.Start is < 0 or >= 1440 || settings.IndexHours.End is < 0 or >= 1440)
             throw new InvalidDataException("Index hours are minutes since midnight in 0..1439.");
+        if (!string.IsNullOrWhiteSpace(settings.UpdateFeedUrl) && !WinSight.Core.Updates.UpdateChecker.IsHttpsUrl(settings.UpdateFeedUrl.Trim()))
+            throw new InvalidDataException("The update feed must be an absolute https:// URL.");
         foreach (var path in settings.Folders.Concat(settings.CodeFolders).Concat(settings.Skipped).Concat(settings.CodeSkipped))
         {
             if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))

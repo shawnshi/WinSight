@@ -20,21 +20,21 @@
         <Grid ColumnSpacing="12">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <TextBox x:Name="SearchBox"
-                     PlaceholderText="Search files, documents, media and code..."
+                     PlaceholderText="搜索文件、文档、媒体与代码..."
                      AutomationProperties.Name="Search indexed local files"
                      Text="{x:Bind ViewModel.Query, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                      PreviewKeyDown="OnSearchBoxKeyDown" VerticalAlignment="Center"/>
             <ComboBox Grid.Column="1" x:Name="KindFilterCombo" SelectedIndex="0"
                       SelectionChanged="OnKindFilterChanged" VerticalAlignment="Center"
                       AutomationProperties.Name="File type filter">
-                <ComboBoxItem Content="All Types" Tag="all"/>
-                <ComboBoxItem Content="Documents" Tag="doc"/>
-                <ComboBoxItem Content="PDF" Tag="pdf"/>
-                <ComboBoxItem Content="Images" Tag="image"/>
-                <ComboBoxItem Content="Screenshots" Tag="screenshot"/>
-                <ComboBoxItem Content="Audio" Tag="audio"/>
-                <ComboBoxItem Content="Video" Tag="video"/>
-                <ComboBoxItem Content="Code" Tag="code"/>
+                <ComboBoxItem Content="全部类型" Tag="all"/>
+                <ComboBoxItem Content="文档" Tag="doc"/>
+                <ComboBoxItem Content="PDF 文档" Tag="pdf"/>
+                <ComboBoxItem Content="图片" Tag="image"/>
+                <ComboBoxItem Content="屏幕截图" Tag="screenshot"/>
+                <ComboBoxItem Content="音频" Tag="audio"/>
+                <ComboBoxItem Content="视频" Tag="video"/>
+                <ComboBoxItem Content="代码" Tag="code"/>
             </ComboBox>
         </Grid>
         <InfoBar x:Name="SearchNotice" Grid.Row="1"
@@ -51,8 +51,8 @@
                 <StackPanel HorizontalAlignment="Stretch" VerticalAlignment="Center" Spacing="8" Margin="12"
                             Visibility="{x:Bind GetEmptyStateVisibility(ViewModel.Hits.Count, ViewModel.IsLoading), Mode=OneWay}">
                     <FontIcon Glyph="&#xE721;" FontSize="36" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock Text="No search results" Style="{ThemeResource SubtitleTextBlockStyle}" TextAlignment="Center" TextWrapping="Wrap"/>
-                    <TextBlock Text="Type a query above to search indexed local files"
+                    <TextBlock Text="未找到搜索结果" Style="{ThemeResource SubtitleTextBlockStyle}" TextAlignment="Center" TextWrapping="Wrap"/>
+                    <TextBlock Text="在上方输入关键词检索已索引的本地文件"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextAlignment="Center" TextWrapping="Wrap"/>
                 </StackPanel>
                 <ListView x:Name="ResultsListView"
@@ -75,7 +75,7 @@
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <TextBlock Text="{x:Bind FileName}" Style="{ThemeResource BodyStrongTextBlockStyle}"
                                                    MaxLines="1" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind FileName}"/>
-                                        <TextBlock Grid.Column="1" Text="{x:Bind LocationDisplay}" MaxWidth="96" MaxLines="1"
+                                        <TextBlock Grid.Column="1" Text="{x:Bind LocationDisplay}" Typography.NumeralAlignment="Tabular" MaxWidth="96" MaxLines="1"
                                                    TextTrimming="CharacterEllipsis" Style="{ThemeResource CaptionTextBlockStyle}"
                                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center"/>
                                     </Grid>
@@ -86,21 +86,21 @@
                                                Visibility="{x:Bind ExcerptVisibility}"/>
                                 </StackPanel>
                                 <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
-                                    <TextBlock Text="{x:Bind ScoreDisplay}" Style="{ThemeResource CaptionTextBlockStyle}"
+                                    <TextBlock Text="{x:Bind ScoreDisplay}" Typography.NumeralAlignment="Tabular" Style="{ThemeResource CaptionTextBlockStyle}"
                                                Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                    <Button ToolTipService.ToolTip="Preview source (Space)" AutomationProperties.Name="Preview source"
+                                    <Button ToolTipService.ToolTip="预览来源 (Space)" AutomationProperties.Name="Preview source"
                                             Click="OnPreviewItemClick" MinWidth="32" Padding="6" Tag="{x:Bind}">
                                         <FontIcon Glyph="&#xE8A5;" FontSize="14"/>
                                     </Button>
-                                    <Button ToolTipService.ToolTip="Open File" AutomationProperties.Name="Open file"
+                                    <Button ToolTipService.ToolTip="打开文件" AutomationProperties.Name="Open file"
                                             Click="OnOpenItemClick" MinWidth="32" Padding="6" Tag="{x:Bind}">
                                         <FontIcon Glyph="&#xE8A7;" FontSize="14"/>
                                     </Button>
-                                    <Button ToolTipService.ToolTip="Show in Explorer" AutomationProperties.Name="Show in Explorer"
+                                    <Button ToolTipService.ToolTip="在资源管理器中显示" AutomationProperties.Name="Show in Explorer"
                                             Click="OnRevealItemClick" MinWidth="32" Padding="6" Tag="{x:Bind}">
                                         <FontIcon Glyph="&#xED25;" FontSize="14"/>
                                     </Button>
-                                    <Button ToolTipService.ToolTip="Copy File Path" AutomationProperties.Name="Copy file path"
+                                    <Button ToolTipService.ToolTip="复制文件路径" AutomationProperties.Name="Copy file path"
                                             Click="OnCopyItemClick" MinWidth="32" Padding="6" Tag="{x:Bind}">
                                         <FontIcon Glyph="&#xE8C8;" FontSize="14"/>
                                     </Button>

@@ -102,7 +102,7 @@ try {
     }
     Test 'Source addition, deletion, modification and semantic parameter drift invalidate binding' {
         $repo=Join-Path $out 'synthetic-source'
-        foreach($dir in @('desktop','inference','native/winsight-tokenizer','scripts/native-ci','.github/workflows')){$null=New-Item -ItemType Directory -Path (Join-Path $repo $dir) -Force}
+        foreach($dir in @('desktop','inference','native/winsight-tokenizer','native/winsight-segmenter','scripts/native-ci','.github/workflows')){$null=New-Item -ItemType Directory -Path (Join-Path $repo $dir) -Force}
         foreach($file in @('scripts/Test-NativeCI.ps1','.github/workflows/native.yml','desktop/source.txt')){[IO.File]::WriteAllText((Join-Path $repo $file),'source')}
         $p=@{nuget='explicit-public';cliHome='existing-cli-home'};$expected=Get-NativeCISourceBinding $repo $p
         Assert-NativeCIBinding $expected (Get-NativeCISourceBinding $repo $p)

@@ -137,6 +137,18 @@ await Test("WS-R03 closing the registrar during a failed save is reported withou
     await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); service.Dispose(); release.TrySetResult();
     Check(!await pending && vm.StatusMessage.Contains("closed") && registrar.Bindings.Count == 0, "Disposed rollback escaped or retained a binding.");
 });
+await Test("OPS-AUTOSTART launch flag is parsed and an ordinary launch is not quiet", () =>
+{
+    var data = Path.Combine(Path.GetTempPath(), "winsight-parser");
+    Check(CommandLineParser.TryParse(["--autostart", "--data-dir", data], out var dir, out var smoke, out var toggle, out var autostart, out var error) && autostart && !smoke && !toggle && dir == data && error is null, "--autostart with a data directory must parse.");
+    Check(CommandLineParser.TryParse([], out _, out _, out _, out var quiet, out _) && !quiet, "A launch without the flag must show the window.");
+    Check(CommandLineParser.TryParse(["--AUTOSTART"], out _, out _, out _, out var upper, out _) && upper, "The flag is case-insensitive like the others.");
+    Check(CommandLineParser.TryParse(["--autostart", "--toggle"], out _, out _, out var both, out var withToggle, out _) && both && withToggle, "Flags combine.");
+    Check(!CommandLineParser.TryParse(["--autostart=1"], out _, out _, out _, out _, out var bad) && bad!.StartsWith("Unknown argument", StringComparison.Ordinal), "Unknown spellings stay rejected.");
+    Check(CommandLineParser.TryParse([], out _, out _, out _, out var legacy) is false || legacy is null, "The five-argument overload still works.");
+    Check(CommandLineParser.DefaultDataDirectory.EndsWith(Path.Combine("WinSight", "NativePreview"), StringComparison.Ordinal), "Default data directory changed.");
+    return Task.CompletedTask;
+});
 Console.WriteLine($"RESULT passed={passed} failed={failed}; controlled registrar; no system hotkey registration performed");
 return failed == 0 ? 0 : 1;
 

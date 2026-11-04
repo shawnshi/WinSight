@@ -39,11 +39,16 @@ internal sealed class ModelManifest : IDisposable
             foreach (var asset in manifest.Files)
             {
                 var path = Path.Combine(Root, asset.Path);
+                if (!File.Exists(path))
+                {
+                    throw new FileNotFoundException(
+                        $"EmbeddingGemma-2 模型权重文件 '{asset.Path}' 未找到。请将完整的 ONNX 权重文件复制至 '{Root}' 目录（包含 onnx/model_q4.onnx 等）。", asset.Path);
+                }
                 // Windows read-sharing locks prevent replacement between hashing and lazy graph creation.
                 var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
                 readLocks.Add(file);
                 if (file.Length != asset.Size || !string.Equals(Convert.ToHexString(SHA256.HashData(file)), asset.Sha256, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException($"Pinned model asset mismatch: {asset.Path}");
+                    throw new InvalidDataException($"Pinned model asset mismatch: {asset.Path} (expected {asset.Size} bytes, sha256 {asset.Sha256})");
             }
             TokenizerJson = File.ReadAllBytes(Path.Combine(Root, "tokenizer.json"));
             if (Hash(TokenizerJson) != manifest.Files.Single(asset => asset.Path == "tokenizer.json").Sha256)

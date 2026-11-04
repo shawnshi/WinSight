@@ -179,6 +179,7 @@ try
         Check(revoked.Hits.Count == 0, "Revoked root remained searchable.");
     });
     await ReviewRegressions.RunAsync(Test, root);
+    await OperabilityRegressions.RunAsync(Test, root);
     await SettingsRevisionRegressions.RunAsync(Test, root);
     await WsRegressions.RunAsync(Test, root, args.FirstOrDefault());
     await Test("VECTOR-CONTRACT", () =>

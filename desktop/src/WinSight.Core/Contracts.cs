@@ -7,7 +7,16 @@ public sealed record SearchRequest(string Query, int Limit = 50, SearchMode Mode
     string? Kind = null, string? Root = null, IReadOnlyList<SearchField>? Filters = null);
 public sealed record SearchHit(long FileId, string Path, string Kind, double Score, string MatchType,
     string? Excerpt = null, double? Location = null, double? LocationEnd = null, string? SegmentKind = null,
-    SourceAnchor? Source = null, IReadOnlyList<string>? Channels = null);
+    SourceAnchor? Source = null, IReadOnlyList<string>? Channels = null)
+{
+    // Two searches over unchanged data must give equal hits; the default record equality would compare the channel list by reference.
+    public bool Equals(SearchHit? other) => other is not null && FileId == other.FileId && Path == other.Path && Kind == other.Kind
+        && Score.Equals(other.Score) && MatchType == other.MatchType && Excerpt == other.Excerpt && Location == other.Location
+        && LocationEnd == other.LocationEnd && SegmentKind == other.SegmentKind && Equals(Source, other.Source)
+        && (Channels is null ? other.Channels is null : other.Channels is not null && Channels.SequenceEqual(other.Channels));
+
+    public override int GetHashCode() => HashCode.Combine(FileId, Path, Kind, Score, MatchType, Location, SegmentKind, Channels?.Count ?? -1);
+}
 public sealed record SearchResponse(IReadOnlyList<SearchHit> Hits, TimeSpan Elapsed,
     bool SemanticAvailable, string? Notice = null, bool LexicalDegraded = false);
 public sealed record IndexSegment(string Kind, string Modality, double? Location, double? LocationEnd,
@@ -146,6 +155,8 @@ public sealed class AppSettings
     public bool UpdateChecksOff { get; set; } = true;
     public string TrayClick { get; set; } = "panel";
     public bool OpenAtLogin { get; set; }
+    // Optional HTTPS address of a small JSON feed for the manual "Check for updates" button; empty means the feature is off.
+    public string? UpdateFeedUrl { get; set; }
     public string Theme { get; set; } = "Default";
     public string? IndexDirectory { get; set; }
     public string? ModelDirectory { get; set; }
@@ -153,7 +164,8 @@ public sealed class AppSettings
     public string? ManifestPath { get; set; }
     public WindowPlacement? Window { get; set; }
     public string Accelerator { get; set; } = "auto";
-    public bool InstallExecutionProviders { get; set; } = true;
+    // Downloads components over the network, so it is opt-in. Settings files written before this field existed stay off.
+    public bool InstallExecutionProviders { get; set; } = false;
 }
 public sealed class IndexHours
 {
@@ -182,11 +194,27 @@ public interface ISourcePreview : IAsyncDisposable
 }
 public sealed record SourceNavigationResult(bool Exact, string Message, int? ProcessId = null);
 
-public interface IDesktopBackend : IAsyncDisposable
+/// <summary>Reads and writes persisted settings.</summary>
+public interface ISettingsBackend
 {
     Task<AppSettings> LoadSettingsAsync(CancellationToken cancellationToken = default);
     Task SaveSettingsAsync(AppSettings settings, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Queries, source preview and the model identity queries depend on.</summary>
+public interface ISearchBackend
+{
     Task<SearchResponse> SearchAsync(SearchRequest request, CancellationToken cancellationToken = default);
+    Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancellationToken = default);
+    Task<ISourcePreview> PreviewSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>
+        Task.FromException<ISourcePreview>(new NotSupportedException("Source preview is unavailable in this backend."));
+    Task<SourceNavigationResult> NavigateSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>
+        Task.FromException<SourceNavigationResult>(new NotSupportedException("Precise source navigation is unavailable in this backend."));
+}
+
+/// <summary>Indexing runs, their status and pause control.</summary>
+public interface IIndexingBackend
+{
     Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress = null,
         CancellationToken cancellationToken = default);
     Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default);
@@ -194,30 +222,48 @@ public interface IDesktopBackend : IAsyncDisposable
         Task.FromResult(new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, "not-implemented", Array.Empty<IndexBudgetState>()));
     Task<IReadOnlyList<string>> GetFailureSummaryAsync(int limit = 5, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<string>>([]);
+    Task SetIndexingPausedAsync(bool paused, CancellationToken cancellationToken = default);
+    Task<string> DescribeVectorScaleAsync(CancellationToken cancellationToken = default) => Task.FromResult(string.Empty);
+}
+
+/// <summary>Inference providers, probes and the model inventory.</summary>
+public interface IModelBackend
+{
     Task<FoundryProbe?> ProbeFoundryAsync(CancellationToken cancellationToken = default) => Task.FromResult<FoundryProbe?>(null);
     Task<FoundryInstallResult?> InstallFoundryProvidersAsync(CancellationToken cancellationToken = default) => Task.FromResult<FoundryInstallResult?>(null);
     Task<WinMlProbe?> ProbeWinMlAsync(CancellationToken cancellationToken = default) => Task.FromResult<WinMlProbe?>(null);
+    Task<ModelInventory?> GetModelInventoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<ModelInventory?>(null);
+}
+
+/// <summary>The local MCP bridge: client configuration, the maintenance grant and queued requests.</summary>
+public interface IMcpBackend
+{
     Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
-    Task<ModelInventory?> GetModelInventoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<ModelInventory?>(null);
     Task<McpConsoleStatus?> GetMcpConsoleStatusAsync(CancellationToken cancellationToken = default) => Task.FromResult<McpConsoleStatus?>(null);
-    Task<string> DescribeVectorScaleAsync(CancellationToken cancellationToken = default) => Task.FromResult(string.Empty);
+    Task<string?> GetMaintenanceGrantAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+    Task<string?> GrantMaintenanceAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+    Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    Task<IReadOnlyList<string>> DrainMaintenanceJobsAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<string>>([]);
+}
+
+/// <summary>Index location, generation rebuilds and their blockers.</summary>
+public interface IMaintenanceBackend
+{
     Task<IReadOnlyList<string>> DescribeMigrationBlockersAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<string>>([]);
     Task<IndexMigrationResult?> InspectMigrationAsync(string targetDirectory, CancellationToken cancellationToken = default) => Task.FromResult<IndexMigrationResult?>(null);
     Task<IndexMigrationResult?> MigrateIndexAsync(string targetDirectory, CancellationToken cancellationToken = default) => Task.FromResult<IndexMigrationResult?>(null);
     Task<bool> RebuildNeededAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
     Task<string> StartRebuildAsync(CancellationToken cancellationToken = default) => Task.FromResult("unsupported");
     string RebuildStatus => "idle";
-    Task<string?> GetMaintenanceGrantAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
-    Task<string?> GrantMaintenanceAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
-    Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-    Task<IReadOnlyList<string>> DrainMaintenanceJobsAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<string>>([]);
-    Task SetIndexingPausedAsync(bool paused, CancellationToken cancellationToken = default);
-    Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancellationToken = default);
-    Task<ISourcePreview> PreviewSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>
-        Task.FromException<ISourcePreview>(new NotSupportedException("Source preview is unavailable in this backend."));
-    Task<SourceNavigationResult> NavigateSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>
-        Task.FromException<SourceNavigationResult>(new NotSupportedException("Precise source navigation is unavailable in this backend."));
+}
+
+/// <summary>
+/// Everything the desktop shell can ask of the backend. Consumers should depend on the narrowest role interface they need;
+/// this composite exists for the composition root and for fakes.
+/// </summary>
+public interface IDesktopBackend : ISettingsBackend, ISearchBackend, IIndexingBackend, IModelBackend, IMcpBackend, IMaintenanceBackend, IAsyncDisposable
+{
 }
 
 public static class VectorContract

@@ -10,14 +10,14 @@ namespace WinSight.App.ViewModels;
 /// </summary>
 public sealed class McpConsoleViewModel : INotifyPropertyChanged
 {
-    private readonly IDesktopBackend backend;
+    private readonly IMcpBackend backend;
     private string summary = "Loading the MCP bridge state…";
     private IReadOnlyList<string> recent = Array.Empty<string>();
     private IReadOnlyList<string> notes = Array.Empty<string>();
     private string actionResult = "";
     private bool busy;
 
-    public McpConsoleViewModel(IDesktopBackend backend) => this.backend = backend;
+    public McpConsoleViewModel(IMcpBackend backend) => this.backend = backend;
 
     public string Summary => summary;
     public IReadOnlyList<string> Recent => recent;

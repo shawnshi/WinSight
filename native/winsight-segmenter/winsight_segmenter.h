@@ -36,7 +36,15 @@ int32_t ws_segment_text(const void *handle, const uint8_t *text_utf8, size_t len
                         uint8_t **out_tokens_utf8, size_t *out_len);
 
 /**
- * Frees a tokens buffer allocated by `ws_segment_text`.
+ * Segments input text with an explicit mode and WITHOUT deduplication (term frequency is preserved).
+ * mode 0 = query (precise, HMM on); mode 1 = index (search mode with sub-words, HMM on).
+ * Any other mode returns 1. Other return codes match `ws_segment_text`.
+ */
+int32_t ws_segment_text_ex(const void *handle, const uint8_t *text_utf8, size_t len, uint32_t mode,
+                           uint8_t **out_tokens_utf8, size_t *out_len);
+
+/**
+ * Frees a tokens buffer allocated by `ws_segment_text` or `ws_segment_text_ex`.
  */
 void ws_segment_free_tokens(uint8_t *ptr, size_t len);
 

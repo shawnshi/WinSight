@@ -207,11 +207,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         }
     }
 
-    public void CancelIndexing()
-    {
-        activeIndexCts?.Cancel();
-    }
-
     public async Task TriggerIndexNowAsync(CancellationToken cancellationToken = default)
     {
         if (!CanIndexNow || cancellationToken.IsCancellationRequested) return;

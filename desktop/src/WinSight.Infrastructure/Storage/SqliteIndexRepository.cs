@@ -19,6 +19,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     private readonly Action<IndexInitializationStage>? initializationCheckpoint;
     private SqliteConnection? connection;
     private (long Version, IReadOnlyList<IndexedFile> Files)? vectorCache;
+    private readonly HashSet<string> dirtyVectorPaths = new(StringComparer.Ordinal);
     private bool writable;
     private bool disposed;
     public string DatabasePath { get; }
@@ -140,7 +141,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     {
         var db = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = path, Mode = mode, Pooling = false, DefaultTimeout = 5
+            DataSource = path, Mode = mode, Pooling = false, DefaultTimeout = 30
         }.ToString());
         try
         {
@@ -246,7 +247,10 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         return result;
     }
 
-    private void Write(CancellationToken ct, Action<SqliteConnection, SqliteTransaction> action)
+    /// <summary>What a write does to the cached decoded vectors: nothing, specific files, or everything.</summary>
+    private enum VectorEffect { All, None, Files }
+
+    private void Write(CancellationToken ct, Action<SqliteConnection, SqliteTransaction> action, VectorEffect effect = VectorEffect.All, params string?[] touchedPaths)
     {
         InitializeCore(ct);
         if (!writable) throw new InvalidOperationException("Legacy schema5 index is read-only. Reindex into a new native scratch database; never overwrite the original.");
@@ -256,7 +260,17 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         action(connection, tx);
         ct.ThrowIfCancellationRequested();
         tx.Commit();
-        vectorCache = null;
+        // Queue/USN bookkeeping does not change vectors, and a file write only dirties that file: patching one file
+        // is far cheaper than re-decoding every vector in the index after each background commit.
+        switch (effect)
+        {
+            case VectorEffect.None: break;
+            case VectorEffect.Files when vectorCache is not null:
+                foreach (var path in touchedPaths) if (!string.IsNullOrEmpty(path)) dirtyVectorPaths.Add(path);
+                break;
+            case VectorEffect.Files: break;
+            default: vectorCache = null; dirtyVectorPaths.Clear(); break;
+        }
     }
 
     public Task<IReadOnlyList<IndexedFile>> ReadFilesAsync(CancellationToken cancellationToken = default) =>
@@ -314,7 +328,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         ValidateFile(file);
         return RunAsync(() =>
         {
-            Write(cancellationToken, (db, tx) => UpsertFileInternal(db, tx, file, cancellationToken));
+            Write(cancellationToken, (db, tx) => UpsertFileInternal(db, tx, file, cancellationToken), VectorEffect.Files, file.Path);
             return 0;
         }, cancellationToken);
     }
@@ -371,7 +385,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         ValidatePath(path);
         return RunAsync(() =>
         {
-            Write(cancellationToken, (db, tx) => DeleteFileInternal(db, tx, path));
+            Write(cancellationToken, (db, tx) => DeleteFileInternal(db, tx, path), VectorEffect.Files, path);
             return 0;
         }, cancellationToken);
     }
@@ -387,7 +401,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             Write(cancellationToken, (db, tx) =>
             {
                 Execute(db, tx, "UPDATE index_tasks SET state='Pending' WHERE state IN ('Running', 'Stabilizing')");
-            });
+            }, VectorEffect.None);
             return 0;
         }, cancellationToken);
 
@@ -423,7 +437,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                     ("$due", task.DueUtc.ToString("O")),
                     ("$seen", task.SeenUtc.ToString("O")),
                     ("$reason", task.Reason));
-            });
+            }, VectorEffect.None);
             return 0;
         }, cancellationToken);
     }
@@ -466,7 +480,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                         ("$seen", task.SeenUtc.ToString("O")),
                         ("$reason", task.Reason));
                 }
-            });
+            }, VectorEffect.None);
             return 0;
         }, cancellationToken);
     }
@@ -479,7 +493,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             Write(cancellationToken, (db, tx) =>
             {
                 Execute(db, tx, "DELETE FROM index_tasks WHERE path=$path", ("$path", taskPath));
-            });
+            }, VectorEffect.None);
             return 0;
         }, cancellationToken);
     }
@@ -569,7 +583,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             {
                 Execute(db, tx, "UPDATE index_tasks SET state=$state, attempts=$attempts, due_utc=$due, reason=$reason WHERE path=$path",
                     ("$state", state), ("$attempts", attempts), ("$due", dueUtc.ToString("O")), ("$reason", reason), ("$path", path));
-            });
+            }, VectorEffect.None);
             return 0;
         }, cancellationToken);
     }
@@ -594,7 +608,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 }
                 UpsertFileInternal(db, tx, file, cancellationToken);
                 Execute(db, tx, "DELETE FROM index_tasks WHERE path=$taskPath", ("$taskPath", taskPath));
-            });
+            }, VectorEffect.Files, file.Path, tombstone);
             return 0;
         }, cancellationToken);
     }
@@ -609,7 +623,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             {
                 DeleteFileInternal(db, tx, filePath);
                 Execute(db, tx, "DELETE FROM index_tasks WHERE path=$taskPath", ("$taskPath", taskPath));
-            });
+            }, VectorEffect.Files, filePath);
             return 0;
         }, cancellationToken);
     }
@@ -657,7 +671,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                     )
                     """, ("$limit", excess));
                 trimmed += oldestDeleted;
-            });
+            }, VectorEffect.None);
             return trimmed;
         }, cancellationToken);
     }
@@ -698,7 +712,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                     ("$jid", journalId),
                     ("$next", nextUsn),
                     ("$rec", reconcileUtc.ToString("o")));
-            });
+            }, VectorEffect.None);
             return 0;
         }, cancellationToken);
     }
@@ -758,7 +772,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 if (key == "embedding_info" && profile != null && JsonSerializer.Deserialize<EmbeddingInfo>(value, MetadataJson)?.ProfileId != profile)
                     throw new InvalidDataException("embedding_info conflicts with profile_id.");
                 Execute(db, tx, "INSERT INTO meta(key,value) VALUES($key,$value) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("$key", key), ("$value", value));
-            });
+            }, VectorEffect.All);
             return 0;
         }, cancellationToken);
     }
@@ -784,6 +798,19 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             .Select(w => new KeywordMatch(w.FileId, w.Rank)).ToArray()), cancellationToken);
     }
 
+    /// <summary>
+    /// Re-reads only the files touched since the cache was built and splices them into the cached list, so a background
+    /// commit costs one file's vectors instead of the whole index. Runs inside the caller's read snapshot.
+    /// </summary>
+    private IReadOnlyList<IndexedFile> PatchVectorCache(SqliteConnection db, SqliteTransaction tx, IReadOnlyList<IndexedFile> cached, CancellationToken ct)
+    {
+        var dirty = new HashSet<string>(dirtyVectorPaths, StringComparer.Ordinal);
+        var refreshed = new List<IndexedFile>();
+        foreach (var path in dirty) refreshed.AddRange(ReadFiles(db, tx, true, ct, path, vectorSegmentsOnly: true));
+        var refreshedIds = refreshed.Select(f => f.Id).ToHashSet();
+        return cached.Where(f => !dirty.Contains(f.Path) && !refreshedIds.Contains(f.Id)).Concat(refreshed).OrderBy(f => f.Id).ToArray();
+    }
+
     internal Task<SearchSnapshot> ReadSearchSnapshotAsync(string query, string? kind, string? root, bool vectors, bool words, int limit, CancellationToken ct,
         Func<string, bool>? authorize = null, Func<string, string?, long, bool>? matchesSource = null,
         bool allHeaders = false) => RunAsync(() => Read(ct, (db, tx) =>
@@ -796,11 +823,21 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         if (vectors)
         {
             // The profile read pins the WAL snapshot. Never label an older snapshot with a concurrent writer's newer version.
-            if (before == version && vectorCache is { } cached && cached.Version == version) files = cached.Files;
+            if (before == version && vectorCache is { } cached && cached.Version == version)
+            {
+                files = cached.Files;
+                if (dirtyVectorPaths.Count != 0)
+                {
+                    files = PatchVectorCache(db, tx, cached.Files, ct);
+                    vectorCache = Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version")) == version ? (version, files) : null;
+                    dirtyVectorPaths.Clear();
+                }
+            }
             else
             {
                 files = ReadFiles(db, tx, true, ct, vectorSegmentsOnly: true);
                 vectorCache = before == version && Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version")) == version ? (version, files) : null;
+                dirtyVectorPaths.Clear();
             }
         }
         else files = ReadHeaders(db, tx, ct, ids: allHeaders ? null : matches.Select(w => w.FileId).ToArray());
@@ -812,23 +849,31 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     {
         bool code = query.StartsWith("code:", StringComparison.OrdinalIgnoreCase);
         if (code) query = query[5..].Trim();
-        var terms = SearchText.Terms(query);
         var identifier = code ? SearchText.Identifier(query) : null;
+        // Latin terms use the literal (porter) index; CJK tokens come from the shared segmenter and use the segmented
+        // index. Neither path scans the vocabulary: both are plain FTS5 MATCH lookups, and both produce a BM25 score
+        // BEFORE any truncation.
+        (string[] Latin, string[] Cjk) lexical = identifier != null ? (Array.Empty<string>(), Array.Empty<string>()) : SearchText.LexicalTerms(query);
+        var latinTerms = lexical.Latin;
         var literals = DocumentSearchQuery.LiteralTokens(query);
         var literalJson = JsonSerializer.Serialize(literals);
         long requiredMask = (1L << literals.Length) - 1;
-        var patterns = identifier != null ? new[] { SearchText.Quote(string.Join(' ', identifier)) } : terms.Select(t => SearchText.Quote(t) + (SearchText.Inflects(t) ? "*" : "")).ToArray();
-        for (int i = 0; literals.Length == 0 && identifier == null && i < terms.Length; i++)
-            if (terms[i].EnumerateRunes().Count() >= 3 && !patterns[i].EndsWith('*') &&
+        var patterns = identifier != null ? new[] { SearchText.Quote(string.Join(' ', identifier)) } : latinTerms.Select(t => SearchText.Quote(t) + (SearchText.Inflects(t) ? "*" : "")).ToArray();
+        var segPatterns = lexical.Cjk.Select(SearchText.Quote).ToArray();
+        for (int i = 0; literals.Length == 0 && identifier == null && i < latinTerms.Length; i++)
+            if (latinTerms[i].EnumerateRunes().Count() >= 3 && !patterns[i].EndsWith('*') &&
                 Scalar(db, tx, "SELECT 1 FROM fts WHERE fts MATCH $q LIMIT 1", ("$q", patterns[i])) == null) patterns[i] += "*";
-        if (patterns.Length == 0) return [];
+        if (patterns.Length == 0 && segPatterns.Length == 0) return [];
+        int termCount = patterns.Length + segPatterns.Length;
         string scope = " AND ($kind IS NULL OR f.kind=$kind) AND ($root IS NULL OR replace(f.path,char(92),'/')=$root COLLATE WINSIGHT_PATH OR substr(replace(f.path,char(92),'/'),1,length($prefix))=$prefix COLLATE WINSIGHT_PATH)";
         string maskSql = "CASE WHEN $literals='[]' THEN 0 ELSE WINSIGHT_LITERAL_MASK(coalesce(fts.original,fts.body),f.path,$literals) END";
         string? normalizedRoot = root?.Replace('\\', '/').TrimEnd('/');
-        var candidates = new Dictionary<(long File, string Unit), (long Segment, double Rank, bool Fts, long Mask)>();
-        var segmentUnits = new Dictionary<long, (long File, string Unit)>();
+        var segmentInfo = new Dictionary<long, (long File, (long File, string Unit) Key, long Mask)>();
+        var segmentRank = new Dictionary<long, double>();
+        var inLiteral = new HashSet<long>();
+        var inSegmented = new HashSet<long>();
         var sources = new Dictionary<long, IReadOnlyDictionary<long, SourceAnchor>>();
-        void Collect(SqliteDataReader rows, bool fts)
+        void Collect(SqliteDataReader rows, bool literal)
         {
             while (rows.Read())
             {
@@ -839,97 +884,85 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 if (!sources.TryGetValue(file, out var anchors)) sources[file] = anchors = ReadAnchors(Text(rows, 4));
                 var source = anchors.GetValueOrDefault(segment);
                 var key = (file, SearchText.SourceUnit(new(rows.GetString(5), "none", Number(rows, 6), Number(rows, 7), null, Source: source)));
-                segmentUnits[segment] = key;
-                var rank = rows.GetDouble(2);
-                if (candidates.TryGetValue(key, out var old))
-                {
-                    bool better = fts && (!old.Fts || rank < old.Rank);
-                    candidates[key] = (better ? segment : old.Segment, better ? rank : old.Rank, old.Fts || fts, old.Mask | mask);
-                }
-                else candidates.Add(key, (segment, rank, fts, mask));
+                segmentInfo[segment] = (file, key, mask);
+                // BM25 contributions are additive per term, so a query split across two indexes sums their scores.
+                segmentRank[segment] = segmentRank.GetValueOrDefault(segment) + rows.GetDouble(2);
+                (literal ? inLiteral : inSegmented).Add(segment);
             }
         }
-        using (var cmd = Command(db, tx, "SELECT s.file,s.id,bm25(fts,3.0,1.0),f.path,f.info,s.kind,s.loc,s.loc_end," + maskSql + " FROM fts " +
-            "JOIN segments s ON s.id=fts.rowid JOIN files f ON f.id=s.file WHERE fts MATCH $q" + scope + " ORDER BY bm25(fts,3.0,1.0),s.id",
-            ("$literals", literalJson), ("$q", string.Join(" OR ", patterns)), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/")))
-        using (var rows = cmd.ExecuteReader()) Collect(rows, true);
-        var cjk = identifier == null ? terms.Where(SearchText.ContainsCjk).ToArray() : [];
-        if (cjk.Length > 0)
+        if (patterns.Length > 0)
         {
-            Execute(db, tx, "CREATE VIRTUAL TABLE IF NOT EXISTS temp.winsight_terms USING fts5vocab(main,fts,instance)");
-            using var cmd = Command(db, tx, "SELECT DISTINCT s.file,s.id,0.0,f.path,f.info,s.kind,s.loc,s.loc_end," + maskSql + " FROM temp.winsight_terms v " +
-                "JOIN segments s ON s.id=v.doc JOIN fts ON fts.rowid=s.id JOIN files f ON f.id=s.file WHERE v.col IN ('name','body') AND EXISTS (SELECT 1 FROM json_each($cjk) q WHERE instr(v.term,q.value)>0)" + scope + " ORDER BY s.id",
-                ("$literals", literalJson), ("$cjk", JsonSerializer.Serialize(cjk)), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
+            using var cmd = Command(db, tx, "SELECT s.file,s.id,bm25(fts,3.0,1.0),f.path,f.info,s.kind,s.loc,s.loc_end," + maskSql + " FROM fts " +
+                "JOIN segments s ON s.id=fts.rowid JOIN files f ON f.id=s.file WHERE fts MATCH $q" + scope,
+                ("$literals", literalJson), ("$q", string.Join(" OR ", patterns)), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
+            using var rows = cmd.ExecuteReader(); Collect(rows, true);
+        }
+        if (segPatterns.Length > 0)
+        {
+            // fts_seg holds jieba index-mode tokens with real term frequency; the literal-mask column needs the fts row.
+            string join = literals.Length == 0 ? "" : " JOIN fts ON fts.rowid=s.id";
+            using var cmd = Command(db, tx, "SELECT s.file,s.id,bm25(fts_seg),f.path,f.info,s.kind,s.loc,s.loc_end," + (literals.Length == 0 ? "0" : maskSql) + " FROM fts_seg " +
+                "JOIN segments s ON s.id=fts_seg.rowid" + join + " JOIN files f ON f.id=s.file WHERE fts_seg MATCH $q" + scope,
+                ("$literals", literalJson), ("$q", string.Join(" OR ", segPatterns)), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
             using var rows = cmd.ExecuteReader(); Collect(rows, false);
         }
+        var candidates = new Dictionary<(long File, string Unit), (long Segment, double Rank, long Mask)>();
+        foreach (var (segment, info) in segmentInfo)
+        {
+            double rank = segmentRank[segment];
+            if (candidates.TryGetValue(info.Key, out var old))
+            {
+                bool better = rank < old.Rank || rank == old.Rank && segment < old.Segment;
+                candidates[info.Key] = (better ? segment : old.Segment, better ? rank : old.Rank, old.Mask | info.Mask);
+            }
+            else candidates.Add(info.Key, (segment, rank, info.Mask));
+        }
         var shares = new Dictionary<(long File, string Unit), double>();
-        for (int i = 0; i < patterns.Length; i++)
+        void Coverage(string table, string pattern)
         {
             ct.ThrowIfCancellationRequested();
             var matched = new HashSet<(long File, string Unit)>();
-            void Cover(SqliteDataReader rows)
-            {
-                while (rows.Read()) { ct.ThrowIfCancellationRequested(); if (segmentUnits.TryGetValue(rows.GetInt64(0), out var key)) matched.Add(key); }
-            }
-            using (var cmd = Command(db, tx, "SELECT DISTINCT s.id FROM fts JOIN segments s ON s.id=fts.rowid JOIN files f ON f.id=s.file WHERE fts MATCH $q" + scope,
-                ("$q", patterns[i]), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/")))
-            using (var rows = cmd.ExecuteReader()) Cover(rows);
-            if (identifier == null && SearchText.ContainsCjk(terms[i]))
-            {
-                using var cmd = Command(db, tx, "SELECT DISTINCT s.id FROM temp.winsight_terms v JOIN segments s ON s.id=v.doc JOIN files f ON f.id=s.file " +
-                    "WHERE v.col IN ('name','body') AND instr(v.term,$term)>0" + scope,
-                    ("$term", terms[i]), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
-                using var rows = cmd.ExecuteReader(); Cover(rows);
-            }
-            foreach (var key in matched) shares[key] = shares.GetValueOrDefault(key) + 1.0 / patterns.Length;
+            using var cmd = Command(db, tx, $"SELECT DISTINCT s.id FROM {table} JOIN segments s ON s.id={table}.rowid JOIN files f ON f.id=s.file WHERE {table} MATCH $q" + scope,
+                ("$q", pattern), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
+            using var rows = cmd.ExecuteReader();
+            while (rows.Read()) { ct.ThrowIfCancellationRequested(); if (segmentInfo.TryGetValue(rows.GetInt64(0), out var info)) matched.Add(info.Key); }
+            foreach (var key in matched) shares[key] = shares.GetValueOrDefault(key) + 1.0 / termCount;
         }
+        foreach (var pattern in patterns) Coverage("fts", pattern);
+        foreach (var pattern in segPatterns) Coverage("fts_seg", pattern);
         var ordered = candidates.Where(c => c.Value.Mask == requiredMask).OrderByDescending(c => shares.GetValueOrDefault(c.Key))
             .ThenBy(c => c.Value.Rank).ThenBy(c => c.Key.File).ThenBy(c => c.Key.Unit, StringComparer.Ordinal);
         var selected = (fileResults ? ordered.GroupBy(c => c.Key.File).Select(g => g.First()) : ordered).Take(limit).ToArray();
-        var selectedBySegment = selected.ToDictionary(c => c.Value.Segment);
-        var evidence = new Dictionary<long, WordEvidence>();
-        var ordinary = selected.Where(c => c.Value.Fts).Select(c => c.Value.Segment).ToArray();
-        if (ordinary.Length > 0)
+        if (selected.Length == 0) return [];
+        var ids = JsonSerializer.Serialize(selected.Select(c => c.Value.Segment).ToArray());
+        var snippets = new Dictionary<long, string?>();
+        if (patterns.Length > 0)
         {
-            using var cmd = Command(db, tx, "SELECT s.id,s.file,bm25(fts,3.0,1.0),s.kind,s.modality,s.loc,s.loc_end,s.excerpt,snippet(fts,1,'«','»','…',12) " +
-                "FROM fts JOIN segments s ON s.id=fts.rowid WHERE fts MATCH $q AND s.id IN (SELECT value FROM json_each($ids))",
-                ("$q", string.Join(" OR ", patterns)), ("$ids", JsonSerializer.Serialize(ordinary)));
+            using var cmd = Command(db, tx, "SELECT s.id,snippet(fts,1,'«','»','…',12) FROM fts JOIN segments s ON s.id=fts.rowid WHERE fts MATCH $q AND s.id IN (SELECT value FROM json_each($ids))",
+                ("$q", string.Join(" OR ", patterns)), ("$ids", ids));
             using var rows = cmd.ExecuteReader();
-            while (rows.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                long id = rows.GetInt64(0), file = rows.GetInt64(1);
-                var selectedRow = selectedBySegment[id];
-                var segment = Segment(rows, 3, false) with { Source = sources[file].GetValueOrDefault(id) };
-                evidence.Add(id, new(file, rows.GetDouble(2), shares.GetValueOrDefault(selectedRow.Key), segment, Text(rows, 8), true));
-            }
+            while (rows.Read()) snippets[rows.GetInt64(0)] = Text(rows, 1);
         }
-        var cjkIds = selected.Where(c => !c.Value.Fts).Select(c => c.Value.Segment).ToArray();
-        if (cjkIds.Length > 0)
+        if (segPatterns.Length > 0)
         {
-            // Segmented FTS gives Chinese units a real bm25 score instead of a substring share. When the
-            // segmenter is unavailable the channel is skipped and the caller is told lexical is degraded.
-            var segmented = new Dictionary<long, (double Rank, string? Snippet)>();
-            var segmentPatterns = SegmentedQueryPatterns(query);
-            if (segmentPatterns.Length != 0)
-            {
-                using var segCmd = Command(db, tx, "SELECT s.id,bm25(fts_seg,1.0),snippet(fts_seg,0,'«','»','…',12) FROM fts_seg JOIN segments s ON s.id=fts_seg.rowid " +
-                    "WHERE fts_seg MATCH $q AND s.id IN (SELECT value FROM json_each($ids))",
-                    ("$q", string.Join(" OR ", segmentPatterns)), ("$ids", JsonSerializer.Serialize(cjkIds)));
-                using var segRows = segCmd.ExecuteReader();
-                while (segRows.Read()) segmented[segRows.GetInt64(0)] = (segRows.GetDouble(1), Text(segRows, 2));
-            }
-            using var cmd = Command(db, tx, "SELECT id,file,kind,modality,loc,loc_end,excerpt FROM segments WHERE id IN (SELECT value FROM json_each($ids))", ("$ids", JsonSerializer.Serialize(cjkIds)));
+            using var cmd = Command(db, tx, "SELECT s.id,snippet(fts_seg,0,'«','»','…',12) FROM fts_seg JOIN segments s ON s.id=fts_seg.rowid WHERE fts_seg MATCH $q AND s.id IN (SELECT value FROM json_each($ids))",
+                ("$q", string.Join(" OR ", segPatterns)), ("$ids", ids));
             using var rows = cmd.ExecuteReader();
+            while (rows.Read()) if (!snippets.ContainsKey(rows.GetInt64(0))) snippets[rows.GetInt64(0)] = Text(rows, 1);
+        }
+        var evidence = new Dictionary<long, WordEvidence>();
+        using (var cmd = Command(db, tx, "SELECT id,file,kind,modality,loc,loc_end,excerpt FROM segments WHERE id IN (SELECT value FROM json_each($ids))", ("$ids", ids)))
+        using (var rows = cmd.ExecuteReader())
+        {
+            var selectedBySegment = selected.ToDictionary(c => c.Value.Segment);
             while (rows.Read())
             {
                 ct.ThrowIfCancellationRequested();
                 long id = rows.GetInt64(0), file = rows.GetInt64(1);
                 var selectedRow = selectedBySegment[id];
                 var segment = Segment(rows, 2, false) with { Source = sources[file].GetValueOrDefault(id) };
-                var ranked = segmented.TryGetValue(id, out var hit);
-                evidence.Add(id, new(file, ranked ? hit.Rank : 0, shares.GetValueOrDefault(selectedRow.Key), segment,
-                    ranked ? hit.Snippet : null, ranked, ranked));
+                evidence.Add(id, new(file, selectedRow.Value.Rank, shares.GetValueOrDefault(selectedRow.Key), segment, snippets.GetValueOrDefault(id),
+                    ExactLiteralsVerified: inLiteral.Contains(id), Segmented: inSegmented.Contains(id)));
             }
         }
         return selected.Select(c => evidence.TryGetValue(c.Value.Segment, out var word) ? word
@@ -1055,22 +1088,6 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
 
 
     /// <summary>Query-side tokens for the segmented FTS channel; empty when the segmenter is unusable.</summary>
-    private static string[] SegmentedQueryPatterns(string query)
-    {
-        try
-        {
-            var tokens = NativeSegmenter.Segment(query)
-                .Where(token => token.Length != 0 && token != "AND" && token != "OR" && token != "NOT")
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Select(token => "\"" + token.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"")
-                .ToArray();
-            return tokens;
-        }
-        catch (SegmenterUnavailableException)
-        {
-            return Array.Empty<string>();
-        }
-    }
 
     private static readonly string Schema = $$"""
         CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -1086,7 +1103,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         CREATE TABLE IF NOT EXISTS index_tasks (path TEXT PRIMARY KEY,root TEXT NOT NULL,code INTEGER NOT NULL,kind TEXT NOT NULL,tombstone TEXT,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,due_utc TEXT NOT NULL,seen_utc TEXT NOT NULL,reason TEXT);
         CREATE INDEX IF NOT EXISTS ix_index_tasks_due ON index_tasks(state, due_utc);
         CREATE TABLE IF NOT EXISTS usn_checkpoints (volume_serial TEXT PRIMARY KEY, journal_id TEXT, next_usn TEXT, reconcile_utc TEXT);
-        INSERT OR IGNORE INTO meta(key,value) VALUES('lexicon_schema','2');
+        INSERT OR IGNORE INTO meta(key,value) VALUES('lexicon_schema','3');
         INSERT OR IGNORE INTO meta(key,value) VALUES('dictionary_fingerprint','');
         PRAGMA user_version=5;
         """;

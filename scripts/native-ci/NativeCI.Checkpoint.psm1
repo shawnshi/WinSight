@@ -18,7 +18,7 @@ function Get-NativeCIDigest([string]$Text) {
 function Get-NativeCISourceBinding {
     param([string]$RepositoryRoot, [hashtable]$Parameters, [Diagnostics.Stopwatch]$Clock, [int]$BudgetSeconds = 165)
     $files = [Collections.Generic.List[object]]::new()
-    foreach ($relative in @('desktop','inference','native/winsight-tokenizer','scripts/native-ci','scripts/Test-NativeCI.ps1','.github/workflows/native.yml')) {
+    foreach ($relative in @('desktop','inference','native/winsight-tokenizer','native/winsight-segmenter','scripts/native-ci','scripts/Test-NativeCI.ps1','.github/workflows/native.yml')) {
         $source = Assert-NativeCIPlainPath (Join-Path $RepositoryRoot $relative)
         $pending = [Collections.Generic.Queue[string]]::new(); $pending.Enqueue($source)
         while ($pending.Count) {
@@ -79,7 +79,7 @@ function Get-NativeCICommandIdentity {
     Get-NativeCIDigest (([ordered]@{gate=$Gate;executable=$Executable;arguments=$Arguments;directory=$Directory;environment=$ordered}) | ConvertTo-Json -Depth 8 -Compress)
 }
 function Get-NativeCIRequiredGates {
-    @('Inputs','Toolchain','TokenizerBuild','TokenizerSyntheticTests','ProductionRestore','ProductionPublish','SyntheticRestore','SyntheticTests','MediaSyntheticRestore','MediaSyntheticTests','ArtifactInventory')
+    @('Inputs','Toolchain','TokenizerBuild','TokenizerSyntheticTests','SegmenterBuild','ProductionRestore','ProductionPublish','SyntheticRestore','SyntheticTests','MediaSyntheticRestore','MediaSyntheticTests','ArtifactInventory')
 }
 function Assert-NativeCIProductionCheckpoint {
     param($Report,[string]$Root,[ValidateSet('Offline','PublicHosted')][string]$DependencyMode = 'Offline')

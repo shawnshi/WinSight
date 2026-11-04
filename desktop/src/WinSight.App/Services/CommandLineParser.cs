@@ -2,19 +2,31 @@ namespace WinSight.App.Services;
 
 public static class CommandLineParser
 {
+    public static string DefaultDataDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "WinSight",
+        "NativePreview");
+
     public static bool TryParse(
         string[] args,
         out string dataDir,
         out bool isSmokeTest,
         out bool isToggle,
+        out string? errorMessage) => TryParse(args, out dataDir, out isSmokeTest, out isToggle, out _, out errorMessage);
+
+    /// <param name="isAutostart">Set by the login item: start in the tray without showing the window.</param>
+    public static bool TryParse(
+        string[] args,
+        out string dataDir,
+        out bool isSmokeTest,
+        out bool isToggle,
+        out bool isAutostart,
         out string? errorMessage)
     {
-        dataDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "WinSight",
-            "NativePreview");
+        dataDir = DefaultDataDirectory;
         isSmokeTest = false;
         isToggle = false;
+        isAutostart = false;
         errorMessage = null;
 
         bool dataDirSeen = false;
@@ -51,6 +63,10 @@ public static class CommandLineParser
             else if (string.Equals(arg, "--toggle", StringComparison.OrdinalIgnoreCase))
             {
                 isToggle = true;
+            }
+            else if (string.Equals(arg, "--autostart", StringComparison.OrdinalIgnoreCase))
+            {
+                isAutostart = true;
             }
             else
             {

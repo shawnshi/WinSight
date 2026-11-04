@@ -68,6 +68,29 @@ impl Segmenter {
 
         ordered_tokens.join("\n")
     }
+
+    /// Order-stable tokens that KEEP duplicates, so term frequency survives into the lexical index.
+    /// `index_mode` selects jieba search mode (sub-words plus the whole word, for recall at index time);
+    /// otherwise precise mode is used (queries). HMM is on in both modes so out-of-vocabulary words
+    /// (names, new terms) are not shattered into single characters.
+    pub fn segment_ex(&self, text: &str, index_mode: bool) -> String {
+        if text.is_empty() {
+            return String::new();
+        }
+
+        let tokens = if index_mode {
+            self.jieba.cut_for_search(text, true)
+        } else {
+            self.jieba.cut(text, true)
+        };
+        let mut kept: Vec<&str> = Vec::with_capacity(tokens.len());
+        for token in tokens {
+            if token.word.chars().any(|c| c.is_alphanumeric()) {
+                kept.push(token.word);
+            }
+        }
+        kept.join("\n")
+    }
 }
 
 fn boundary<F, R>(action: F, fallback: R) -> R
@@ -166,6 +189,57 @@ pub unsafe extern "C" fn ws_segment_text(
 
             let segmenter = &*(handle as *const Segmenter);
             let joined = segmenter.segment(text);
+
+            let bytes = joined.into_bytes().into_boxed_slice();
+            *out_len = bytes.len();
+            *out_tokens_utf8 = Box::into_raw(bytes) as *mut u8;
+            0
+        }),
+        3,
+    )
+}
+
+/// Segment text with an explicit mode: `mode` 0 = query (precise, HMM on), 1 = index (search mode, HMM on).
+/// Unlike `ws_segment_text` the result is NOT deduplicated, so term frequency is preserved.
+/// Return codes are the same as `ws_segment_text`; any other `mode` returns 1.
+#[no_mangle]
+pub unsafe extern "C" fn ws_segment_text_ex(
+    handle: *const c_void,
+    text_utf8: *const u8,
+    len: usize,
+    mode: u32,
+    out_tokens_utf8: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    if !out_tokens_utf8.is_null() {
+        *out_tokens_utf8 = ptr::null_mut();
+    }
+    if !out_len.is_null() {
+        *out_len = 0;
+    }
+
+    if handle.is_null() || out_tokens_utf8.is_null() || out_len.is_null() || text_utf8.is_null() {
+        return 1;
+    }
+    if len >= MAX_SEGMENT_INPUT_LEN || mode > 1 {
+        return 1;
+    }
+
+    boundary(
+        AssertUnwindSafe(|| {
+            let slice = if len == 0 {
+                &[]
+            } else {
+                slice::from_raw_parts(text_utf8, len)
+            };
+
+            let text = match str::from_utf8(slice) {
+                Ok(s) => s,
+                Err(_) => return 1,
+            };
+
+            let segmenter = &*(handle as *const Segmenter);
+            let joined = segmenter.segment_ex(text, mode == 1);
 
             let bytes = joined.into_bytes().into_boxed_slice();
             *out_len = bytes.len();
@@ -381,5 +455,53 @@ mod tests {
     fn test_boundary_catches_panic_and_returns_3() {
         let code = boundary(|| panic!("simulated panic"), 3);
         assert_eq!(code, 3);
+    }
+
+    #[test]
+    fn test_ffi_segment_ex_keeps_frequency_and_modes() {
+        unsafe {
+            let dict_json = r#"{"base":null,"user":["电子病历五级"]}"#;
+            let mut handle: *mut c_void = ptr::null_mut();
+            assert_eq!(ws_segment_new(dict_json.as_ptr(), dict_json.len(), &mut handle), 0);
+
+            let run = |text: &str, mode: u32| -> (i32, String) {
+                let mut out_tokens: *mut u8 = ptr::null_mut();
+                let mut out_len: usize = 0;
+                let code = ws_segment_text_ex(handle, text.as_ptr(), text.len(), mode, &mut out_tokens, &mut out_len);
+                let result = if code == 0 && out_len > 0 && !out_tokens.is_null() {
+                    str::from_utf8(slice::from_raw_parts(out_tokens, out_len)).unwrap().to_string()
+                } else {
+                    String::new()
+                };
+                ws_segment_free_tokens(out_tokens, out_len);
+                (code, result)
+            };
+
+            // Duplicates survive in both modes: term frequency must reach the lexical index.
+            let (code, query) = run("医保/结算/医保/结算/合同", 0);
+            assert_eq!(code, 0);
+            assert_eq!(query, "医保\n结算\n医保\n结算\n合同");
+            let (_, index) = run("医保/结算/医保/结算/合同", 1);
+            assert_eq!(index.matches("医保").count(), 2);
+
+            // Index mode is a superset of query mode for the same text (query tokens are findable).
+            let sample = "DRG/DIP 医保结算 与 电子病历五级 报销比例";
+            let (_, q) = run(sample, 0);
+            let (_, i) = run(sample, 1);
+            for token in q.split('\n') {
+                assert!(i.split('\n').any(|t| t == token), "index mode lost query token {token}");
+            }
+
+            // Unknown modes, invalid input and punctuation-only text.
+            assert_eq!(run("医保", 2).0, 1);
+            assert_eq!(run("，。！", 0), (0, String::new()));
+            let invalid = [0xff_u8, 0xfe];
+            let mut out_tokens: *mut u8 = ptr::null_mut();
+            let mut out_len: usize = 0;
+            assert_eq!(ws_segment_text_ex(handle, invalid.as_ptr(), invalid.len(), 0, &mut out_tokens, &mut out_len), 1);
+            assert!(out_tokens.is_null());
+
+            ws_segment_free(handle);
+        }
     }
 }

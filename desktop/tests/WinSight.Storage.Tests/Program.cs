@@ -59,7 +59,7 @@ await Test("NeedsRebuild reports a stale generation and stays quiet when it matc
     var repository = new SqliteIndexRepository(Path.Combine(directory, "index.sqlite"));
     await repository.InitializeAsync();
     await repository.SetMetaAsync("profile_id", "profile-a");
-    await repository.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, "2");
+    await repository.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, IndexRebuildCoordinator.LexiconSchema);
     await repository.SetMetaAsync(IndexRebuildCoordinator.DictionaryKey, "dict-a");
     await repository.DisposeAsync();
     SqliteConnection.ClearAllPools();
@@ -541,6 +541,7 @@ await IncrementalQueueStorageTests.RunAsync(root, Test);
 await IncrementalQueueBehaviourTests.RunAsync(root, Test);
 await LargeDirectoryScaleTests.RunAsync(root, Test);
 await IncrementalQueueUsnTests.RunAsync(root, Test);
+await RetrievalCases.RunAsync(root, Test);
 Console.WriteLine($"RESULT passed={passed} failed={failed} synthetic={root}");
 return failed == 0 ? 0 : 1;
 

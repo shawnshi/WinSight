@@ -17,3 +17,63 @@ jobs:
         env:
           WINSIGHT_TEST_TOKENIZER: ${{ github.workspace }}/desktop/tests/Fixtures/Tokenizer/abi-tokenizer.json
         run: cargo test --locked
+  desktop-tests:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Provision exact SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: '11.0.100-rc.2.26504.105'
+          cache: false
+      - name: Build native Chinese segmenter
+        working-directory: native/winsight-segmenter
+        run: cargo build --release --locked
+      - name: Build MCP bridge
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          dotnet restore src/WinSight.Bridge/WinSight.Bridge.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge restore failed.' }
+          dotnet build src/WinSight.Bridge/WinSight.Bridge.csproj --no-restore --configuration Debug
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge build failed.' }
+      - name: Run model-free desktop suites
+        working-directory: desktop
+        shell: pwsh
+        # Image.Tests and the DocumentSearch Office/PowerPoint/host modes need OCR models, Office or private
+        # fixtures, so they stay manual. Every suite below is synthetic and model-free.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP 'winsight-suites'
+          # The Inference suite builds FakeHost as a side effect; the Runtime and Pause suites drive the real backend against it.
+          $fake = Join-Path (Get-Location) 'tests/WinSight.Inference.Tests/FakeHost/bin/Debug/net11.0/FakeHost.exe'
+          $runs = @(
+              @{ Suite = 'WinSight.DesktopPolicy.Tests';      Args = @() },
+              @{ Suite = 'WinSight.Inference.Tests';          Args = @() },
+              @{ Suite = 'WinSight.Runtime.Tests';            Args = @() },
+              @{ Suite = 'WinSight.Pause.Tests';              Args = @('{1}', '{0}/pause') },
+              @{ Suite = 'WinSight.Storage.Tests';            Args = @() },
+              @{ Suite = 'WinSight.Indexing.Tests';           Args = @() },
+              @{ Suite = 'WinSight.IndexingSettlement.Tests'; Args = @('{0}/indexing-settlement') },
+              @{ Suite = 'WinSight.DocumentSearch.Tests';     Args = @('{0}/document-search') },
+              @{ Suite = 'WinSight.DocumentSearch.Tests';     Args = @('--review-cases', '{0}/document-review') },
+              @{ Suite = 'WinSight.Bridge.Tests';             Args = @('{0}/bridge') }
+          )
+          $restored = @{}
+          foreach ($run in $runs) {
+              $project = "tests/$($run.Suite)/$($run.Suite).csproj"
+              if (-not $restored.ContainsKey($run.Suite)) {
+                  $restored[$run.Suite] = $true
+                  if ($run.Suite -eq 'WinSight.IndexingSettlement.Tests') { dotnet restore $project }
+                  else { dotnet restore $project --locked-mode }
+                  if ($LASTEXITCODE -ne 0) { throw "Restore failed: $($run.Suite)" }
+                  dotnet build $project --no-restore --configuration Debug
+                  if ($LASTEXITCODE -ne 0) { throw "Build failed: $($run.Suite)" }
+              }
+              # Rooted arguments are canonicalized: a mixed "\" and "/" path is stored by the indexer in its normalized form and
+              # the suites then fail to find the file under the spelling they built from it.
+              $arguments = @($run.Args | ForEach-Object { $value = $_ -f $work, $fake; if ([IO.Path]::IsPathRooted($value)) { [IO.Path]::GetFullPath($value) } else { $value } })
+              dotnet run --project $project --no-build --no-restore --configuration Debug -- @arguments
+              if ($LASTEXITCODE -ne 0) { throw "Suite failed: $($run.Suite) $($run.Args -join ' ')" }
+          }

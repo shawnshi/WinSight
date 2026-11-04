@@ -81,7 +81,8 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         }
         if (queryVector is not null)
         {
-            foreach (var group in Semantic(files.Values, queryVector, plan, cancellationToken).GroupBy(s => s.Channel))
+            // Vectors read from SQLite were validated once when decoded; only foreign repositories need a per-query check.
+            foreach (var group in Semantic(files.Values, queryVector, plan, cancellationToken, validateVectors: repository is not SqliteIndexRepository).GroupBy(s => s.Channel))
             {
                 if (group.Any(s => s.SmallSample)) notice = Append(notice, "Small-sample semantic fallback: fewer than 5 calibration source units in a channel; cosine >= 0.5.");
                 Channel("semantic:" + group.Key, 1, group.Where(s => s.Accepted).OrderByDescending(s => s.Rank)
@@ -161,7 +162,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         internal double Score;
         internal List<string> Channels { get; } = [];
     }
-    private sealed record SemanticRow(IndexedFile File, IndexSegment Segment, string Channel, double Cosine,
+    private readonly record struct SemanticRow(IndexedFile File, IndexSegment Segment, string Channel, double Cosine,
         double Rank = 0, bool Accepted = false, bool SmallSample = false);
     private static string Unit(IndexSegment segment) => SearchText.SourceUnit(segment);
     private static string Append(string? notice, string message) => notice is null ? message : notice.Contains(message, StringComparison.Ordinal) ? notice : notice + " " + message;
@@ -194,7 +195,45 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         }).ToArray();
         return new(files, words, await repository.GetMetaAsync("profile_id", ct).ConfigureAwait(false));
     }
-    private static IReadOnlyList<SemanticRow> Semantic(IEnumerable<IndexedFile> files, float[] query, DocumentSearchQuery plan, CancellationToken ct)
+    // A channel is a population of source units (text units, page visuals, OCR units ...). With fewer than this many
+    // units no statistic is meaningful, so the legacy absolute cosine floor applies.
+    internal const int MinCalibratedUnits = 5;
+    internal const double SmallSampleCosineFloor = 0.5;
+    // Expected number of false positives per channel per query when the query matches nothing in the corpus.
+    // Controlling the family-wise error instead of a fixed top percentile keeps the noise level independent of
+    // corpus size (a fixed z>=2 admits ~2% of every channel, i.e. thousands of irrelevant units in a large index).
+    internal const double FalsePositiveBudget = 1.0;
+    internal const double MinimumSignificance = 1.0;
+
+    /// <summary>z that an outlier must reach so that at most <see cref="FalsePositiveBudget"/> units pass by chance.</summary>
+    internal static double SignificanceThreshold(int populationSize) =>
+        populationSize < MinCalibratedUnits ? double.PositiveInfinity
+            : Math.Max(MinimumSignificance, NormalQuantile(1 - Math.Min(0.5, FalsePositiveBudget / populationSize)));
+
+    /// <summary>Standard normal quantile (Acklam's rational approximation, relative error about 1e-9).</summary>
+    internal static double NormalQuantile(double p)
+    {
+        if (!(p > 0 && p < 1)) throw new ArgumentOutOfRangeException(nameof(p));
+        double[] a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+        double[] b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01];
+        double[] c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+        double[] d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00];
+        const double low = 0.02425;
+        if (p < low)
+        {
+            double q = Math.Sqrt(-2 * Math.Log(p));
+            return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        }
+        if (p <= 1 - low)
+        {
+            double q = p - 0.5, r = q * q;
+            return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+        }
+        double u = Math.Sqrt(-2 * Math.Log(1 - p));
+        return -(((((c[0] * u + c[1]) * u + c[2]) * u + c[3]) * u + c[4]) * u + c[5]) / ((((d[0] * u + d[1]) * u + d[2]) * u + d[3]) * u + 1);
+    }
+
+    private static IReadOnlyList<SemanticRow> Semantic(IEnumerable<IndexedFile> files, float[] query, DocumentSearchQuery plan, CancellationToken ct, bool validateVectors = true)
     {
         var rows = new List<SemanticRow>();
         foreach (var file in files)
@@ -202,26 +241,52 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
             {
                 ct.ThrowIfCancellationRequested();
                 if (segment.Vector is not { } vector || !plan.Matches(file.Path, file.Info, segment.Source, segment.Excerpt)) continue;
-                VectorContract.Validate(vector);
-                double cosine = 0;
-                for (int i = 0; i < vector.Length; i++) cosine += (double)vector[i] * query[i];
+                if (validateVectors) VectorContract.Validate(vector);
+                double cosine = VectorMath.Dot(vector, query);
                 var channel = segment.Source?.Channel ?? (segment.Modality == "image" ? "page-visual" : segment.Modality);
                 rows.Add(new(file, segment, channel, cosine));
             }
-        rows = rows.GroupBy(r => (r.File.Id, Unit(r.Segment), r.Channel)).Select(g => g.MaxBy(r => r.Cosine)!).ToList();
-        var result = new List<SemanticRow>();
-        foreach (var channel in rows.GroupBy(r => r.Channel))
+        // One row per (file, unit, channel): the best vector of a unit represents it.
+        var best = new Dictionary<(long, string, string), SemanticRow>();
+        foreach (var row in rows)
+        {
+            var key = (row.File.Id, SearchText.SourceUnit(row.Segment), row.Channel);
+            if (!best.TryGetValue(key, out var old) || row.Cosine > old.Cosine) best[key] = row;
+        }
+        var result = new List<SemanticRow>(best.Count);
+        foreach (var channel in best.Values.GroupBy(r => r.Channel))
         {
             var group = channel.ToArray();
-            bool small = group.Length < 5;
-            double mean = group.Average(r => r.Cosine);
-            double deviation = Math.Sqrt(group.Average(r => Math.Pow(r.Cosine - mean, 2)));
+            bool small = group.Length < MinCalibratedUnits;
+            double mean = 0;
+            foreach (var row in group) mean += row.Cosine;
+            mean /= group.Length;
+            double variance = 0;
+            foreach (var row in group) variance += (row.Cosine - mean) * (row.Cosine - mean);
+            double deviation = Math.Sqrt(variance / group.Length);
+            double threshold = SignificanceThreshold(group.Length);
             foreach (var row in group)
             {
                 double rank = small ? row.Cosine : deviation > 1e-12 ? (row.Cosine - mean) / deviation : 0;
-                result.Add(row with { Rank = rank, Accepted = small ? row.Cosine >= 0.5 : rank >= 2, SmallSample = small });
+                result.Add(row with { Rank = rank, Accepted = small ? row.Cosine >= SmallSampleCosineFloor : rank >= threshold, SmallSample = small });
             }
         }
         return result;
+    }
+}
+
+/// <summary>SIMD dot product over embedding vectors; the query path scans every candidate vector.</summary>
+internal static class VectorMath
+{
+    internal static double Dot(ReadOnlySpan<float> left, ReadOnlySpan<float> right)
+    {
+        if (left.Length != right.Length) throw new ArgumentException("Vector lengths differ.");
+        int width = System.Numerics.Vector<float>.Count, i = 0;
+        var sum = System.Numerics.Vector<float>.Zero;
+        for (; i <= left.Length - width; i += width)
+            sum += new System.Numerics.Vector<float>(left.Slice(i, width)) * new System.Numerics.Vector<float>(right.Slice(i, width));
+        double total = System.Numerics.Vector.Sum(sum);
+        for (; i < left.Length; i++) total += (double)left[i] * right[i];
+        return total;
     }
 }

@@ -22,6 +22,9 @@ public sealed class TrayIconService : IDisposable
     private readonly IntPtr hInstance;
     private bool disposed;
     private IntPtr iconHandle;
+    private string tooltip = "WinSight (Native Preview)";
+    // Explorer broadcasts this after a restart or crash; every notification icon is gone and must be added again.
+    private readonly uint taskbarCreatedMessage = NativeMethods.RegisterWindowMessage("TaskbarCreated");
     private readonly MainWindowViewModel? indexing;
 
     public string PauseMenuText => indexing?.PauseActionText ?? "Indexing status unavailable";
@@ -60,13 +63,16 @@ public sealed class TrayIconService : IDisposable
         if (NativeMethods.RegisterClassEx(ref wndClass) == 0)
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot register the WinSight tray window.");
 
+        // A hidden top-level tool window, not a message-only window: message-only windows are excluded from
+        // broadcasts, so they would never see TaskbarCreated.
+        const uint WS_EX_TOOLWINDOW = 0x00000080;
         hWnd = NativeMethods.CreateWindowEx(
-            0,
+            WS_EX_TOOLWINDOW,
             WindowClassName,
             "WinSight_Tray_MsgWnd",
             0,
             0, 0, 0, 0,
-            new IntPtr(-3), // HWND_MESSAGE
+            IntPtr.Zero,
             IntPtr.Zero,
             hInstance,
             IntPtr.Zero);
@@ -104,6 +110,11 @@ public sealed class TrayIconService : IDisposable
             Path.Combine(AppContext.BaseDirectory, "Assets", "WinSight.ico"), imageIcon, 0, 0, loadFromFile | defaultSize);
         if (iconHandle == IntPtr.Zero)
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot load the WinSight tray icon.");
+        AddIcon();
+    }
+
+    private void AddIcon()
+    {
         var nid = new NativeMethods.NOTIFYICONDATA
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.NOTIFYICONDATA>(),
@@ -112,23 +123,36 @@ public sealed class TrayIconService : IDisposable
             uFlags = NativeMethods.NIF_MESSAGE | NativeMethods.NIF_ICON | NativeMethods.NIF_TIP,
             uCallbackMessage = WM_TRAYICON,
             hIcon = iconHandle,
-            szTip = "WinSight (Native Preview)"
+            szTip = tooltip
         };
 
         if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_ADD, ref nid))
             throw new InvalidOperationException("Cannot add the WinSight tray icon.");
     }
 
+    /// <summary>Re-adds the icon after the taskbar was recreated; true when the shell accepted it.</summary>
+    internal bool RestoreIcon()
+    {
+        if (disposed || iconHandle == IntPtr.Zero) return false;
+        try { AddIcon(); return true; }
+        catch (InvalidOperationException error)
+        {
+            WinSight.Core.Diagnostics.AppLog.Warn("tray icon could not be restored after the taskbar was recreated", error);
+            return false;
+        }
+    }
+
     public void UpdateTooltip(string tooltip)
     {
         if (hWnd == IntPtr.Zero) return;
+        this.tooltip = tooltip.Length > 120 ? tooltip[..120] : tooltip;
         var nid = new NativeMethods.NOTIFYICONDATA
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.NOTIFYICONDATA>(),
             hWnd = hWnd,
             uID = TrayIconId,
             uFlags = NativeMethods.NIF_TIP,
-            szTip = tooltip.Length > 120 ? tooltip[..120] : tooltip
+            szTip = this.tooltip
         };
         NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_MODIFY, ref nid);
     }
@@ -184,6 +208,11 @@ public sealed class TrayIconService : IDisposable
 
     private IntPtr CustomWndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        if (taskbarCreatedMessage != 0 && msg == taskbarCreatedMessage)
+        {
+            RestoreIcon();
+            return IntPtr.Zero;
+        }
         if (msg == WM_TRAYICON)
         {
             uint mouseEvent = (uint)(lParam.ToInt64() & 0xFFFF);

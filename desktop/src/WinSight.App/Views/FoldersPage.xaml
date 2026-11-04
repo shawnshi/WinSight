@@ -12,8 +12,8 @@
         <StackPanel Spacing="24" MaxWidth="800" HorizontalAlignment="Left">
             <!-- Header -->
             <StackPanel Spacing="4">
-                <TextBlock Text="Search Folders" Style="{ThemeResource TitleTextBlockStyle}"/>
-                <TextBlock Text="Manage local folders indexed for instant keyword and semantic search."
+                <TextBlock Text="搜索目录管理" Style="{ThemeResource TitleTextBlockStyle}"/>
+                <TextBlock Text="管理用于即时关键词和多模态语义搜索的本地目录。"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             </StackPanel>
 
@@ -31,16 +31,16 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel Spacing="4">
-                            <TextBlock Text="Background monitoring &amp; indexing" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
-                            <TextBlock Text="Automatically watch authorized folders for changes and index updates when idle."
+                            <TextBlock Text="后台监听与增量索引" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="在系统空闲时自动监听已授权目录的文件变动并更新索引。"
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
 
                         <ToggleSwitch Grid.Column="1"
                                       IsOn="{x:Bind ViewModel.BackgroundIndexingEnabled, Mode=TwoWay}"
-                                      OnContent="Enabled"
-                                      OffContent="Disabled"
+                                      OnContent="已启用"
+                                      OffContent="已禁用"
                                       VerticalAlignment="Center"/>
                     </Grid>
 
@@ -49,7 +49,7 @@
                                Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
 
                     <!-- NM-UI-03: Explicit user action to confirm roots and set SetUp=true to arm watcher -->
-                    <Button Content="Confirm Folders &amp; Enable Monitoring"
+                    <Button Content="确认目录并启用监听"
                             Click="OnConfirmFoldersClick"
                             Style="{ThemeResource AccentButtonStyle}"/>
                 </StackPanel>
@@ -58,8 +58,8 @@
             <!-- Indexed Folders Section -->
             <StackPanel Spacing="12">
                 <Grid>
-                    <TextBlock Text="Indexed Folders" Style="{ThemeResource SubtitleTextBlockStyle}" VerticalAlignment="Center"/>
-                    <Button x:Name="AddFolderButton" Content="Add Folder"
+                    <TextBlock Text="已索引目录" Style="{ThemeResource SubtitleTextBlockStyle}" VerticalAlignment="Center"/>
+                    <Button x:Name="AddFolderButton" Content="添加目录"
                             AutomationProperties.AutomationId="AddFolderButton"
                             Click="OnAddFolderClick"
                             HorizontalAlignment="Right"
@@ -73,22 +73,31 @@
                           BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                           CornerRadius="6"
                           MinHeight="120"
-                          MaxHeight="240">
+                          MaxHeight="260">
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="x:String">
-                            <Grid Padding="8,6" ColumnSpacing="12">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <FontIcon Glyph="&#xED25;" FontSize="18" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Column="1" Text="{x:Bind}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                <Button Grid.Column="2"
-                                        Content="Remove"
-                                        Click="OnRemoveFolderClick"
-                                        Tag="{x:Bind}"/>
-                            </Grid>
+                            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,3">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Background="{ThemeResource AccentFillColorTertiaryBrush}" CornerRadius="4" Width="32" Height="32">
+                                        <FontIcon Glyph="&#xED25;" FontSize="16" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                        <TextBlock Text="{x:Bind}" Style="{ThemeResource BodyStrongTextBlockStyle}" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="本地已授权索引根目录" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    </StackPanel>
+                                    <Button Grid.Column="2"
+                                            Content="移除"
+                                            Click="OnRemoveFolderClick"
+                                            Tag="{x:Bind}"/>
+                                </Grid>
+                            </Border>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
@@ -96,14 +105,14 @@
 
             <!-- Skipped Subfolders Section -->
             <StackPanel Spacing="12">
-                <TextBlock Text="Skipped Subfolders" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                <TextBlock Text="跳过的子目录" Style="{ThemeResource SubtitleTextBlockStyle}"/>
                 <Grid ColumnSpacing="8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBox x:Name="NewSkippedBox" PlaceholderText="Path to skip within indexed folders..."/>
-                    <Button Grid.Column="1" Content="Add Skipped" Click="OnAddSkippedClick"/>
+                    <TextBox x:Name="NewSkippedBox" PlaceholderText="在已索引目录中要跳过的路径..."/>
+                    <Button Grid.Column="1" Content="添加跳过" Click="OnAddSkippedClick"/>
                 </Grid>
 
                 <ListView ItemsSource="{x:Bind ViewModel.Skipped, Mode=OneWay}"
@@ -121,7 +130,7 @@
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="{x:Bind}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                <Button Grid.Column="1" Content="Remove" Click="OnRemoveSkippedClick" Tag="{x:Bind}"/>
+                                <Button Grid.Column="1" Content="移除" Click="OnRemoveSkippedClick" Tag="{x:Bind}"/>
                             </Grid>
                         </DataTemplate>
                     </ListView.ItemTemplate>
@@ -130,14 +139,14 @@
 
             <!-- Excluded File Types Section -->
             <StackPanel Spacing="12">
-                <TextBlock Text="Excluded Extensions" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                <TextBlock Text="排除的文件扩展名" Style="{ThemeResource SubtitleTextBlockStyle}"/>
                 <Grid ColumnSpacing="8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBox x:Name="NewExtBox" PlaceholderText="Extension e.g. .tmp, .bak, .log..."/>
-                    <Button Grid.Column="1" Content="Add Extension" Click="OnAddSkipTypeClick"/>
+                    <TextBox x:Name="NewExtBox" PlaceholderText="扩展名，如 .tmp, .bak, .log..."/>
+                    <Button Grid.Column="1" Content="添加扩展名" Click="OnAddSkipTypeClick"/>
                 </Grid>
 
                 <ListView ItemsSource="{x:Bind ViewModel.SkipTypes, Mode=OneWay}"
@@ -155,7 +164,7 @@
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="{x:Bind}" VerticalAlignment="Center"/>
-                                <Button Grid.Column="1" Content="Remove" Click="OnRemoveSkipTypeClick" Tag="{x:Bind}"/>
+                                <Button Grid.Column="1" Content="移除" Click="OnRemoveSkipTypeClick" Tag="{x:Bind}"/>
                             </Grid>
                         </DataTemplate>
                     </ListView.ItemTemplate>

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WinSight.Core;
+using WinSight.Core.Diagnostics;
 using WinSight.Infrastructure.Runtime;
 
 var json = new JsonSerializerOptions
@@ -15,10 +16,11 @@ try
     if (args.Length == 0 || args[0] is "help" or "--help")
     {
         Console.WriteLine("WinSight native migration preview (not a drop-in legacy CLI replacement).\n"
-            + "Commands: configure, status, search, index, model-info\n"
+            + "Commands: configure, status, search, index, model-info, diagnostics\n"
             + "All require --data-dir ABSOLUTE_PATH. configure: --root PATH [--root PATH] [--code-root PATH]\n"
             + "[--host EXE --models DIR --manifest JSON]. search: --query TEXT [--mode keyword|hybrid|semantic]\n"
             + "[--root PATH --kind KIND --limit N]. index: --root PATH [--code] [--force].\n"
+            + "diagnostics: [--out FILE.zip] writes a redacted support bundle (logs, settings, file listing; no documents).\n"
             + "Only explicit index/model-info/semantic requests start the inference host; no personal roots are inferred.");
         return 0;
     }
@@ -39,12 +41,21 @@ try
         "search" => ["--data-dir", "--query", "--mode", "--root", "--kind", "--limit"],
         "index" => ["--data-dir", "--root", "--code", "--force"],
         "status" or "model-info" => ["--data-dir"],
+        "diagnostics" => ["--data-dir", "--out"],
         _ => throw new ArgumentException($"Unknown command {command}.")
     };
     foreach (var key in options.Keys)
         if (!allowed.Contains(key)) throw new ArgumentException($"Unsupported option {key} for {command}.");
     var data = One("--data-dir") ?? throw new ArgumentException("--data-dir is required; the preview never discovers private settings.");
     if (!Path.IsPathFullyQualified(data)) throw new ArgumentException("--data-dir must be absolute.");
+    AppLog.Initialize(data, "cli");
+    AppLog.InstallGlobalHandlers();
+    if (command == "diagnostics")
+    {
+        var bundle = DiagnosticsBundle.Create(data, One("--out"));
+        Console.WriteLine(JsonSerializer.Serialize(new { bundle }, json));
+        return 0;
+    }
     await using var backend = await DesktopBackend.CreateAsync(new DesktopOptions(data, EnableBackgroundIndexing: false), stop.Token);
     object response;
     switch (command)

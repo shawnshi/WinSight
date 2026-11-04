@@ -6,8 +6,6 @@ using Microsoft.Win32.SafeHandles;
 
 namespace WinSight.Infrastructure.Indexing;
 
-public sealed record UsnCheckpoint(string VolumeSerial, string JournalId, string NextUsn, string ReconcileUtc);
-
 public interface IUsnCheckpointRepository
 {
     Task SaveUsnCheckpointAsync(string volumeSerial, string journalId, string nextUsn, DateTimeOffset reconcileUtc, CancellationToken cancellationToken = default);

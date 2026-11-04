@@ -14,6 +14,8 @@ public static class IndexRebuildCoordinator
 {
     public const string GenerationKey = "generation_id";
     public const string LexiconSchemaKey = "lexicon_schema";
+    /// <summary>3 = jieba search-mode index tokens with term frequency, shared normalization, token-aware chunking.</summary>
+    public const string LexiconSchema = "3";
     public const string DictionaryKey = "dictionary_fingerprint";
 
     /// <summary>True when the live database was built with a different lexicon or model identity.</summary>
@@ -23,7 +25,7 @@ public static class IndexRebuildCoordinator
         if (!File.Exists(database)) return false;
         try
         {
-            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Mode = SqliteOpenMode.ReadOnly }.ToString());
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = "SELECT key,value FROM meta WHERE key IN ('profile_id','lexicon_schema','dictionary_fingerprint')";
@@ -31,8 +33,12 @@ public static class IndexRebuildCoordinator
             var meta = new Dictionary<string, string>(StringComparer.Ordinal);
             while (rows.Read()) meta[rows.GetString(0)] = rows.GetString(1);
             if (meta.Count == 0) return false;                       // empty or legacy database: initialise in place
-            if (meta.GetValueOrDefault("profile_id") != expectedProfile) return true;
-            if (meta.GetValueOrDefault("lexicon_schema") != "2") return true;
+            // The schema writes default lexicon rows, so a brand-new index is never "empty" here. An index that never stored a
+            // profile has no vectors to invalidate (fresh, or keyword-only content) and must not be rebuilt just for existing:
+            // the rebuild would replace it with an empty staging copy and discard rows a cancelled first run had queued.
+            var storedProfile = meta.GetValueOrDefault("profile_id");
+            if (!string.IsNullOrEmpty(storedProfile) && storedProfile != expectedProfile) return true;
+            if (meta.GetValueOrDefault("lexicon_schema") != LexiconSchema) return true;
             var stored = meta.GetValueOrDefault("dictionary_fingerprint");
             // An unset fingerprint on a database with content means the identity is unknown: rebuild once.
             return !string.IsNullOrEmpty(stored) && stored != expectedDictionary;
@@ -101,7 +107,7 @@ public static class IndexRebuildCoordinator
 
     private static async Task<string?> ValidateAsync(string database, Func<string, Task<IReadOnlyList<string>>> probe, CancellationToken cancellationToken)
     {
-        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Mode = SqliteOpenMode.ReadOnly }.ToString());
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         if (Scalar(connection, "PRAGMA integrity_check") != "ok") return "integrity_check failed";
         if (Scalar(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check") != "0") return "foreign_key_check failed";

@@ -6,3 +6,4 @@
 # Preserve the inherited third-party notice verbatim, including its original spaces.
 # Its SHA-256 is checked against the upstream source during publication validation.
 licenses/DigUp-Acknowledgements.txt -whitespace
+releases/*.exe filter=lfs diff=lfs merge=lfs -text

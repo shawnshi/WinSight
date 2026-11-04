@@ -4,7 +4,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 if($PSVersionTable.PSEdition-cne'Desktop'-or$PSVersionTable.PSVersion.Major-ne5-or$PSVersionTable.PSVersion.Minor-ne1-or-not[Environment]::Is64BitProcess){throw 'x64 Windows PowerShell 5.1 is required.'}
 $env:PSModulePath=$PSHOME+'\Modules';Import-Module ($PSHOME+'\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Force
-$sourceRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'));$repo=[IO.Path]::GetFullPath((Join-Path $sourceRoot '..\..'))
+$sourceRoot = if (Test-Path (Join-Path $PSScriptRoot '../legacy/NativeStandardLiveShell.psm1')) { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../legacy')) } else { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')) }; $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $OutputDirectory=[IO.Path]::GetFullPath($OutputDirectory)
 if(Test-Path -LiteralPath $OutputDirectory){throw 'A fresh owned output directory is required; retain previous failures.'}
 for($p=$OutputDirectory;$p;$p=[IO.Path]::GetDirectoryName($p)){if((Test-Path -LiteralPath $p)-and((Get-Item -LiteralPath $p -Force).Attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'Fixture ancestors cannot be reparse points.'}}

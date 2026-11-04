@@ -85,7 +85,12 @@ internal static class SearchText
         return words.ToArray();
     }
 
-    internal static string SourceUnit(IndexSegment segment) => segment.Source is { } source
+    // Unit keys are compared for every cached vector on every query; computing them (a JSON serialization for
+    // page/sheet sources) once per segment object removes an allocation-heavy pass from the hot path.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IndexSegment, string> UnitKeys = new();
+    internal static string SourceUnit(IndexSegment segment) => UnitKeys.GetValue(segment, ComputeSourceUnit);
+
+    private static string ComputeSourceUnit(IndexSegment segment) => segment.Source is { } source
         ? source.Location.Type is "text" or "image" ? "file" : JsonSerializer.Serialize(source.Location)
         : segment.Kind == "name" || segment.Kind == "chunk" && segment.Location is null ? "file"
         : $"{segment.Kind}:{segment.Location}:{segment.LocationEnd}";
@@ -117,7 +122,6 @@ internal static class SearchText
 
     internal static bool Inflects(string word) => word.EnumerateRunes().Any(r => r.Value is >= 0x0900 and <= 0x0DFF or >= 0x0600 and <= 0x06FF);
     internal static string Quote(string word) => "\"" + word.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
-    internal static bool IsLookup(string[] terms) => terms.Length > 0 && terms.All(t => t.Any(char.IsDigit) && (t.Any(char.IsLetter) || t.Length >= 4));
 
     internal static string[]? Identifier(string query)
     {
@@ -146,8 +150,38 @@ internal static class SearchText
     /// </summary>
     internal static string SegmentedTokens(string text)
     {
-        var tokens = NativeSegmenter.Segment(text);
+        // Same normalization as the literal index, index-mode segmentation, duplicates kept (term frequency).
+        var tokens = NativeSegmenter.SegmentForIndex(Normalize(text));
         return string.Join(' ', tokens);
+    }
+
+    // Single-character CJK function words. They match almost every Chinese unit, so counting them as query terms
+    // only dilutes coverage and drops units that contain the real content word.
+    private static readonly HashSet<string> CjkFunctionWords = new((
+        "的 了 是 在 和 与 及 或 我 你 他 她 它 们 这 那 有 为 以 就 都 也 要 从 到 对 把 被 让 给 吗 呢 吧 啊 哦 之 其 而 且 等 并 但 若 则 么").Split(' '), StringComparer.Ordinal);
+
+    /// <summary>
+    /// Lexical query terms split by index: <c>Latin</c> terms go to the literal (porter) index, <c>Cjk</c> tokens come from
+    /// the shared segmenter and go to the segmented index. Coverage is computed over the union.
+    /// When the segmenter is unavailable the whole CJK words are returned as literal terms (degraded, never silent).
+    /// </summary>
+    internal static (string[] Latin, string[] Cjk) LexicalTerms(string query)
+    {
+        var latin = new List<string>();
+        var cjk = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var word in Words(query).Where(w => (w.EnumerateRunes().Count() >= 2 || ContainsCjk(w) || w.All(char.IsDigit)) && !Stopwords.Contains(w)))
+        {
+            if (latin.Count + cjk.Count >= 64) break;
+            if (!ContainsCjk(word)) { if (seen.Add(word)) latin.Add(word); continue; }
+            IReadOnlyList<string> tokens;
+            try { tokens = NativeSegmenter.Segment(word); }
+            catch (SegmenterUnavailableException) { if (seen.Add(word)) latin.Add(word); continue; }
+            var content = tokens.Where(t => t.Length != 0 && !(CjkFunctionWords.Contains(t))).ToArray();
+            foreach (var token in content.Length != 0 ? content : tokens)
+                if (token.Length != 0 && seen.Add(token)) cjk.Add(token);
+        }
+        return (latin.ToArray(), cjk.ToArray());
     }
 
     /// <summary>True when the segmented lexical channel can be used for this process.</summary>

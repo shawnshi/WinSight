@@ -8,7 +8,7 @@ namespace WinSight.App.ViewModels;
 
 public sealed class FoldersViewModel : INotifyPropertyChanged
 {
-    private readonly IDesktopBackend backend;
+    private readonly ISettingsBackend backend;
     private AppSettings settings;
     private bool backgroundIndexingEnabled;
     private string statusMessage = string.Empty;
@@ -59,7 +59,7 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
         set => SetProperty(ref statusMessage, value);
     }
 
-    public FoldersViewModel(IDesktopBackend backend, AppSettings? initialSettings = null)
+    public FoldersViewModel(ISettingsBackend backend, AppSettings? initialSettings = null)
     {
         this.backend = backend;
         this.settings = initialSettings ?? new AppSettings();

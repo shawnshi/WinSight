@@ -7,9 +7,9 @@ namespace WinSight.App.Views;
 
 public sealed partial class McpConsolePage : Page
 {
-    private readonly IDesktopBackend backend;
+    private readonly IMcpBackend backend;
 
-    public McpConsolePage(IDesktopBackend backend)
+    public McpConsolePage(IMcpBackend backend)
     {
         this.backend = backend;
         InitializeComponent();

@@ -10,8 +10,8 @@
         <StackPanel Spacing="24" MaxWidth="800" HorizontalAlignment="Left">
             <!-- Header -->
             <StackPanel Spacing="4">
-                <TextBlock Text="Storage &amp; Embedding Model" Style="{ThemeResource TitleTextBlockStyle}"/>
-                <TextBlock Text="Local vector database index metrics and embedding model execution host diagnostics."
+                <TextBlock Text="存储与向量模型" Style="{ThemeResource TitleTextBlockStyle}"/>
+                <TextBlock Text="本地向量数据库索引统计指标与嵌入模型执行宿主运行诊断。"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             </StackPanel>
 
@@ -19,7 +19,7 @@
             <InfoBar IsOpen="True"
                      IsClosable="False"
                      Severity="Informational"
-                     Title="Native Migration Preview Pipeline"
+                     Title="原生预览版检索管线"
                      Message="{x:Bind ViewModel.MigrationNotice, Mode=OneWay}"/>
 
             <!-- Storage & Index Database Card -->
@@ -29,7 +29,7 @@
                     CornerRadius="8"
                     Padding="20">
                 <StackPanel Spacing="16">
-                    <TextBlock Text="Index Database Status" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="索引数据库状态" Style="{ThemeResource SubtitleTextBlockStyle}"/>
 
                     <Grid RowSpacing="10" ColumnSpacing="16">
                         <Grid.RowDefinitions>
@@ -42,18 +42,24 @@
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Index Path:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="索引文件路径：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind ViewModel.DatabasePath, Mode=OneWay}" TextWrapping="Wrap"/>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Files Summary:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="16">
-                            <TextBlock Text="{x:Bind FormatTotal(ViewModel.FilesCount), Mode=OneWay}"/>
-                            <TextBlock Text="{x:Bind FormatDone(ViewModel.DoneCount), Mode=OneWay}" Foreground="{ThemeResource SystemFillColorSuccessBrush}"/>
-                            <TextBlock Text="{x:Bind FormatPending(ViewModel.PendingCount), Mode=OneWay}" Foreground="{ThemeResource SystemFillColorCautionBrush}"/>
-                            <TextBlock Text="{x:Bind FormatFailed(ViewModel.FailedCount), Mode=OneWay}" Foreground="{ThemeResource SystemFillColorCriticalBrush}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="文件索引总览：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <StackPanel Grid.Row="1" Grid.Column="1" Spacing="8">
+                            <StackPanel Orientation="Horizontal" Spacing="16">
+                                <TextBlock Text="{x:Bind FormatTotal(ViewModel.FilesCount), Mode=OneWay}"/>
+                                <TextBlock Text="{x:Bind FormatDone(ViewModel.DoneCount), Mode=OneWay}" Foreground="{ThemeResource SystemFillColorSuccessBrush}"/>
+                                <TextBlock Text="{x:Bind FormatPending(ViewModel.PendingCount), Mode=OneWay}" Foreground="{ThemeResource SystemFillColorCautionBrush}"/>
+                                <TextBlock Text="{x:Bind FormatFailed(ViewModel.FailedCount), Mode=OneWay}" Foreground="{ThemeResource SystemFillColorCriticalBrush}"/>
+                            </StackPanel>
+                            <ProgressBar Value="{x:Bind ComputePercent(ViewModel.DoneCount, ViewModel.FilesCount), Mode=OneWay}"
+                                         Maximum="100" Height="6" CornerRadius="3"
+                                         Foreground="{ThemeResource SystemFillColorSuccessBrush}"
+                                         Background="{ThemeResource ControlAltFillColorSecondaryBrush}"/>
                         </StackPanel>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Status Detail:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="状态详情：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind ViewModel.StatusDetail, Mode=OneWay}" TextWrapping="Wrap"/>
                     </Grid>
                 </StackPanel>
@@ -66,7 +72,7 @@
                     CornerRadius="8"
                     Padding="20">
                 <StackPanel Spacing="12">
-                    <TextBlock Text="Incremental Index Queue" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="增量索引任务队列" Style="{ThemeResource SubtitleTextBlockStyle}"/>
                     <TextBlock Text="{x:Bind ViewModel.QueueSummary, Mode=OneWay}" TextWrapping="Wrap"
                                Style="{ThemeResource BodyTextBlockStyle}"/>
                     <TextBlock Text="{x:Bind ViewModel.QueueHealth, Mode=OneWay}" TextWrapping="Wrap"
@@ -83,7 +89,7 @@
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                    <Button Content="Refresh Queue Status" Click="OnRefreshQueueClick"
+                    <Button Content="刷新队列状态" Click="OnRefreshQueueClick"
                             AutomationProperties.AutomationId="RefreshQueueStatusButton"/>
                 </StackPanel>
             </Border>
@@ -95,15 +101,15 @@
                     CornerRadius="8"
                     Padding="20">
                 <StackPanel Spacing="16">
-                    <TextBlock Text="Embedding Model Host" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="向量嵌入模型宿主" Style="{ThemeResource SubtitleTextBlockStyle}"/>
 
-                    <TextBlock Text="Embedding model execution host provides 768-dimensional L2-normalized vector embeddings. Inspection actively starts the model host and hashes model weights. Click below to inspect."
+                    <TextBlock Text="向量嵌入模型宿主提供 768 维 L2 归一化向量。点击下方按钮启动宿主并校验权重指纹。"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>
 
                     <!-- Explicit Action Button -->
                     <StackPanel Orientation="Horizontal" Spacing="12">
-                        <Button Content="Inspect Model &amp; Embedding Engine"
+                        <Button Content="探查模型与嵌入引擎"
                                 Style="{ThemeResource AccentButtonStyle}"
                                 Click="OnInspectModelClick"
                                 IsEnabled="{x:Bind Invert(ViewModel.IsInspecting), Mode=OneWay}"/>
@@ -116,7 +122,7 @@
                     <!-- Error Alert -->
                     <InfoBar IsOpen="{x:Bind HasError(ViewModel.InspectionError), Mode=OneWay}"
                              Severity="Error"
-                             Title="Model Probe Error"
+                             Title="模型探查错误"
                              Message="{x:Bind ViewModel.InspectionError, Mode=OneWay}"
                              IsClosable="False"/>
 
@@ -137,25 +143,25 @@
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Profile ID:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="画像标识：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind ViewModel.ProfileId, Mode=OneWay}"/>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Dimension:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="向量维度：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind ViewModel.Dimension, Mode=OneWay}"/>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Runtime Host:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="运行宿主：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind ViewModel.RuntimeHost, Mode=OneWay}"/>
 
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Model &amp; Revision:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="模型与版本：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="3" Grid.Column="1" Text="{x:Bind ViewModel.ModelName, Mode=OneWay}"/>
 
-                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Execution Provider:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="执行提供程序：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="4" Grid.Column="1" Text="{x:Bind ViewModel.RequestedProvider, Mode=OneWay}"/>
 
-                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Device &amp; EP Status:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="设备与 EP 状态：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="5" Grid.Column="1" Text="{x:Bind ViewModel.BackendStatusSummary, Mode=OneWay}" TextWrapping="Wrap"/>
 
-                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Validation Status:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="校验状态：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="6" Grid.Column="1" Text="{x:Bind ViewModel.ValidationStatus, Mode=OneWay}"/>
                     </Grid>
                 </StackPanel>

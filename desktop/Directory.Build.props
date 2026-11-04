@@ -1,5 +1,8 @@
 <Project>
   <PropertyGroup>
+    <!-- Single product version for the app, CLI, bridge and tests; the installer and the update check read it. -->
+    <VersionPrefix>0.3.0</VersionPrefix>
+    <VersionSuffix></VersionSuffix>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>

@@ -19,7 +19,6 @@ internal sealed class EmbeddingEngine : IDisposable
     internal string Preference { get; }
     internal bool ProviderDownloadsAllowed { get; }
     internal string RequestedProvider => FormatRequestedProvider(Preference);
-    internal bool AutomaticProviders => Preference != "cpu";
     internal long ProviderEpoch => providers.Epoch;
     internal object ProviderStatus => providers.Status;
     internal string? PerformanceProfile => providers.PerformanceIdentity(Profile);
@@ -56,12 +55,6 @@ internal sealed class EmbeddingEngine : IDisposable
     internal EmbeddingEngine(string modelRoot, string mediaPreprocessorVersion, string? manifestPath, bool automaticProviders)
         : this(modelRoot, mediaPreprocessorVersion, manifestPath, automaticProviders ? "auto" : "cpu")
     {
-    }
-
-    internal long[] Tokenize(string input, bool special = true)
-    {
-        ObjectDisposedException.ThrowIf(disposed, this);
-        return tokenizer.Encode(input, special);
     }
 
     internal float[] EmbedText(string input)

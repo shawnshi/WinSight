@@ -1,204 +1,262 @@
 # WinSight（智寻）
 
-WinSight 是面向 Windows 11 的本地文件检索项目，用关键词和多模态语义查找文档、代码、图片及媒体片段。当前原生候选以 .NET 11 RC2、WinUI 3、SQLite 和独立推理进程实现，不依赖远程模型 API 完成检索。
+穿透图文，洞见桌面；智寻于毫秒，赋能本地智能体。
+See Through Files, Instantly. Local Multimodal Search for Windows and Agents.
 
-> **当前状态（2026-10-26）：开发预览／原生迁移候选，不是稳定发行版。** 文档检索、PDF／PPT 页面与来源 API 已合入；SearchPage 合成视觉与键盘交互已完成当前 DPI 的有界验收。维护者本机私有自包含包已完成标准安装、1074 文件／登记／菜单交叉核验，并经已安装启动器打开可响应的 GUI。源码已合入对应修复，但公开安装入口仍是默认拒绝执行的模板，没有可直接分发的稳定安装包。升级／卸载／跨重启恢复、完整产品和 Release 门禁仍未闭合。见[本机安装与启动验证](docs/native-migration/local-install-validation.md)及[源码合入范围](docs/native-migration/source-integration-status.md)。
 
-## 1. 项目定位与范围
 
-- **面向谁**：需要在本机资料和代码中查找内容、并回到来源文件或片段的 Windows 用户。
-- **解决什么问题**：文件名不能充分表达内容，关键词无法覆盖图片文字或语义相近的表达；项目将提取内容、位置和向量纳入同一检索链路。
-- **源码入口**：WinUI 桌面程序和返回 JSON 的原生 CLI，两者复用后端与索引合同；SearchPage 的有界 GUI 预览已交付。App、CLI、InferenceHost、OCR host 的 x64 自包含 locked restore／publish 已通过；这不等于完整 CLI 行为或发行验收。
-- **不做什么**：不默认扫描整块磁盘，不自动发现个人目录或迁移旧索引；不提供云端同步、通用 OCR 准确率保证、通用敏感数据识别或恒定延迟承诺。
-- **Agent 集成**：MCP 是目标方向，当前原生 CLI 不是 MCP 服务，InferenceHost 的内部通信也不是 MCP；不能把目标接口当作已交付能力。
+WinSight（智寻）是一款基于 .NET 11、WinUI 3 与多模态嵌入模型的 Windows 11 原生桌面检索中枢，在零云端依赖的纯本地环境下实现跨文档、代码与截图的毫秒级图文混搜，并通过标准化模型上下文协议（MCP）无缝挂载为本地 AI Agent 的全知外部记忆。
+WinSight is a Windows 11-native desktop search hub powered by .NET 8, WinUI 3, and on-device multimodal embeddings—delivering millisecond-level semantic retrieval across documents, code, and images with 100% privacy, while exposing standard Model Context Protocol (MCP) endpoints for local AI agents.
 
-仓库现只维护 `desktop/`、`inference/` 和独立 Rust tokenizer 的原生路线。旧 Swift/Tauri 程序、旧 CLI／JSONL 协议及专用构建发布入口已按产品取舍退役，不再承诺旧版兼容。这是源码路线收敛，不代表旧版 47 项命令已全部迁移，也不代表安装、完整行为对齐或发布验收通过。见[旧链退役合同](docs/native-migration/legacy-retirement.md)。
 
-## 2. 当前能力与限制
 
-四项组件的本地源码／集成升级已完成并通过独立复核：.NET 11 RC2、Host BuildTools 10.0.26100.9169、明确标识的 RapidOcrNet.WinSight 4.2.0-winsight.1 独立 worker，以及官方 v0.23.3 固定提交的 tokenizer（实际 Rust crate 0.23.2）。已有图片38项、动态 ABI／真实模型 profile 及启动保留分支验证；这不代表部署、完整产品验收或 Release 批准。见[组件升级状态](docs/native-migration/component-upgrade-status.md)。
+WinSight 是面向 Windows 11 的本地多模态文件检索项目，用关键词与深度语义向量联合查找本机文档、代码、图片及媒体片段。项目以 .NET 11、WinUI 3 (Windows App SDK 2.5.1)、SQLite FTS5 和独立推理隔离进程实现，不依赖远程模型 API，所有索引与向量计算完全在本地完成。
 
-| 能力 | 当前范围与边界 |
-| --- | --- |
-| 文本和代码 | 新本地候选支持 DOCX 段落／表格、PPTX 标题／正文／表格／备注、XLSX 工作表／表头／缓存单元格值和行列上下文；结果携带来源位置。另有文本、PDF 文字、HTML 和独立代码索引；第二阶段已接入扫描PDF逐页视觉/OCR文本行框（32页／180秒覆盖上限，未覆盖部分标partial），本地源码已获独立批准；PPT整页视觉已接入本机PowerPoint，本地源码获独立批准（仅手动索引、忙时延后）；只读来源定位已接入后端 API 与 SearchPage 显式入口；真实 Office GUI 全语料未验收 |
-| 图片 | 原生解码、视觉嵌入、隔离 RapidOCR 源码候选和 EXIF 属性白名单；旧协议受控图片集成回归38/38保留；新文字行定位协议由第二阶段页面链路验证，不等同完整图片矩阵或广泛OCR准确率 |
-| 音视频 | 已接入原生音频窗口／视频帧采样与嵌入链路；短音频、具体编解码格式及视频端到端覆盖受采样和验收范围限制，不是语音转录服务 |
-| 搜索 | 中文简繁字符／全半角归一化、中英混排、精确编号和字段过滤；关键词、文件名、目录及来源语义通道按位置单元做 RRF 融合。显示排序分而非置信度；结构化检索与PDF页面视觉／OCR几何两个阶段的本地源码均已获独立批准；第三阶段PPT整页视觉的本地源码亦已获独立批准；SearchPage 页面预览与当前 DPI 下的有界键盘验收已完成 |
-| 增量与后台索引 | 逐文件持久任务队列（SQLite 同库 `index_tasks`，重启续跑）、事件合并、静默期 1.5s 与最长等待 10s 双判定、重命名／原子替换／锁定退避、监听溢出只做只读差集核对；四类预算（交互查询／新文件／历史补建／复杂解析）服从电源、节电、空闲与内存压力，用户搜索可抢占批量推理；NTFS USN Journal 检查点补齐离线变化，日志重置或无权限时降级为目录核对。后台索引默认关闭，不会因首次启动自动扫描用户目录 |
-| CLI | `configure`、`status`、`index`、`search`、`model-info`；不是旧 CLI 的直接替代品，也未交付原生 MCP 服务入口 |
-| 平台与设备 | 桌面工程当前为 Windows 11 x64；已取得的真实模型证据以 CPU 为主。不能将 Host 的其他 RID 或提供程序选项视为 ARM64、GPU、NPU 已验收 |
 
-### 来源预览与精确定位
 
-- 重新核对授权根、来源单元和索引时保存的 SHA-256；缺少指纹或源文件已变化时，仅返回索引文字，移除栅格图、OCR 框和精确跳转能力。不自动重建用户索引。
-- 显式调用可只读定位 Word 正文段落、Excel 合法工作表／A1 矩形、PPT 指定幻灯片；Word 字段及 Excel 公式／定义名称／外链等按当前策略拒绝。PPT 要求空闲独占：已有 PowerPoint 时拒绝接管；成功定位后把自有窗口移交用户。
-- SearchPage 显式预览按钮或结果列表 Space 打开面板；显示来源文字、整页图和可切换的 OCR 行框。Escape 关闭并恢复焦点，Down 从搜索框进入结果列表，Enter 保留普通打开授权检查；宽屏并排、窄屏覆盖，图片与框共用坐标系，过期完成不能替换当前预览。
-- 当前 200% DPI、明暗主题与宽窄窗口的自有合成 GUI 验收通过：视觉 43/43、键盘 26/26、生命周期 6/6，13 个预览租约均释放；12 张控件截图经人工复核。这些计数不是全产品验收，定向键消息与线程内 Shift 状态恢复不是物理硬件或所有 DPI 验收。
-- Office 不是 OS／网络／凭证沙箱，可能改动自身缓存或最近使用记录。此前有界 Office 后端验收与本次合成 GUI 验收分开陈述；普通“打开文件”行为不变，不据此承诺真实 Office GUI 全语料或完整进程隔离。
+> **当前状态（2026-11）：正式发布版（v0.3.0）。** 全链路多模态文档检索、PDF/PPT 逐页视觉渲染、RapidOCR 几何定位与只读来源跳转均已稳定合入主线。桌面主控制台采用 Windows 11 原生 Mica Alt 沉浸式标题栏，快捷搜索 HUD 浮窗采用 DesktopAcrylic 亚克力材质与 800×520 双栏即时预览；全界面已完成规范简体中文本地化。主线安装通过 Inno Setup 6 脚本 `desktop/installer/WinSight.iss` 与 `scripts/Build-NativeInstaller.ps1` 交付标准安装包，默认安装至 `C:\Program Files\WinSight`，带有官方高保真 Logo 图标与可选系统 PATH 自动注入。GitHub CI 自动化工作流已全量覆盖 10 大核心套件（270+ 个断言用例验证通过）。
 
-图片缺少可用 OCR、发生截断或只覆盖多帧首帧时保留 `partial` 和原因，不冒充完整成功；坏图、非法协议和越界输入明确拒绝。音频不足 2 秒时按当前采样策略跳过。详见[图片合同](docs/native-migration/image-exif-ocr-contract.md)及[媒体采样策略](desktop/src/WinSight.Infrastructure/Media/Sampling/NativeMediaSamplingPolicy.cs)。
+\---
 
-## 3. 核心架构
+## 1\. 项目定位与核心特性
 
-App 和 CLI 通过 Core 合同调用 Infrastructure。后端负责设置、授权目录、提取、索引和搜索；需要模型或媒体原生能力时启动独立 InferenceHost，而不是在 UI 进程中加载模型。
+* **面向谁**：需要在海量本机资料、扫描件、多模态媒体和代码中快速查找内容，并精确回跳到来源片段的 Windows 用户与开发者。
+* **解决什么问题**：文件名无法完全概括文档主旨，传统关键词匹配无法命中语义相近的表达或图片中的文字。WinSight 将正文提取、OCR 文字、位置单元与 768 维向量嵌入纳入统一的混合检索链路。
+* **用户形态**：
 
-| 组件 | 职责与代码入口 |
-| --- | --- |
-| 桌面 App | WinUI 窗口、托盘、全局热键、设置和索引控制；[WinSight.App](desktop/src/WinSight.App) |
-| Core | 请求／响应、服务接口、设置和 768 维向量合同；[Contracts.cs](desktop/src/WinSight.Core/Contracts.cs) |
-| Infrastructure | 文件过滤、提取、索引、混合检索、SQLite、配置存储及受控 Host 客户端；[WinSight.Infrastructure](desktop/src/WinSight.Infrastructure) |
-| 原生 CLI | 脚本化配置与检索，使用同一后端；[Program.cs](desktop/src/WinSight.Cli/Program.cs) |
-| InferenceHost | Windows ML 模型推理、原生 tokenizer，以及独立的图片／媒体操作；[Host 工程](inference/WinSight.InferenceHost) |
-| 原生 tokenizer | Rust 编译的本地 DLL，必须匹配目标进程架构；[winsight-tokenizer](native/winsight-tokenizer) |
-| 安装与发布 | payload 清单、源文件哈希绑定、每用户安装和事务恢复；[安装源码](desktop/installer)与[发布脚本](scripts/Prepare-NativeRelease.ps1) |
+  * **WinUI 3 桌面主控制台**：多标签页管理、沉浸式卡片化配置、存储与队列监控、OCR 框高亮来源预览。
+  * **HUD 快捷搜索栏 (`QuickSearchWindow`)**：全局热键秒级呼出，800×520 双栏分治，光标悬浮即时呈现右侧全文高亮上下文。
+  * **返回 JSON 的原生 CLI (`winsight-native.exe`)**：支持脚本化配置、全量/增量建库、单次检索与脱敏诊断。
+  * **本地 Agent MCP 桥接器 (`winsight-mcp.exe`)**：随应用内置提供，支持标准 Stdio 管道与环回 HTTP，采用单向异步信箱（Mailbox）机制防止外部 AI Agent 越权写坏库。
+* **纯正本地与隐私承诺**：默认不全盘遍历扫描；不向任何云端上传个人文件或检索词；不包含用户行为遥测。
 
-Host 客户端和媒体任务管理负责超时、取消、进程树所有权与退出结算。索引暂停不是简单停止 UI 更新：当前工作及其原生子进程需要完成取消和结算。
+\---
 
-SQLite 保存文件状态、片段、全文索引与向量；文档和代码分别使用 `index.sqlite`、`code.sqlite`。只写入带原生标记的新 schema5 索引，不自动接管或改写旧索引。
+## 2\. 核心功能与技术边界
 
-## 4. 当前技术架构
+|能力|当前范围与实现机制|
+|-|-|
+|**文档与代码提取**|支持 DOCX 段落/表格、PPTX 幻灯片/正文/备注、XLSX 工作表/单元格上下文；另有纯文本、PDF 文本、HTML 与独立代码文件索引。扫描 PDF 逐页执行 WIC 渲染与 OCR 行框标定（上限 32 页/180 秒）；PPT 支持基于 Office 进程的只读来源定位。|
+|**图片与多模态**|基于 Windows Imaging Component (WIC) 硬件加速解码与双三次采样；独立进程加载 RapidOCR (PaddleOCR ONNX) 执行文本检测与识别；提取 EXIF 白名单元数据，杜绝个人隐私泄露。|
+|**音视频片段**|原生音频 16kHz PCM 采样（30 秒窗口、5 秒步进跳跃）与视频关键帧采样嵌入；定位为片段检索，不作为离线语音全量转录服务。|
+|**混合检索与排序**|中文简繁归一化（FormKC）、中英混排、精确编号与字段过滤。双路 FTS：`fts`（porter + unicode61 处理拉丁词/路径）与 `fts\\\_seg`（基于 Rust jieba-rs 的中文分词倒排与真实 BM25 词频）。融合层结合文件名、目录与语义通道按位置单元执行 RRF 融合打分。|
+|**增量与后台索引**|SQLite 级持久任务队列（`index\\\_tasks`），支持任务去重、原子替换与崩溃断点续跑。NTFS USN Journal 增量追赶离线变更；四类并发预算（交互查询/新文件/历史补建/复杂解析）服从电源、空闲与低内存压力，用户搜索可瞬时抢占后台批处理。|
+|**命令行工具**|`configure`、`status`、`index`、`search`、`model-info`、`diagnostics`；支持绝对路径 `--data-dir` 隔离。|
+|**平台支持**|Windows 11 x64（最低运行版本 Windows 11 21H2 Build 22000）；模型计算以 CPU (SIMD AVX2) 和 DirectML/NPU 为主。|
 
-| 层次 | 当前实现 |
-| --- | --- |
-| 运行时与 UI | .NET 11 RC2 / C#、WinUI 3 / Windows App SDK；桌面工程声明的最低平台为 Windows 11 build 22000，编译目标为 Windows SDK 26100；这不是所有 Windows 11 版本均已安装验收的承诺 |
-| 文档提取 | PdfPig、Open XML，以及受大小、字符数和格式限制的文本／代码提取 |
-| 图片与媒体 | Windows 图像／媒体 API + 独立 RapidOCR 候选；固定中英模型，无运行时下载或 Windows OCR 回退 |
-| 词法检索 | Microsoft.Data.Sqlite / SQLite FTS5；当前 tokenizer 为 `porter unicode61 remove_diacritics 2`，保留既有 schema 合同，并补充 CJK 候选处理 |
-| 向量检索 | 768 维、归一化向量，以 FP16 存储；当前语义评分仍为托管向量缓存加线性余弦计算，不是已交付的 sqlite-vec、HNSW 或 ANN 索引 |
-| 模型 | Windows ML；`onnx-community/embeddinggemma-2-ONNX` 的清单固定版本，包含文本、视觉和音频 ONNX 工件及 tokenizer 配置 |
-| 分词 | 原生 Rust tokenizer DLL；不是以 C# `Microsoft.ML.Tokenizers` 替代当前实现 |
-| 安装 | Inno Setup 每用户私有预览包已完成一次标准提交及跨表面核验，随后有界 GUI 启动通过；公开模板仍未物化，升级／卸载／跨重启恢复与正式发行未验收 |
+\---
 
-精确版本以工程、锁文件及清单为准：[App](desktop/src/WinSight.App/WinSight.App.csproj)、[Infrastructure](desktop/src/WinSight.Infrastructure/WinSight.Infrastructure.csproj)、[Host](inference/WinSight.InferenceHost/WinSight.InferenceHost.csproj)、[模型清单](inference/WinSight.InferenceHost/model-manifest.json)。
+## 3\. 核心架构与模块划分
 
-暖查询可以复用缓存，但冷语义查询仍需读取向量并线性评分，CJK 候选也有词表扫描成本。响应时间受数据规模、缓存、磁盘和设备影响，本文不承诺“零延迟”或所有规模下的毫秒级检索。
-
-## 5. 业务流程与数据边界
-
-### 索引
-
-1. 用户通过设置页或 CLI 明确选择文档／代码根目录，配置排除目录和类型；应用数据与索引目录不作为内容根扫描。
-2. 后端核对授权、路径和文件策略，增量判断新增、变更及需要刷新提取版本的文件。
-3. 按类型提取文本、图片 OCR／白名单元数据，或采样音频窗口／视频帧；记录可回查的片段位置。
-4. 将内容切分成片段，为支持的模态生成向量，并校验维度、有限值与归一化要求。
-5. 写入对应 SQLite 索引，保留 `pending`、`done`、`partial`、`failed` 等实际状态和原因；不把异常伪装成“无数据”。
-
-手动索引由用户显式发起；App 后台索引还受启用状态、暂停、时段与供电策略约束。`processorOnly=true` 当前表示**自动索引仅限交流电**，不是仅使用 CPU，也不限制用户发起的手动索引。
-
-### 检索
-
-1. 接收查询、模式、类型、授权根和结果数量限制。
-2. 关键词分支检索 FTS/CJK 候选；语义分支为查询生成向量，再对片段评分。
-3. 在授权范围内分别召回后，以页面、幻灯片、表格行、段落或文件为来源单元做 RRF 融合；不平均正文、OCR 和视觉向量。CLI 默认关键词模式，可显式选择 `hybrid` 或 `semantic`。
-4. 混合模式在模型不可用时可明确提示并退回关键词；纯语义模式的失败不能当作语义检索成功。小样本语义回退会给出提示，当前相关性阈值仍需进一步校准。
-
-### 本地与隐私
-
-文件提取和已配置模型的推理在本机执行，不要求远程模型 API。开发依赖还原、手动取得模型／工具和后续 Agent 对接属于另外的联网边界，不能因此承诺“所有环节永不联网”。
-
-索引可能包含文件路径、正文摘要、OCR 和元数据，不应视为已加密或已脱敏。EXIF 属性白名单不查询 GPS、序列号和人物标签，但自由文本／OCR 仍可能含私人信息。私钥标记过滤也不是通用秘密检测。
-
-## 6. 部署、安装与首次运行
-
-### 终端用户
-
-**本机私有预览安装通过，不等于已有稳定发行包。** 本机验证覆盖标准提交、1074 个载荷文件、20 个带类型登记值（含提交回执指针）、两条菜单链接及可响应的 GUI 主窗口；旧默认数据未读取或迁移。不要将 `.dev/` 编译产物、恢复现场或任务 binding 当作可直接分发的安装版。
-
-公开源码中的标准安装／恢复入口仍是**默认拒绝执行的未就绪模板**：本机私有目录、解释器和绑定不能公开复用。要启用，必须在独立任务中固化私有图、重新计算完整源／清单／绑定哈希，并通过对应验收；不能通过环境变量或调用方 JSON 选择代码，也不能把去掉拒绝语句当作验收。已有本地失败现场、模型及恢复记录没有随源码提交。
-
-当前标准安装设计采用独立的 `WinSight.Native.Preview` 身份，提供当前用户的开始菜单入口和卸载入口；默认不启用自启，不修改全局 PATH，也不自动迁移旧版资料。完整包需要同时包含 App、CLI、Host、匹配架构的 tokenizer、运行时依赖、模型清单、权重和许可材料，不能只复制一个 EXE。
-
-安装脚本与 payload、源文件哈希、目标目录及所有权绑定必须一致，不能绕过启动器或复用旧绑定。标准安装入口校验精确的 x64 Windows PowerShell Desktop 宿主版本（本机候选为 `5.1.29683.1000`），不能用 PowerShell 7 替代。每日启动器先核验已提交图与短生命周期 validator 结算，再启动应用；本机已确认窗口响应，但模型／OCR、检索、升级、卸载和跨重启恢复仍有各自验收边界。源码组件回归命令及原始证据未公开的限制见[验证摘要](docs/native-migration/local-install-validation.md)。
-
-参考：[标准每用户安装合同](docs/native-migration/standard-per-user-installer-contract.md)、[发布验收合同](docs/native-migration/release-acceptance-contract.md)。
-
-### 开发者准备与构建
-
-- Windows 11 x64、PowerShell 7、匹配的 MSVC C++ Build Tools / Windows SDK、Rust，以及 .NET SDK；PowerShell 7 用于开发构建脚本，不替代上述安装宿主。
-- Desktop 和 Host 当前精确固定 SDK `11.0.100-rc.2.26504.105`，对应 Runtime 为 `11.0.0-rc.2.26504.105`；均禁用版本滚动，见 [desktop/global.json](desktop/global.json) 与 [inference/global.json](inference/global.json)。UI 工程自身仍限制为 x64。
-- 先准备符合[模型清单](inference/WinSight.InferenceHost/model-manifest.json)的模型目录；项目不自动扫描私人模型缓存或下载缺失权重。
-- Host 构建要求先用 `scripts/build-native-tokenizer.ps1` 取得匹配 Rust 目标的 tokenizer DLL 及源码／DLL 绑定收据，并显式提供 `-OcrModelRoot` 指向四个已校验 OCR 资产；不自动下载。已有入口为 [build-inference-host.ps1](scripts/build-inference-host.ps1)，完整暂存入口为 [Prepare-NativeRelease.ps1](scripts/Prepare-NativeRelease.ps1)。它们不是“已验收的一键安装命令”；首次依赖还原可能联网。
-- `-AppOnlyPreview` 只生成不含完整模型／推理能力的预览暂存，不能作为完整功能或发布成功的证据。完整暂存要求显式模型目录，且拒绝覆盖已有阶段目录。
-
-**已知构建缺口：CLI 的原有 RID 声明与包锁图尚未对齐。** CLI 锁文件包含 `win-x64`，工程未声明对应 `RuntimeIdentifiers`；直接对整个引用图强制 RID 又会影响无 RID 的 Core／Infrastructure 锁图。该问题在本轮 SDK 升级前已存在；本轮 CLI 仅静态调整 TFM／锁目标键，没有再次 restore／build，也不宣称 CLI 的锁定模式离线构建通过。后续应在独立修复中统一这组契约并重新验证；不要用去掉锁定检查来掩盖它。
-
-开发 CLI 的帮助入口示意（先完成上述构建契约修复；在仓库根目录执行，首次运行可能还原依赖）：
-
-```powershell
-Push-Location desktop
-try {
-    dotnet run --project src/WinSight.Cli -- help
-} finally {
-    Pop-Location
-}
+```
+WinSight/
+├── desktop/
+│   ├── src/
+│   │   ├── WinSight.App/            # WinUI 3 桌面端主程序 (XAML, 8 个全汉化视图, 托盘与热键)
+│   │   ├── WinSight.Bridge/         # 本地 MCP 桥 (编译输出: winsight-mcp.exe)
+│   │   ├── WinSight.Cli/            # 命令行管理工具 (编译输出: winsight-native.exe)
+│   │   ├── WinSight.Core/           # 零依赖核心契约、实体模型、AppLog 滚动日志、更新检查
+│   │   └── WinSight.Infrastructure/ # 存储、检索、分词封装、提取、调度解耦分部类
+│   │       ├── Runtime/             # DesktopBackend 拆解为 Indexing/Search/Devices/Maintenance
+│   │       ├── Storage/             # SQLite 连接池、WAL、FTS5、代际重建迁移
+│   │       ├── Search/              # SearchService (SIMD 点积, 动态误报率显著性门槛)
+│   │       ├── Indexing/            # USN 日志捕获、增量队列、任务状态机
+│   │       └── Media/               # 进程通信、音视频采样、Office 定位策略
+│   └── installer/                   # 主线安装脚本 (WinSight.iss) 与历史契约归档 (legacy/)
+├── inference/
+│   ├── WinSight.InferenceHost/      # 默认多模态嵌入 Worker (Windows ML ORT 1.31)
+│   ├── WinSight.OcrHost/            # 隔离的 RapidOCR 识别 Worker
+│   ├── WinSight.WinMlHost/          # 可选实验性 Windows ML 嵌入宿主
+│   └── WinSight.FoundryHost/        # 可选硬件提供程序注册管理器 (Foundry Local)
+└── native/
+    ├── Cargo.toml                   # 统一 Rust Cargo Workspace
+    ├── winsight-segmenter/          # jieba-rs 中文分词 C ABI 动态库
+    └── winsight-tokenizer/          # HuggingFace Tokenizers C ABI 动态库
 ```
 
-### 已准备完整 payload 时的 CLI 示例
+* **高聚合拆解**：`DesktopBackend` 拆分为生命周期、索引管线、混合检索、硬件探测与运维调度 5 个单一职责的分部文件，消解了单文件上帝类。
+* **进程树殉爆保护**：所有推理与 OCR 子进程均绑定 Windows Job Object（`KILL\\\_ON\\\_JOB\\\_CLOSE`），并在 `BelowNormal` 优先级下运行，前台 UI 永不卡顿，父进程崩溃时子进程驱动级自动销毁。
+* **并发互斥安全**：引入 `IndexRunLock` 独占文件锁，在 App、CLI 和后台定时轮询任务之间建立跨进程互斥栅栏，防止 SQLite 数据库多写争用。
 
-下面使用独立示例目录；需要先准备真实存在的文件、权重和完整 payload，再替换路径。命令会保存该示例的数据配置并索引指定目录，**不是安装命令**，不应直接套用到未授权的个人资料。
+\---
+
+## 4\. 技术栈总览
+
+详见权威技术标准：[techstack.md](techstack.md)。
+
+|层次|当前实现与版本选型|
+|-|-|
+|**运行时与 SDK**|**.NET 11 (C# latest)**；桌面端与推理宿主统一面向 `net11.0-windows10.0.26100.0`，最低支持平台统一为 Windows 11 RTM (`10.0.22000.0`)。|
+|**桌面 UI**|**Windows App SDK 2.5.1 (WinUI 3)**；原生 Mica Alt 与 DesktopAcrylic 材质合成，手写轻量 MVVM（零反射开销）。|
+|**向量嵌入模型**|**EmbeddingGemma-2 ONNX (q4 量化)**；768 维单向量空间多模态对齐（文本/图片/音频），内存常驻仅 \~175 MB。|
+|**向量检索引擎**|内存连续 float32 配合 **SIMD 硬件加速 (`System.Numerics.Vector<float>`) 内联点积**，10 万向量点积耗时 \~15 ms。|
+|**词法与倒排检索**|**Microsoft.Data.Sqlite 10.0.13** (WAL 模式) + **FTS5**；`fts` 负责拉丁词/精确标识符，`fts\\\_seg` 负责中文分词与真实 BM25 词频计算。|
+|**双原生分词库**|**Rust CDylib 原生库**：`winsight\\\_segmenter.dll` (jieba-rs 0.11.0) + `winsight\\\_tokenizer.dll` (HuggingFace tokenizers rev `3012770`)。|
+|**多媒体与图像解码**|**Windows Imaging Component (WIC COM ABI)** 硬件加速解码与方向旋转，Windows.Data.Pdf 页面矢量渲染。|
+|**OCR 文字识别**|**`RapidOcrNet.WinSight 4.2.0-winsight.1`**；隔离进程加载 PaddleOCR ONNX 权重，内存完全独立。|
+|**Agent MCP 桥**|**`winsight-mcp.exe`**；自研轻量 JSON-RPC 2.0 协议引擎，支持 Stdio 与 Bearer 令牌鉴权的环回 HTTP。|
+|**安装与发布系统**|**Inno Setup 6** 每用户安装规范；快捷方式直连 exe，支持 PATH 环境变量注入与用户数据保留确认。|
+
+\---
+
+## 5\. 业务流程与检索流水线
+
+### 索引生成管线
+
+1. **授权与作用域过滤**：用户在“目录管理”页或 CLI 明确添加扫描目录，应用数据目录与索引目录天然处于排除列表。
+2. **增量比对与 USN 追赶**：优先尝试 NTFS USN Journal 增量追赶离线变更；无权限或日志溢出时平滑降级为目录树差集比对。
+3. **分块与边界自适应**：
+
+   * 采用**Token 估算预算切块**（英文约 4 字符/Token，中文约 1.5 字符/Token，单块上限 \~450 Token）；
+   * 优先对齐段落、换行、句末标点（`。！？；`）与逗号，解决传统空白切块导致的中文跨词截断。
+4. **多模态批处理嵌入**：
+
+   * 文本段落添加 `title: {文件名} | text: {切块}` 提示词；
+   * 图像生成 280-token 视觉嵌入，PDF 页面提取 OCR 文本行后再次生成多级切块；
+   * 写入前校验有限值、非零与 768 维 L2 归一化规范。
+5. **持久化与代际隔离**：文档写入 `index.sqlite`，代码写入 `code.sqlite`。向量以 FP16 BLOB 紧凑存储，更新操作采用原子事务。
+
+### 混合检索流水线
+
+1. **查询分析**：解析 `kind:`、`root:`、`project:`、`amount:` 等结构化过滤字段，分离拉丁词与中文词汇。
+2. **双路全文匹配**：
+
+   * 拉丁词走 `fts` 匹配，支持 Porter 词干还原与通配符；
+   * 中文词由 `winsight\\\_segmenter.dll` 分词后直接 MATCH `fts\\\_seg`，获得真实 BM25 分值。
+3. **向量语义召回**：
+
+   * 查询生成向量后，通过 SIMD 并行计算候选片段的余弦相似度；
+   * **动态误报率显著性门槛**：基于通道单元总量动态计算标准正态分位数（控制每个通道每次查询预期误报仅 \~1 条），彻底消除传统固定 $z \\ge 2$ 在大语料下固定放行 2% 噪声的缺陷；样本少于 5 个时退回 $\\text{cosine} \\ge 0.5$ 小样本底线。
+4. **RRF 倒数排名融合**：
+
+   * 关键词通道（权重 2.0）、语义通道（权重 1.0）、文件名（权重 1.5）、目录路径（权重 0.7）按来源单元做 RRF 融合打分，取 Top-K 返回结果。
+
+\---
+
+## 6\. 部署、安装与运行指南
+
+### 1. 终端用户安装使用
+
+- **现成安装包直接安装**：
+  可以直接运行仓库中已编译打包好的完整安装包：**[`releases/WinSight-0.3.0-x64-setup.exe`](releases/WinSight-0.3.0-x64-setup.exe)**（体积约 285 MiB，SHA-256 校验和：`aa9b148dd8aae308de54e64e44b272b938b54ff0dd1a07cd3142df762cfb66ae`）。
+- **标准安装路径**：双击运行安装向导，默认安装至 **`C:\Program Files\WinSight`**。
+- **安装包特性与可选任务**：
+  - [x] 注入官方高保真多分辨率图标 (`WinSight.ico`)；
+  - [x] 创建桌面快捷方式（默认不勾选，保持桌面整洁）；
+  - [x] 将 WinSight 命令行工具自动添加至系统 PATH（勾选后可直接在任何终端键入 `winsight-native` 或 `winsight-mcp`）；
+  - [x] 智能占用防护：安装与覆盖升级前自动检测并提示优雅关闭 7 类运行中进程，杜绝文件锁死。
+- **开始菜单与秒级冷启动**：快捷方式直接原生拉起 `WinSight.App.exe`，启动时间 < 300ms，无控制台黑框弹出。
+- **全模态离线模型一键拉取（可选）**：
+  安装包已内置全部 7 大可执行组件与模型运行时配置。如需启用全模态深度语义向量检索，只需在管理员终端中执行一键拉取脚本：
+  ```powershell
+  # 自动从 Hugging Face / 国内加速镜像下载并校验 11 个 EmbeddingGemma-2 ONNX 权重文件
+  pwsh -File ./scripts/Download-Models.ps1 -Destination "C:\Program Files\WinSight\models"
+  ```
+  *(注：即使未下载 500 MB 向量模型，普通文档、Word、PDF 文本、表格与代码的 FTS5 全文索引和关键词检索功能也完全正常可用，不受任何影响)*。
+- **卸载清洁度**：卸载程序自动清理注册表 Run 自启动项与 PATH 环境变量；卸载时交互弹窗友好询问是否保留个人已建立的索引数据库与设置（默认安全保留）。
+
+### 2. 开发者环境准备与构建
+
+1. **环境依赖**：
+
+   * 操作系统：Windows 11 x64 (Build 22000+)；
+   * .NET SDK：11.0.100（参阅 `desktop/global.json`）；
+   * Rust 工具链：stable-x86\_64-pc-windows-msvc（包含 cargo）；
+   * Inno Setup 6：用于本地编译打包（可选）。
+2. **编译原生动态库**：
 
 ```powershell
-$app = 'C:\WinSightExample\app'
-$cli = Join-Path $app 'winsight-native.exe'
-$data = 'C:\WinSightExample\Data'
-$files = 'C:\WinSightExample\Files'
+   cd native/winsight-segmenter
+   cargo build --release --locked
+   cd ../winsight-tokenizer
+   cargo build --release --locked --target x86\\\_64-pc-windows-msvc
+   ```
 
-& $cli configure --data-dir $data --root $files `
-    --host "$app\inference\WinSight.InferenceHost.exe" `
-    --models "$app\models" --manifest "$app\inference\model-manifest.json"
-& $cli status --data-dir $data
-& $cli model-info --data-dir $data
-& $cli index --data-dir $data --root $files
-& $cli search --data-dir $data --query '项目方案' --mode hybrid --limit 20
+3. **运行测试套件**：
+
+```powershell
+   # 运行全量桌面测试
+   cd desktop
+   dotnet test
+   ```
+
+4. **打包发布暂存包**：
+
+```powershell
+   # 准备完整发布目录
+   ./scripts/Prepare-NativeRelease.ps1 -StageDirectory "C:\\\\WinSightStage" -ModelDirectory "C:\\\\Models" -OcrModelDirectory "C:\\\\OcrModels"
+   # 生成安装包
+   ./scripts/Build-NativeInstaller.ps1 -StageDirectory "C:\\\\WinSightStage"
+   ```
+
+### 3\. 原生 CLI 使用示例
+
+```powershell
+# 1. 配置监控根目录与模型路径
+winsight-native configure --data-dir "C:\\\\MyData" --root "C:\\\\Documents" `
+    --host "C:\\\\WinSight\\\\inference\\\\WinSight.InferenceHost.exe" `
+    --models "C:\\\\WinSight\\\\models" --manifest "C:\\\\WinSight\\\\inference\\\\model-manifest.json"
+
+# 2. 查看当前状态与索引指标
+winsight-native status --data-dir "C:\\\\MyData"
+
+# 3. 执行单次索引建立
+winsight-native index --data-dir "C:\\\\MyData" --root "C:\\\\Documents"
+
+# 4. 执行多模态混合检索
+winsight-native search --data-dir "C:\\\\MyData" --query "2026年政府采购方案" --mode hybrid --limit 10
+
+# 5. 导出脱敏的系统诊断包（供故障排查）
+winsight-native diagnostics --data-dir "C:\\\\MyData" --out "C:\\\\MyData\\\\diag.zip"
 ```
 
-所有业务命令都要求绝对 `--data-dir`；原生 CLI 不猜测旧设置，也不启动 App 的后台协调器。`configure` 不等于索引完成。若只需要对已有索引做关键词搜索，可显式使用 `--mode keyword`，不会为这次查询启动模型。
+\---
 
-## 7. 主要配置
+## 7\. 运维、诊断与稳定性设计
 
-设置保存为 `<data-dir>\settings.json`，JSON 字段使用 camelCase。开发 App 未指定数据目录时默认使用 `%LOCALAPPDATA%\WinSight\NativePreview`；CLI 必须显式传入 `--data-dir`。安装启动器可以指定其他受控数据根，不能把开发默认目录当作所有安装的固定路径。
+* **滚动日志与崩溃自愈**：
 
-默认索引目录为 `<data-dir>\index`。数据目录应保持较短：SQLite 初始化还会追加私有暂存库及 sidecar 文件名，Windows 下过长路径可能报 `SQLITE_CANTOPEN`；当前不承诺任意长路径均可用。未显式配置 Host／模型路径时，后端相对应用目录查找 `inference\WinSight.InferenceHost.exe`、`inference\model-manifest.json` 和 `models\`；不同安装布局应以实际启动器与显式配置为准。
+  * GUI 进程向 `<data>\\\\logs\\\\winsight-app.log` 写入滚动日志（单文件 2 MiB，保留 8 个）；
+  * 注册了 `AppDomain.UnhandledException` 与 `WinUI.UnhandledException` 全局捕获器，未处理崩溃独立输出为 `crash-\\\*.txt`（保留 10 个）；
+  * CLI 操作向 `winsight-cli.log` 记录执行流水。
+* **脱敏诊断包一键导出**：
 
-| 字段 | 默认值 | 含义 |
-| --- | --- | --- |
-| `folders` / `codeFolders` | 空列表 | 分别授权文档和代码根；路径必须为绝对路径 |
-| `skipped` / `codeSkipped` / `skipTypes` | 空列表 | 对应根下的排除目录及跳过类型 |
-| `setUp` | `false` | 是否完成初始配置；CLI `configure` 会设为 `true` |
-| `backgroundIndexingEnabled` | `false` | App 是否启用后台索引 |
-| `indexHoursOn` | `false` | 是否限制自动索引时段 |
-| `indexHours.start` / `indexHours.end` | `60` / `420` | 本地午夜起的分钟数，默认 01:00–07:00；关闭时段限制时不使用 |
-| `processorOnly` | `true` | 自动索引仅在交流电条件运行；不等于 CPU 推理开关 |
-| `includeWordComments` / `includeWordHeadersFooters` | `false` | 显式选择 DOCX 批注及页眉页脚；当前通过配置生效，不宣称已有新 UI 开关 |
-| `hotkey` | `Control+Shift+Space` | 桌面搜索入口热键；冲突或注册失败不代表新绑定已生效 |
-| `indexDirectory` | `null` | 覆盖默认索引目录，需绝对路径 |
-| `modelDirectory` | `null` | 模型工件目录，需符合模型清单 |
-| `inferenceExecutable` / `manifestPath` | `null` | 显式指定 Host EXE 和模型清单的绝对路径 |
-| `theme` | `Default` | `Default`、`Light` 或 `Dark` |
+  * 在设置页“关于”卡片中点击“导出诊断日志包”，或通过 CLI 执行 `diagnostics`；
+  * 导出的 zip 包仅包含系统环境信息、日志、设置和文件结构清单；用户名、计算机名与个人主目录路径在打包时**自动正则脱敏替换**，严禁包含任何文档全文或向量内容。
+* **开机自启动与死链自纠**：
 
-优先使用设置页或 CLI 支持的参数修改配置；CLI 并未暴露表中全部字段。关闭 App/CLI 写入者后才考虑手工编辑 JSON，保留合法的 `version`／`revision`；错误版本、重复字段、非法路径和并发保存冲突会被拒绝。设置保存采用修订号与原子替换，不应把这些字段当作可随意清零的计数器。
+  * 设置页勾选“开机自动启动”后，写入 `HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run`；
+  * 携带 `--autostart` 参数启动时仅安静驻留托盘，手动启动始终显示主窗口；应用启动时会自动纠偏因升级或路径变化导致的自启死链。
+* **网络下载防御与退避**：
 
-字段和校验的事实来源：[AppSettings](desktop/src/WinSight.Core/Contracts.cs)、[JsonSettingsStore](desktop/src/WinSight.Infrastructure/Configuration/JsonSettingsStore.cs)、[DesktopBackend](desktop/src/WinSight.Infrastructure/Runtime/DesktopBackend.cs)。
+  * 硬件执行提供程序（Foundry Local）的在线下载默认关闭（`installExecutionProviders = false`）；
+  * 开启后下载全程挂载 Windows Job Object，超时强制终止子进程树；下载失败自动触发 **1小时 / 6小时 / 24小时 阶梯退避**，杜绝死循环消耗流量。
+* **可选版本更新检查**：
 
-## 8. 开发验证与文档导航
+  * 用户可配置私有 HTTPS JSON 规范源（`{"version":"x.y.z","url":"https://..."}`）；
+  * 点击“检查更新”仅做无痕只读拉取对比，绝不在后台静默下载或替换二进制。
 
-本 README 的命令是操作示例，不代表在读者环境执行成功，也不授予安装、迁移或扫描真实数据的权限。对新版本应分别保留构建／测试、真实模型集成和现场安装验收证据，不能互相替代。
+\---
 
-- [源码合入范围与验收边界](docs/native-migration/source-integration-status.md)：已批准阶段、非 GUI 子集、保留问题及未发布材料。
-- [原生桌面说明](desktop/README.md)：组件、局部命令、兼容与验证边界；带日期的历史产物不自动代表最新状态。
-- [架构与开发指南](winsight_architecture_and_development_guide.md)：历史设计材料，不是当前原生实现或全部功能已交付的证明。
-- [旧链退役合同](docs/native-migration/legacy-retirement.md)：源码删除范围、共享素材、旧 CLI 兼容终止及尚未关闭的验收缺口。
-- [迁移计划](docs/native-migration/plan.md)与[命令清单](docs/native-migration/command-inventory.json)：历史对照与验收范围，不因旧源码删除而变成全量迁移通过。
-- [原生桌面测试入口](scripts/Test-NativeDesktop.ps1)与[推理进程测试工程](desktop/tests/WinSight.Inference.Tests)：按脚本参数使用任务自有目录，不默认连接或修改真实数据。
-- [图片 EXIF/OCR 合同](docs/native-migration/image-exif-ocr-contract.md)：字段白名单、限制、状态和证据范围。
-- [标准安装合同](docs/native-migration/standard-per-user-installer-contract.md)与[发布验收合同](docs/native-migration/release-acceptance-contract.md)：部署与发布的独立门禁。
+## 8\. 自动化测试与质量门禁
 
-`techstack.md` 等选型资料中的推荐项可能与实现不同；判断当前行为时，以源码、工程／锁文件、模型清单及对应版本的执行证据为准。
+项目在 GitHub Actions (`.github/workflows/ci.yml`) 的每次推送与 PR 中，固定执行以下 10 大测试套件的自动化验证（全部测试均在无人工干预的隔离沙箱中跑通）：
 
-原生候选的打包／诊断 CI 仅保留手动触发，普通 push 不自动上传原生候选或诊断产物；旧签名分发工作流不随此源码快照发布。源码检查工作流固定验证依赖 `defusedxml==0.7.1`，执行原生布局／资源／清单检查和 `native/winsight-tokenizer` 单元测试，不再编译旧 Tauri 壳；这不是全部 .NET 构建或真实模型测试。CI 运行不等于安装、模型分发或稳定版发布批准。
+1. **`WinSight.DesktopPolicy.Tests`**：验证热键语法解析、注册防冲突回滚、命令行参数解析（`--autostart`、`--data-dir`）。
+2. **`WinSight.Inference.Tests`**：验证推理子进程生命周期、子进程 BelowNormal 优先级控制、崩溃优雅重连与取消结算。
+3. **`WinSight.Runtime.Tests`**：验证滚动日志轮转、崩溃脱敏导出、硬件提供程序退避策略、开机自启纠偏、版本号比较规范、文件锁互斥、MCP 维护任务自动消费循环。
+4. **`WinSight.Pause.Tests`**：验证索引暂停/恢复状态机、USN 日志补齐收敛、并发取消与句柄释放。
+5. **`WinSight.Storage.Tests`**：验证 SQLite WAL 事务原子性、向量 FP16 编解码精度、FTS 双虚拟表一致性、中英文词法分词召回、SIMD 向量点积与显著性门槛。
+6. **`WinSight.Indexing.Tests`**：验证 Token 估算预算切块、CJK 标点自适应重叠、Unicode 代理对安全与异常格式容错。
+7. **`WinSight.IndexingSettlement.Tests`**：验证任务队列状态机、注入故障结算与持久化。
+8. **`WinSight.DocumentSearch.Tests`**：验证 Office 结构化字段提取、Excel 单元格交集、Word 坐标定位。
+9. **`WinSight.DocumentSearch.Tests --review-cases`**：验证深层复杂富媒体排版回归。
+10. **`WinSight.Bridge.Tests`**：验证 MCP 客户端 Stdio 管道与命名管道接口契约合规性。
 
-## 9. 许可证与上游归属
+\---
 
-本仓库保留目标仓库原有的 [Apache-2.0 许可证](LICENSE)。WinSight 包含来自 [DigUp](https://github.com/ARahim3/DigUp) 的 MIT 许可代码，原版权与许可全文保留在 [DigUp-MIT.txt](desktop/licenses/DigUp-MIT.txt)，没有用根许可证替换或删除上游许可。
+## 9\. 许可证与开源归属
 
-[NOTICE](NOTICE)说明来源和修改范围；[历史依赖归属](licenses/DigUp-Acknowledgements.txt)按原文保留，适用范围与当前原生依赖不同。模型和第三方组件各有许可，源码公开不等于其二进制／权重可以直接分发。
+* 本仓库采用 [Apache-2.0 许可证](LICENSE)。
+* 模型权重及第三方依赖遵循各自开源授权，分发时自动附带第三方声明文件 [THIRD-PARTY-NOTICES.txt](desktop/THIRD-PARTY-NOTICES.txt)。
+

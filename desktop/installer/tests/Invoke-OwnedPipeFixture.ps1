@@ -15,7 +15,7 @@ if($PSVersionTable.PSEdition-cne'Desktop'-or$PSVersionTable.PSVersion.Major-ne5-
 foreach($name in [Environment]::GetEnvironmentVariables().Keys){if($name-clike'N5_*'-or$name-clike'N7_*'){throw 'Native capabilities are forbidden in the synthetic fixture.'}}
 $env:PSModulePath=$PSHOME+'\Modules'
 Import-Module ($PSHOME+'\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Force
-$sourceRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$sourceRoot = if (Test-Path (Join-Path $PSScriptRoot '../legacy/NativeInstallCoordinator.psm1')) { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../legacy')) } else { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')) }
 Import-Module (Join-Path $sourceRoot 'NativeDeploymentJob.psm1') -Force
 $modulePath=Join-Path $sourceRoot 'NativeInstallCoordinator.psm1'
 $sourceHash=(Get-FileHash $modulePath -Algorithm SHA256).Hash.ToLowerInvariant()

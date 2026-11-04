@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.Data.Sqlite;
 using WinSight.Core;
 using WinSight.Infrastructure.Search;
+using WinSight.Infrastructure.Storage;
 
 namespace WinSight.Bridge;
 
@@ -62,7 +63,7 @@ public sealed class ReadOnlyIndexReader : IDisposable
     private static string SegmentedPattern(string text)
     {
         if (!NativeSegmenter.IsAvailable) return "";
-        var tokens = NativeSegmenter.Segment(text)
+        var tokens = NativeSegmenter.SegmentQuery(text)
             .Where(t => t.Length != 0 && t != "AND" && t != "OR" && t != "NOT")
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(t => "\"" + t.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"")
@@ -142,7 +143,7 @@ public sealed class ReadOnlyIndexReader : IDisposable
                 if (monitoredDirectoryCount == 0 && fileCount > 0) monitoredDirectoryCount = 1;
             }
 
-            bool lexicalDegraded = !NativeSegmenter.IsAvailable || lexiconSchema != "2";
+            bool lexicalDegraded = !NativeSegmenter.IsAvailable || lexiconSchema != IndexRebuildCoordinator.LexiconSchema;
 
             return new IndexStatusResult(
                 Modalities: modalities,

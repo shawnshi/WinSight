@@ -1,9 +1,4 @@
-# Build output
-.build/
-.swiftpm/
-/Vendor/
-
-# Dev runs (scripts/dev-run.sh): their indexes, models and settings
+# Local dev runs: indexes, models and settings
 .dev/
 
 # Python build/check scripts
@@ -18,13 +13,6 @@ evals/*.local.json
 
 # Local agent execution artifacts
 .pi/
-
-# The Tauri shell (shell/): Cargo builds and the schemas tauri-build writes
-shell/src-tauri/target/
-shell/src-tauri/gen/
-# What scripts/package-windows.sh gathers for the installer
-shell/src-tauri/helper/
-shell/src-tauri/THIRD-PARTY-NOTICES.txt
 
 # Native desktop build outputs; retain packages.lock.json in source control.
 desktop/**/bin/

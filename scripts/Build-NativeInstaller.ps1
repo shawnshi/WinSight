@@ -1,68 +1,99 @@
+#requires -Version 7.0
+<#
+.SYNOPSIS
+Builds the per-user WinSight installer from a staged payload (see Prepare-NativeRelease.ps1).
+
+.DESCRIPTION
+Canonical mainline installer builder for WinSight.
+Uses desktop/installer/WinSight.iss: creates a self-contained per-user installer that installs
+directly into %LOCALAPPDATA%\Programs\WinSight with direct Exe shortcuts, optional PATH task,
+full process termination handling, and uninstallation cleanup.
+The product version comes from desktop/Directory.Build.props.
+Optional Authenticode signing runs Sign-NativeArtifacts.ps1 on the payload binaries first and then
+signs the installer executable itself through an Inno Setup "SignTool" definition.
+#>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$StageDirectory,
-    [Parameter(Mandatory)][string]$OutputDirectory,
-    [Parameter(Mandatory)][string]$InstallRoot,
-    [Parameter(Mandatory)][string]$DataRoot,
-    [Parameter(Mandatory)][ValidateSet('Verification','Production')][string]$Mode,
-    [Parameter(Mandatory)][string]$ManifestSha256,
+    [string]$OutputDirectory,
     [string]$CompilerPath,
-    [string]$CompilerSha256,
-    [switch]$ValidateOnly,
-    [ValidateSet('None','AfterJournal','AfterFirstCopy','BeforeCommit','AfterCommit')][string]$VerificationFailurePoint = 'None'
+    [string]$CertificateThumbprint,
+    [string]$PfxPath
 )
 $ErrorActionPreference = 'Stop'
-$engine = Join-Path (Split-Path $PSScriptRoot -Parent) 'desktop/installer'
-Import-Module (Join-Path $engine 'NativeInstaller.psm1') -Force
-$stage = Resolve-NativeRoot $StageDirectory
-$output = Resolve-NativeRoot $OutputDirectory
-$install = Resolve-NativeRoot $InstallRoot
-$data = Resolve-NativeRoot $DataRoot
-$roots = @($stage, $output, $install, $data)
-for ($i = 0; $i -lt $roots.Count; $i++) {
-    for ($j = $i + 1; $j -lt $roots.Count; $j++) { Assert-NativeSeparate $roots[$i] $roots[$j] }
+Set-StrictMode -Version Latest
+$root = Split-Path $PSScriptRoot -Parent
+
+$payload = Join-Path $StageDirectory 'app'
+$allRequired = @(
+    'WinSight.App.exe',
+    'winsight-native.exe',
+    'bridge\winsight-mcp.exe',
+    'inference\WinSight.InferenceHost.exe',
+    'inference\ocr\WinSight.OcrHost.exe',
+    'inference\winml\WinSight.WinMlHost.exe',
+    'foundry\WinSight.FoundryHost.exe'
+)
+foreach ($required in $allRequired) {
+    if (-not (Test-Path -LiteralPath (Join-Path $payload $required) -PathType Leaf)) {
+        throw "Payload is incomplete, missing required host: $required"
+    }
 }
-if ($Mode -eq 'Production' -and $VerificationFailurePoint -ne 'None') { throw 'Production cannot contain failure injection.' }
-$manifest = Read-NativeStage $stage $ManifestSha256 $Mode
-if (Test-Path -LiteralPath $output) { throw 'OutputDirectory must be a new dedicated task directory.' }
-if ($ValidateOnly) {
-    [pscustomobject]@{ validated = $true; compiled = $false; mode = $Mode; manifestSha256 = $ManifestSha256; files = @($manifest.files).Count; installRoot = $install; dataRoot = $data } | ConvertTo-Json
-    return
+if (-not (Get-ChildItem -LiteralPath $payload -Recurse -Filter winsight_segmenter.dll -File)) {
+    throw 'Payload lacks winsight_segmenter.dll; indexing would fail at run time.'
 }
-if (-not $CompilerPath -or -not (Test-Path -LiteralPath $CompilerPath -PathType Leaf)) { throw 'Official Inno compiler is required; no compiler is downloaded or discovered.' }
-$compiler = Resolve-NativeRoot $CompilerPath
-if ($CompilerSha256 -cnotmatch '^[0-9a-f]{64}$' -or (Get-NativeHash $compiler) -cne $CompilerSha256) { throw 'Compiler hash does not match the independently approved input.' }
-$owned = @('NativeInstaller.psm1','Invoke-NativeInstaller.ps1','WinSight.Native.iss','Invoke-NativeCompilerProcess.ps1',
-    'Invoke-NativeDeployment.ps1','Invoke-NativeDeployWorker.ps1','NativeDeploymentJob.psm1')
-$sourceHashes = @{}
-foreach ($name in $owned) { $sourceHashes[$name] = Get-NativeHash (Join-Path $engine $name) }
-[IO.Directory]::CreateDirectory($output) | Out-Null
-$config = Join-Path $output 'candidate-config.iss'
-$include = Join-Path $output 'payload-files.iss'
-$definitions = [ordered]@{
-    CandidateMode = $Mode; BoundInstallRoot = $install; BoundDataRoot = $data;
-    CandidateOutput = $output; EngineDirectory = $engine;
-    ReleaseManifest = (Join-Path $stage 'release-manifest.json'); ManifestHash = $ManifestSha256;
-    PayloadInclude = $include; FailurePoint = $VerificationFailurePoint
+
+# Calculate uncompressed payload size for Inno Setup EstimatedSize metadata
+$payloadFiles = @(Get-ChildItem -LiteralPath $payload -Recurse -File)
+$totalPayloadBytes = ($payloadFiles | Measure-Object -Property Length -Sum).Sum
+$estimatedKb = [math]::Ceiling($totalPayloadBytes / 1KB)
+
+[xml]$props = Get-Content -LiteralPath (Join-Path $root 'desktop/Directory.Build.props') -Raw
+$prefix = $props.Project.PropertyGroup.VersionPrefix | Where-Object { $_ } | Select-Object -First 1
+$suffix = $props.Project.PropertyGroup.VersionSuffix | Where-Object { $_ } | Select-Object -First 1
+if ($prefix -notmatch '^\d+\.\d+\.\d+$') { throw 'VersionPrefix in desktop/Directory.Build.props must be major.minor.patch.' }
+$version = if ($suffix) { "$prefix-$suffix" } else { $prefix }
+
+$iscc = $CompilerPath
+if (-not $iscc) {
+    $candidates = @(
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+        "C:\Users\shich\AppData\Local\Programs\Antigravity IDE\resources\app\node_modules\innosetup\bin\ISCC.exe"
+    )
+    $iscc = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
-$lines = foreach ($key in $definitions.Keys) { '#define {0} "{1}"' -f $key, $definitions[$key] }
-[IO.File]::WriteAllLines($config, [string[]]$lines, [Text.UTF8Encoding]::new($false))
-$payload = foreach ($file in $manifest.files) {
-    $source = Join-Path $stage $file.path
-    $relativeDirectory = [IO.Path]::GetDirectoryName($file.path.Replace('/', '\'))
-    'Source: "{0}"; DestDir: "{{tmp}}\winsight-stage\{1}"; Flags: ignoreversion' -f $source, $relativeDirectory
+if (-not $iscc) { throw 'ISCC.exe (Inno Setup 6) was not found; install it or pass -CompilerPath.' }
+
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $StageDirectory 'installer' }
+New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+
+$signing = $CertificateThumbprint -or $PfxPath
+if ($signing) {
+    & (Join-Path $PSScriptRoot 'Sign-NativeArtifacts.ps1') -Path $payload -CertificateThumbprint $CertificateThumbprint -PfxPath $PfxPath
 }
-[IO.File]::WriteAllLines($include, [string[]]$payload, [Text.UTF8Encoding]::new($false))
-$log = Join-Path $output 'compile.log'
-# No command fallback, no install, no dependency resolution. Caller supplies official ISCC.
-$compilerArguments = '/DGeneratedConfig="' + $config + '" "' + (Join-Path $engine 'WinSight.Native.iss') + '"'
-$null = & (Join-Path $engine 'Invoke-NativeCompilerProcess.ps1') -CompilerPath $compiler -CompilerArguments $compilerArguments -LogPath $log
-$null = Read-NativeStage $stage $ManifestSha256 $Mode
-if ((Get-NativeHash $compiler) -cne $CompilerSha256) { throw 'Compiler changed during compilation.' }
-foreach ($name in $owned) { if ((Get-NativeHash (Join-Path $engine $name)) -cne $sourceHashes[$name]) { throw 'Installer source changed during compilation.' } }
-$setup = Join-Path $output "WinSight-Native-$Mode-Candidate.exe"
-if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'Compiler did not produce the expected candidate.' }
-[pscustomobject]@{ schema = 1; releaseApproved = $false; mode = $Mode; installRoot = $install; dataRoot = $data;
-    setupSha256 = Get-NativeHash $setup; manifestSha256 = $ManifestSha256; compilerSha256 = $CompilerSha256; sourceHashes = $sourceHashes; verificationFailurePoint = $VerificationFailurePoint
-} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'installer-build.json') -Encoding utf8
-Write-Output "Candidate compiled only; no setup executed: $setup"
+
+$issFile = Join-Path $root 'desktop/installer/WinSight.iss'
+if (-not (Test-Path -LiteralPath $issFile)) { $issFile = Join-Path $root 'desktop/installer/WinSight.Simple.iss' }
+
+$arguments = @(
+    "/DPayloadDir=$payload",
+    "/DAppVersion=$version",
+    "/DNumericVersion=$prefix.0",
+    "/DOutputDir=$OutputDirectory"
+# Estimated size is automatically calculated by Inno Setup from [Files]
+)
+if ($CertificateThumbprint) {
+    $signtool = (Get-Command signtool.exe -ErrorAction SilentlyContinue)?.Source
+    if (-not $signtool) { throw 'signtool.exe must be on PATH to sign the installer itself.' }
+    $arguments += @('/DSignToolName=winsightsign', "/Swinsightsign=`"$signtool`" sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /sha1 $CertificateThumbprint `$f")
+}
+& $iscc @arguments $issFile
+if ($LASTEXITCODE -ne 0) { throw "ISCC compilation failed (exit $LASTEXITCODE)." }
+
+$installer = Get-ChildItem -LiteralPath $OutputDirectory -Filter "WinSight-$version-x64-setup.exe" | Select-Object -First 1
+if (-not $installer) { throw 'The installer was not produced.' }
+$hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+Set-Content -LiteralPath ($installer.FullName + '.sha256') -Value "$hash  $($installer.Name)" -Encoding ascii
+Write-Output "Built $($installer.FullName) ($([math]::Round($installer.Length / 1MB, 1)) MiB, sha256 $hash, uncompressed $estimatedKb KB)$(if (-not $signing) { '; UNSIGNED' })"

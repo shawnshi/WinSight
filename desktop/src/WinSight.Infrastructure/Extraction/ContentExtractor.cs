@@ -222,6 +222,83 @@ public sealed class ContentExtractor : IContentExtractor
     private static bool StartsBlock(string line) => line.Length > 0 && !char.IsWhiteSpace(line[0]) && !"})]".Contains(line[0])
         && !new[] { "end", "fi", "done", "esac", "@end", "#endif", "end;", "end)" }.Contains(line.Trim());
 
+    // Chunk budget in ESTIMATED MODEL TOKENS, not characters. Latin text averages about 4 characters per token (so the
+    // budget is the same 1800 characters as before), CJK about 1.5, which keeps Chinese chunks at a comparable
+    // embedding granularity instead of 3-4 times longer.
+    internal const int ChunkTokens = 450, OverlapTokens = 50;
+    private const double LatinTokenCost = 1.0 / 4.0, CjkTokenCost = 1.0 / 1.5, SurrogateTokenCost = 1.0 / 2.0;
+
+    private static double TokenCost(char c) =>
+        c is >= '\u3400' and <= '\u9fff' or >= '\uf900' and <= '\ufaff' or >= '\u3040' and <= '\u30ff' or >= '\uac00' and <= '\ud7af' ? CjkTokenCost
+        : char.IsSurrogate(c) ? SurrogateTokenCost : LatinTokenCost;
+
+    private static bool IsSentenceEnd(string text, int index) // index = the punctuation character
+    {
+        char c = text[index];
+        if (c is '\u3002' or '\uff01' or '\uff1f' or '\uff1b' or '\u2026') return true;
+        if (c is '.' or '!' or '?' or ';') return index + 1 >= text.Length || char.IsWhiteSpace(text[index + 1]);
+        return false;
+    }
+
+    private static bool IsClauseMark(char c) => c is '\uff0c' or '\u3001' or '\uff1a' or ',' or ':';
+
+    /// <summary>Furthest end (exclusive) of a chunk starting at <paramref name="start"/> that fits <paramref name="tokens"/>.</summary>
+    private static int FitEnd(string text, int start, int tokens)
+    {
+        double used = 0;
+        int i = start;
+        while (i < text.Length)
+        {
+            double cost = TokenCost(text[i]);
+            if (used + cost > tokens) break;
+            used += cost;
+            i++;
+        }
+        if (i < text.Length && i > start && char.IsHighSurrogate(text[i - 1])) i--;
+        return Math.Max(i, start + 1);
+    }
+
+    /// <summary>
+    /// Picks the cut nearest to <paramref name="end"/> in the upper half of the chunk, preferring paragraph, line,
+    /// sentence, whitespace and clause boundaries in that order. Falls back to a hard cut only when none exists.
+    /// </summary>
+    private static int BestBoundary(string text, int start, int end)
+    {
+        int floor = start + (end - start) / 2;
+        for (int level = 0; level < 5; level++)
+            for (int i = end; i > floor; i--)
+            {
+                bool hit = level switch
+                {
+                    0 => i >= 2 && text[i - 1] == '\n' && text[i - 2] == '\n',
+                    1 => text[i - 1] == '\n',
+                    2 => IsSentenceEnd(text, i - 1),
+                    3 => i < text.Length && char.IsWhiteSpace(text[i]),
+                    _ => IsClauseMark(text[i - 1])
+                };
+                if (hit) return i;
+            }
+        if (end < text.Length && char.IsHighSurrogate(text[end - 1])) end--;
+        return end;
+    }
+
+    /// <summary>Start of the next chunk: about <see cref="OverlapTokens"/> before <paramref name="end"/>, snapped to a boundary.</summary>
+    private static int NextStart(string text, int start, int end)
+    {
+        double used = 0;
+        int back = end;
+        while (back > start && used + TokenCost(text[back - 1]) <= OverlapTokens) { used += TokenCost(text[back - 1]); back--; }
+        int next = back;
+        for (int p = back; p < end; p++)
+        {
+            bool boundary = p > 0 && (text[p - 1] == '\n' || IsSentenceEnd(text, p - 1) || char.IsWhiteSpace(text[p - 1]) || IsClauseMark(text[p - 1]));
+            if (boundary) { next = p; break; }
+        }
+        next = Math.Max(next, start + 1);
+        if (next < text.Length && char.IsLowSurrogate(text[next])) next++;
+        return Math.Min(next, end);
+    }
+
     internal static (List<IndexSegment>, bool) Chunks(string text, CancellationToken token)
     {
         text = Regex.Replace(text, "[ \\t\u00A0]+", " ", RegexOptions.None, RegexTimeout).Trim();
@@ -231,18 +308,12 @@ public sealed class ContentExtractor : IContentExtractor
         while (start < text.Length && result.Count < MaxSegments)
         {
             token.ThrowIfCancellationRequested();
-            var end = Math.Min(text.Length, start + 1800);
-            if (end < text.Length)
-            {
-                for (var i = end - 1; i > start + 900; i--) if (char.IsWhiteSpace(text[i])) { end = i; break; }
-                if (char.IsHighSurrogate(text[end - 1])) end--;
-            }
+            var end = FitEnd(text, start, ChunkTokens);
+            if (end < text.Length) end = BestBoundary(text, start, end);
             var body = text[start..end].Trim();
             if (body.Length > 0) result.Add(new("chunk", "text", result.Count + 1, null, body));
             if (end == text.Length) return (result, false);
-            var next = Math.Max(start + 1, end - 200);
-            while (next < end && !char.IsWhiteSpace(text[next])) next++;
-            start = next;
+            start = NextStart(text, start, end);
         }
         return (result, start < text.Length);
     }

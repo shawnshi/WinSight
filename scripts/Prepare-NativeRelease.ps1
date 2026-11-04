@@ -11,6 +11,12 @@ param(
     [string]$ArtifactRoot,
     [ValidateRange(1,160)][int]$DeadlineSeconds = 150,
     [switch]$AppOnlyPreview,
+    # Optional helper hosts (each adds about 150-180 MiB because it is self-contained with its own ONNX Runtime):
+    #  - Windows ML host: an alternative embedding host (ORT 1.27). When app\inference\winml\WinSight.WinMlHost.exe exists it is used
+    #    instead of the default inference host and enables the device probe in Settings.
+    #  - Foundry host: never embeds; it only lists and registers execution providers (app\foundry\WinSight.FoundryHost.exe).
+    [switch]$IncludeWindowsMlHost,
+    [switch]$IncludeFoundryHost,
     [string]$ModelDirectory,
     [string]$OcrModelDirectory,
     [string]$Configuration = 'Release',
@@ -108,7 +114,7 @@ if ($ReuseFrozenPayload) {
         $s = [IO.File]::Open($Path, 'CreateNew', 'Write', 'None')
         try { $s.Write($bytes, 0, $bytes.Length); $s.Flush() } finally { $s.Dispose() }
     }
-    if ($AppOnlyPreview -or $StageDirectory -or $PSBoundParameters.ContainsKey('Configuration')) { throw 'Reuse cannot be combined with publish/preview options.' }
+    if ($AppOnlyPreview -or $StageDirectory -or $IncludeWindowsMlHost -or $IncludeFoundryHost -or $PSBoundParameters.ContainsKey('Configuration')) { throw 'Reuse cannot be combined with publish/preview options.' }
     $published = Resolve-ReusePath $FrozenPublishedRoot
     $models = Resolve-ReusePath $ModelDirectory
     $artifact = Resolve-ReusePath $ArtifactRoot
@@ -249,13 +255,8 @@ for ($parent = Split-Path $stage -Parent; $parent.StartsWith($boundary, [StringC
 if (Test-Path $stage) { throw "Refusing to overwrite an existing release stage: $stage" }
 $manifestPath = Join-Path $root 'inference/WinSight.InferenceHost/model-manifest.json'
 $tokenizer = Join-Path $root 'native/winsight-tokenizer/target/x86_64-pc-windows-msvc/release/winsight_tokenizer.dll'
-if (-not $AppOnlyPreview) {
-    if (-not $ModelDirectory -or -not [IO.Path]::IsPathFullyQualified($ModelDirectory)) {
-        throw 'A full package requires an explicitly supplied absolute -ModelDirectory; no private model cache is discovered.'
-    }
-    if (-not $OcrModelDirectory -or -not [IO.Path]::IsPathFullyQualified($OcrModelDirectory)) {
-        throw 'A full candidate also requires an explicit absolute -OcrModelDirectory for the four pinned isolated OCR assets.'
-    }
+if ($OcrModelDirectory) {
+    if (-not [IO.Path]::IsPathFullyQualified($OcrModelDirectory)) { throw '-OcrModelDirectory must be an absolute path.' }
     $ocrModelManifest = Get-Content -Raw -LiteralPath (Join-Path $root 'inference/WinSight.OcrHost/model-manifest.json') | ConvertFrom-Json
     foreach ($pin in $ocrModelManifest.files) {
         $asset = Join-Path $OcrModelDirectory $pin.path
@@ -264,6 +265,9 @@ if (-not $AppOnlyPreview) {
             throw "Pinned OCR asset mismatch: $($pin.path)"
         }
     }
+}
+if ($ModelDirectory) {
+    if (-not [IO.Path]::IsPathFullyQualified($ModelDirectory)) { throw '-ModelDirectory must be an absolute path.' }
     $modelManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
     foreach ($file in $modelManifest.files) {
         $path = Join-Path $ModelDirectory $file.path
@@ -273,7 +277,11 @@ if (-not $AppOnlyPreview) {
             throw "Model manifest mismatch: $($file.path)"
         }
     }
-    if (-not (Test-Path $tokenizer)) { throw 'Build the pinned native tokenizer before preparing the inference payload.' }
+}
+if (-not (Test-Path $tokenizer)) { throw 'Build the pinned native tokenizer (native/winsight-tokenizer) before preparing the payload.' }
+# Indexing, search and the bundled MCP bridge all load the same native Chinese segmenter; a missing DLL fails writes at run time.
+if (-not (Test-Path (Join-Path $root 'native/winsight-segmenter/target/release/winsight_segmenter.dll') -PathType Leaf)) {
+    throw 'Build native/winsight-segmenter (cargo build --release --locked) before preparing the payload.'
 }
 New-Item -ItemType Directory -Path $stage | Out-Null
 $logs = Join-Path $stage 'logs'
@@ -282,7 +290,9 @@ Push-Location $desktop
 try {
     $projects = @(
         @{ Project = 'src/WinSight.App/WinSight.App.csproj'; Output = 'app'; Log = 'app' },
-        @{ Project = 'src/WinSight.Cli/WinSight.Cli.csproj'; Output = 'app'; Log = 'cli' }
+        @{ Project = 'src/WinSight.Cli/WinSight.Cli.csproj'; Output = 'app'; Log = 'cli' },
+        # The local MCP bridge ships with the app (docs/native-migration/mcp-client-setup.md): app/bridge/winsight-mcp.exe.
+        @{ Project = 'src/WinSight.Bridge/WinSight.Bridge.csproj'; Output = 'app/bridge'; Log = 'bridge' }
     )
     foreach ($item in $projects) {
         $out = Join-Path $stage $item.Output
@@ -290,35 +300,64 @@ try {
             -p:WindowsAppSDKSelfContained=true -p:PublishSingleFile=false --output $out *> (Join-Path $logs "$($item.Log).publish.log")
         if ($LASTEXITCODE -ne 0) { throw "Publish failed for $($item.Project). See stage logs; stage is incomplete." }
     }
-    if (-not $AppOnlyPreview) {
-        $inference = Join-Path $stage 'app/inference'
-        & dotnet publish (Join-Path $root 'inference/WinSight.InferenceHost/WinSight.InferenceHost.csproj') `
-            --configuration $Configuration --runtime win-x64 --self-contained true --output $inference *> (Join-Path $logs 'inference.publish.log')
-        if ($LASTEXITCODE -ne 0) { throw 'Inference publish failed; stage is incomplete.' }
-        $ocrOut = Join-Path $inference 'ocr'
-        & dotnet publish (Join-Path $root 'inference/WinSight.OcrHost/WinSight.OcrHost.csproj') `
-            --configuration $Configuration --runtime win-x64 --self-contained true "-p:OcrModelRoot=$OcrModelDirectory" --output $ocrOut *> (Join-Path $logs 'ocr.publish.log')
-        if ($LASTEXITCODE -ne 0) { throw 'Isolated OCR publish failed; stage is incomplete.' }
+    if (-not (Test-Path (Join-Path $stage 'app/bridge/winsight-mcp.exe') -PathType Leaf)) { throw 'MCP bridge payload is missing: app/bridge/winsight-mcp.exe.' }
+    # Core inference host
+    $inference = Join-Path $stage 'app/inference'
+    & dotnet publish (Join-Path $root 'inference/WinSight.InferenceHost/WinSight.InferenceHost.csproj') `
+        --configuration $Configuration --runtime win-x64 --self-contained true --output $inference *> (Join-Path $logs 'inference.publish.log')
+    if ($LASTEXITCODE -ne 0) { throw 'Inference publish failed; stage is incomplete.' }
+
+    # OCR host
+    $ocrOut = Join-Path $inference 'ocr'
+    $ocrArgs = @('--configuration', $Configuration, '--runtime', 'win-x64', '--self-contained', 'true', '--output', $ocrOut)
+    if ($OcrModelDirectory) { $ocrArgs += "-p:OcrModelRoot=$OcrModelDirectory" }
+    else { $ocrArgs += "-p:RequireOcrModels=false" }
+    & dotnet publish (Join-Path $root 'inference/WinSight.OcrHost/WinSight.OcrHost.csproj') @ocrArgs *> (Join-Path $logs 'ocr.publish.log')
+    if ($LASTEXITCODE -ne 0) { throw 'Isolated OCR publish failed; stage is incomplete.' }
+
+    # Windows ML host (for NPU/hardware device probing)
+    $winmlOut = Join-Path $inference 'winml'
+    & dotnet publish (Join-Path $root 'inference/WinSight.WinMlHost/WinSight.WinMlHost.csproj') `
+        --configuration $Configuration --runtime win-x64 --self-contained true --output $winmlOut *> (Join-Path $logs 'winml.publish.log')
+    if ($LASTEXITCODE -ne 0) { throw 'WinML host publish failed; stage is incomplete.' }
+
+    # Foundry Local host (for Foundry provider probing and management)
+    $foundryOut = Join-Path $stage 'app/foundry'
+    & dotnet publish (Join-Path $root 'inference/WinSight.FoundryHost/WinSight.FoundryHost.csproj') `
+        --configuration $Configuration --runtime win-x64 --self-contained true --output $foundryOut *> (Join-Path $logs 'foundry.publish.log')
+    if ($LASTEXITCODE -ne 0) { throw 'Foundry host publish failed; stage is incomplete.' }
+
+    if ($OcrModelDirectory -and $ocrModelManifest) {
         foreach ($pin in $ocrModelManifest.files) {
             $published = Join-Path $ocrOut $pin.path
             if ((Get-FileHash -LiteralPath $published -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.sha256) {
                 throw "Published OCR asset differs: $($pin.path)"
             }
         }
+    }
+    if ($ModelDirectory -and $modelManifest) {
         foreach ($file in $modelManifest.files) {
             $target = Join-Path (Join-Path $stage 'app/models') $file.path
             New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force | Out-Null
             Copy-Item (Join-Path $ModelDirectory $file.path) $target
         }
     }
+    # Copy model configuration templates so app/models always exists with valid json configurations
+    $modelsOut = Join-Path $stage 'app/models'
+    New-Item -ItemType Directory -Path $modelsOut -Force | Out-Null
+    $configSources = Join-Path $root 'docs/onnx-p0/sources'
+    foreach ($cfg in @('config.json', 'preprocessor_config.json', 'processor_config.json', 'tokenizer_config.json')) {
+        $sourceCfg = Join-Path $configSources $cfg
+        if (Test-Path -LiteralPath $sourceCfg) {
+            Copy-Item $sourceCfg (Join-Path $modelsOut $cfg) -Force
+        }
+    }
     Copy-Item (Join-Path $desktop 'THIRD-PARTY-NOTICES.txt') (Join-Path $stage 'app/THIRD-PARTY-NOTICES.txt')
     Copy-Item (Join-Path $desktop 'licenses') (Join-Path $stage 'app/licenses') -Recurse
-    if (-not $AppOnlyPreview) {
-        $tokenizerNotices = Join-Path $stage 'app/licenses/tokenizer'
+    $tokenizerNotices = Join-Path $stage 'app/licenses/tokenizer'
         New-Item -ItemType Directory -Path $tokenizerNotices -Force | Out-Null
         Copy-Item (Join-Path $root 'native/winsight-tokenizer/licenses') (Join-Path $tokenizerNotices 'texts') -Recurse
         Copy-Item (Join-Path $root 'native/winsight-tokenizer/source-provenance.json') $tokenizerNotices
-    }
     $files = @(Get-ChildItem $stage -Recurse -File | Where-Object { $_.FullName -notlike "$logs*" } | ForEach-Object {
         @{ path = [IO.Path]::GetRelativePath($stage, $_.FullName).Replace('\', '/'); bytes = $_.Length;
            sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }

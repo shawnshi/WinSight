@@ -44,7 +44,7 @@ internal static class GapSecurityCases
                 string path = Path.Combine(root, $"source{i}.cs"); File.WriteAllText(path, $"class Synthetic{i} {{ }}");
                 h.Seed(path, "code", revisions[i]); before[path] = (h.Row(path), Digest(path), new FileInfo(path).Length);
             }
-            h.Metadata["indexing_fingerprint"] = "native-extraction-v1|code-lines1800-cells";
+            h.Metadata["indexing_fingerprint"] = "native-extraction-v2|code-lines1800-cells";
             var client = api.Client(fake, Path.Combine(dir, "w"));
             try { await ConsumerHarness.Index(h.Consumer(api.Sampler(client)), h.Request(root, code: true)); }
             finally { await ActualApi.Dispose(client); }

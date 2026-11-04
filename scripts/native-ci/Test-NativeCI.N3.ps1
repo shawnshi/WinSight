@@ -140,9 +140,9 @@ $observed|ConvertTo-Json
         Check (@(Get-ChildItem -LiteralPath $root -Filter 'invocation-*.stdout.log').Count -eq 0) 'Final validation started new work'
         $r=Read-NativeCICheckpoint $root;Check ($r.state -eq 'incomplete' -and -not $r.fullReleaseAcceptance) 'Incomplete state was changed into pass'
     }
-    Test 'NM-N3R-05 workflow has 44 finite bounded advances followed by mandatory completion' {
+    Test 'NM-N3R-05 workflow has 47 finite bounded advances followed by mandatory completion' {
         $yaml=[IO.File]::ReadAllText((Join-Path $repository '.github/workflows/native.yml'))
-        Check ([regex]::Matches($yaml,'run: ./scripts/native-ci/Advance-NativeCIHosted.ps1').Count -eq 44) 'Finite command allowance changed'
+        Check ([regex]::Matches($yaml,'run: ./scripts/native-ci/Advance-NativeCIHosted.ps1').Count -eq 47) 'Finite command allowance changed'
         Check ($yaml -notmatch 'run:.*Test-NativeCI.ps1.*PublicHosted|continue-on-error|\bwhile\b') 'Workflow contains long direct/bypass/polling execution'
         $complete=$yaml.IndexOf('-Resume -RequireComplete');$candidate=$yaml.IndexOf('name: Retain model-free candidate')
         Check ($complete -gt 0 -and $complete -lt $candidate) 'Mandatory final gate is not before candidate upload'

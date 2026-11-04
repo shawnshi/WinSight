@@ -5,7 +5,16 @@
       Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
     <ScrollViewer Padding="24">
         <StackPanel Spacing="16">
-            <TextBlock Text="MCP console" Style="{ThemeResource TitleTextBlockStyle}"/>
+            <Grid>
+                <TextBlock Text="MCP 客户端控制台" Style="{ThemeResource TitleTextBlockStyle}" VerticalAlignment="Center"/>
+                <Border HorizontalAlignment="Right" Background="{ThemeResource SystemFillColorSuccessBackgroundBrush}"
+                        BorderBrush="{ThemeResource SystemFillColorSuccessBrush}" BorderThickness="1" CornerRadius="12" Padding="10,4">
+                    <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <Ellipse Width="8" Height="8" Fill="{ThemeResource SystemFillColorSuccessBrush}"/>
+                        <TextBlock Text="本地服务就绪" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold" Foreground="{ThemeResource SystemFillColorSuccessBrush}"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1" CornerRadius="8" Padding="20">
@@ -13,9 +22,9 @@
                     <TextBlock Text="{x:Bind ViewModel.Summary, Mode=OneWay}" TextWrapping="Wrap"
                                AutomationProperties.AutomationId="McpConsoleSummary"/>
                     <StackPanel Orientation="Horizontal" Spacing="12">
-                        <Button Content="Refresh" Click="OnRefreshClick"
+                        <Button Content="刷新状态" Click="OnRefreshClick"
                                 AutomationProperties.AutomationId="McpConsoleRefreshButton"/>
-                        <Button Content="Drain requests" Click="OnDrainClick"
+                        <Button Content="处理等待请求" Click="OnDrainClick"
                                 IsEnabled="{x:Bind ViewModel.CanDrain, Mode=OneWay}"
                                 AutomationProperties.AutomationId="McpConsoleDrainButton"/>
                     </StackPanel>
@@ -28,12 +37,22 @@
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1" CornerRadius="8" Padding="20">
                 <StackPanel Spacing="8">
-                    <TextBlock Text="Recent requests" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="最近请求历史" Style="{ThemeResource SubtitleTextBlockStyle}"/>
                     <ItemsControl ItemsSource="{x:Bind ViewModel.Recent, Mode=OneWay}"
                                   AutomationProperties.AutomationId="McpConsoleRecent">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="x:String">
-                                <TextBlock Text="{x:Bind}" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}"/>
+                                <Border Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                                        CornerRadius="4" Padding="10,6" Margin="0,3">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <FontIcon Glyph="&#xE756;" FontSize="14" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1" Text="{x:Bind}" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Border>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
@@ -43,12 +62,22 @@
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1" CornerRadius="8" Padding="20">
                 <StackPanel Spacing="8">
-                    <TextBlock Text="Transports" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="传输协议与连接说明" Style="{ThemeResource SubtitleTextBlockStyle}"/>
                     <ItemsControl ItemsSource="{x:Bind ViewModel.Notes, Mode=OneWay}"
                                   AutomationProperties.AutomationId="McpConsoleNotes">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="x:String">
-                                <TextBlock Text="{x:Bind}" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}"/>
+                                <Border Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                                        CornerRadius="4" Padding="10,6" Margin="0,3">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <FontIcon Glyph="&#xE88E;" FontSize="14" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1" Text="{x:Bind}" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Border>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>

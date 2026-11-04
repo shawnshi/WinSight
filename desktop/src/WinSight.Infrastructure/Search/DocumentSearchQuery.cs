@@ -90,6 +90,8 @@ internal sealed class DocumentSearchQuery
 
     internal bool Matches(string path, string? info, SourceAnchor? source, string? excerpt = null, bool checkLiterals = true)
     {
+        // Nothing to verify: skip field extraction (a regex scan of the excerpt) on the per-segment hot path.
+        if (Filters.Count == 0 && (!checkLiterals || Literals.Length == 0)) return true;
         var fields = source?.Fields ?? (excerpt is null ? [] : FieldsFromText(excerpt));
         foreach (var literal in checkLiterals ? Literals : [])
         {

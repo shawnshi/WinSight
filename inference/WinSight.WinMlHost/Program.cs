@@ -37,6 +37,10 @@ internal static class Program
                     {
                         registrations.Add(provider.Name + "=already-registered");
                     }
+                    catch (Exception error)
+                    {
+                        registrations.Add(provider.Name + "=failed:" + error.Message);
+                    }
                 }
 
                 var environment = OrtEnv.Instance();
