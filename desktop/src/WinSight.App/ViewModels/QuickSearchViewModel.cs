@@ -19,6 +19,10 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     private string statusText = "Ready";
     private CancellationTokenSource? activeCts;
     private long querySequence;
+    private readonly TimeSpan searchDebounce;
+
+    /// <summary>Quiet period after the last keystroke before a search starts; keeps fast typing from issuing one query per character.</summary>
+    public static readonly TimeSpan DefaultSearchDebounce = TimeSpan.FromMilliseconds(150);
 
     public ObservableCollection<SearchItemViewModel> Hits { get; } = [];
 
@@ -57,7 +61,13 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     public int SelectedIndex
     {
         get => selectedIndex;
-        set => SetProperty(ref selectedIndex, value);
+        set
+        {
+            if (SetProperty(ref selectedIndex, value))
+            {
+                OnPropertyChanged(nameof(SelectedItem));
+            }
+        }
     }
 
     public bool IsLoading
@@ -87,10 +97,11 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     public SearchItemViewModel? SelectedItem =>
         selectedIndex >= 0 && selectedIndex < Hits.Count ? Hits[selectedIndex] : null;
 
-    public QuickSearchViewModel(IDesktopBackend backend, string? dataDir = null)
+    public QuickSearchViewModel(IDesktopBackend backend, string? dataDir = null, TimeSpan? searchDebounce = null)
     {
         this.backend = backend;
         this.dataDir = dataDir;
+        this.searchDebounce = searchDebounce is { } value && value >= TimeSpan.Zero ? value : DefaultSearchDebounce;
     }
 
     public void TriggerSearch()
@@ -122,11 +133,13 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
 
         try
         {
+            if (searchDebounce > TimeSpan.Zero) await Task.Delay(searchDebounce, ct);
             var req = new SearchRequest(
                 Query: q,
-                Limit: 50,
+                Limit: 60,
                 Mode: SearchMode.Hybrid,
-                Kind: kind);
+                Kind: kind,
+                MinScore: 0.25);
 
             var response = await backend.SearchAsync(req, ct);
 
@@ -136,6 +149,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
                 return;
             }
 
+            selectedIndex = -1;
             Hits.Clear();
             foreach (var hit in response.Hits)
             {
@@ -143,9 +157,13 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
             }
 
             SelectedIndex = Hits.Count > 0 ? 0 : -1;
+            OnPropertyChanged(nameof(SelectedIndex));
+            OnPropertyChanged(nameof(SelectedItem));
             HasNotice = !string.IsNullOrEmpty(response.Notice);
             NoticeText = response.Notice;
-            StatusText = $"Found {response.Hits.Count} item{(response.Hits.Count == 1 ? "" : "s")} in {response.Elapsed.TotalMilliseconds:F0} ms";
+            StatusText = response.Hits.Count == 0
+                ? "未找到高相关度结果"
+                : $"共检索到 {response.Hits.Count} 条高相关结果 (按相关度排列，耗时 {response.Elapsed.TotalMilliseconds:F0} ms)";
         }
         catch (OperationCanceledException)
         {
@@ -261,6 +279,9 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     public async Task<bool> CopyCurrentAsync() => await CopyHitAsync(SelectedItem);
 
     public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+
     private bool SetProperty<T>(ref T storage, T value, [CallerMemberName] string? propertyName = null)
     {
         if (EqualityComparer<T>.Default.Equals(storage, value)) return false;

@@ -28,6 +28,8 @@
     <Compile Include="../../desktop/src/WinSight.Infrastructure/Media/WindowsNativeMediaProcess.cs" Link="Shared/WindowsNativeMediaProcess.cs" />
     <Compile Include="../../desktop/src/WinSight.Infrastructure/Media/PowerPointPolicy.cs" Link="Shared/PowerPointPolicy.cs" />
     <Compile Include="../../desktop/src/WinSight.Infrastructure/Media/OfficeNavigationPolicy.cs" Link="Shared/OfficeNavigationPolicy.cs" />
+    <Compile Include="../../desktop/src/WinSight.Infrastructure/Extraction/LegacyOffice.cs" Link="Shared/LegacyOffice.cs" />
+    <Compile Include="../../desktop/src/WinSight.Infrastructure/Extraction/LegacyText.cs" Link="Shared/LegacyText.cs" />
     <None Update="model-manifest.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="../../native/winsight-tokenizer/target/$(TokenizerRustTarget)/release/winsight_tokenizer.dll"
           Link="runtimes/$(RuntimeIdentifier)/native/winsight_tokenizer.dll"

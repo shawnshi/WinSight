@@ -3,11 +3,12 @@ namespace WinSight.Core;
 public enum SearchMode { Hybrid, Keyword, Semantic }
 public enum IndexingControlState { Running, Pausing, Paused }
 public sealed class IndexingPausedException() : InvalidOperationException("Indexing is paused or pausing.");
-public sealed record SearchRequest(string Query, int Limit = 50, SearchMode Mode = SearchMode.Hybrid,
-    string? Kind = null, string? Root = null, IReadOnlyList<SearchField>? Filters = null);
+public sealed record SearchRequest(string Query, int Limit = 200, SearchMode Mode = SearchMode.Hybrid,
+    string? Kind = null, string? Root = null, IReadOnlyList<SearchField>? Filters = null,
+    double MinScore = 0.0);
 public sealed record SearchHit(long FileId, string Path, string Kind, double Score, string MatchType,
     string? Excerpt = null, double? Location = null, double? LocationEnd = null, string? SegmentKind = null,
-    SourceAnchor? Source = null, IReadOnlyList<string>? Channels = null)
+    SourceAnchor? Source = null, IReadOnlyList<string>? Channels = null, long? FileSize = null, double? ModifiedTime = null)
 {
     // Two searches over unchanged data must give equal hits; the default record equality would compare the channel list by reference.
     public bool Equals(SearchHit? other) => other is not null && FileId == other.FileId && Path == other.Path && Kind == other.Kind
@@ -85,6 +86,9 @@ public interface IIndexRepository : IAsyncDisposable
     string DatabasePath { get; }
     Task InitializeAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<IndexedFile>> ReadFilesAsync(CancellationToken cancellationToken = default);
+    /// <summary>Reads only the file metadata (path, kind, size, mtime, state, detail, info) without materialising segments or vectors.</summary>
+    Task<IReadOnlyList<IndexedFile>> ReadFileHeadersAsync(CancellationToken cancellationToken = default) => ReadFilesAsync(cancellationToken);
+    Task<IReadOnlyList<IndexedFile>> ReadFileHeadersByPathsAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken = default) => ReadFileHeadersAsync(cancellationToken);
     Task<IndexedFile?> GetFileAsync(string path, CancellationToken cancellationToken = default);
     Task UpsertFileAsync(IndexedFile file, CancellationToken cancellationToken = default);
     Task DeleteFileAsync(string path, CancellationToken cancellationToken = default);
@@ -110,13 +114,35 @@ public interface IIndexRepository : IAsyncDisposable
     Task AckTaskWithUpsertAsync(IndexedFile file, string taskPath, string? tombstone = null, CancellationToken cancellationToken = default) => UpsertFileAsync(file, cancellationToken);
     Task AckTaskWithDeleteAsync(string filePath, string taskPath, CancellationToken cancellationToken = default) => DeleteFileAsync(filePath, cancellationToken);
     Task<int> TrimTasksAsync(int maxTasks = 50000, CancellationToken cancellationToken = default) => Task.FromResult(0);
+    Task<int> ResetFailedFilesAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
     Task<IReadOnlyDictionary<string, int>> GetTaskCountsAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyDictionary<string, int>>(new Dictionary<string, int>());
+    /// <summary>Counts indexed files at or below <paramref name="root"/> without materialising segments or vectors.</summary>
+    async Task<int> CountFilesUnderAsync(string root, CancellationToken cancellationToken = default)
+    {
+        var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        var prefix = normalized + Path.DirectorySeparatorChar;
+        var files = await ReadFilesAsync(cancellationToken).ConfigureAwait(false);
+        return files.Count(file => string.Equals(file.Path, normalized, StringComparison.OrdinalIgnoreCase)
+            || file.Path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+    }
+    /// <summary>Counts stored segment vectors without loading them.</summary>
+    async Task<long> CountVectorsAsync(CancellationToken cancellationToken = default)
+    {
+        var files = await ReadFilesAsync(cancellationToken).ConfigureAwait(false);
+        return files.Sum(file => (long)file.Segments.Count(segment => segment.Vector is not null));
+    }
 }
 public interface IEmbeddingService : IAsyncDisposable
 {
     Task<EmbeddingInfo> GetInfoAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<EmbeddingResult>> EmbedAsync(IReadOnlyList<EmbeddingInput> inputs,
         CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Latency-sensitive embedding for a user query. Implementations may let it overtake queued bulk work and must not
+    /// tear down shared state when the caller stops waiting. The default simply delegates to <see cref="EmbedAsync"/>.
+    /// </summary>
+    Task<IReadOnlyList<EmbeddingResult>> EmbedInteractiveAsync(IReadOnlyList<EmbeddingInput> inputs,
+        CancellationToken cancellationToken = default) => EmbedAsync(inputs, cancellationToken);
 }
 public sealed record ExtractionResult(IReadOnlyList<IndexSegment> Segments, string State,
     string? Detail = null, string? Info = null);
@@ -166,6 +192,7 @@ public sealed class AppSettings
     public string Accelerator { get; set; } = "auto";
     // Downloads components over the network, so it is opt-in. Settings files written before this field existed stay off.
     public bool InstallExecutionProviders { get; set; } = false;
+    public bool EnableMcpServer { get; set; } = false;
 }
 public sealed class IndexHours
 {
@@ -199,6 +226,7 @@ public interface ISettingsBackend
 {
     Task<AppSettings> LoadSettingsAsync(CancellationToken cancellationToken = default);
     Task SaveSettingsAsync(AppSettings settings, CancellationToken cancellationToken = default);
+    event Action<AppSettings>? SettingsSaved { add { } remove { } }
 }
 
 /// <summary>Queries, source preview and the model identity queries depend on.</summary>
@@ -222,6 +250,7 @@ public interface IIndexingBackend
         Task.FromResult(new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, "not-implemented", Array.Empty<IndexBudgetState>()));
     Task<IReadOnlyList<string>> GetFailureSummaryAsync(int limit = 5, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<string>>([]);
+    Task<int> ResetFailedFilesAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
     Task SetIndexingPausedAsync(bool paused, CancellationToken cancellationToken = default);
     Task<string> DescribeVectorScaleAsync(CancellationToken cancellationToken = default) => Task.FromResult(string.Empty);
 }
@@ -238,6 +267,7 @@ public interface IModelBackend
 /// <summary>The local MCP bridge: client configuration, the maintenance grant and queued requests.</summary>
 public interface IMcpBackend
 {
+    Task<string> GetMcpClientConfigSnippetAsync(string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult(string.Empty);
     Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<ClientConfigPreview?> ApplyClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default) => Task.FromResult<ClientConfigPreview?>(null);
     Task<McpConsoleStatus?> GetMcpConsoleStatusAsync(CancellationToken cancellationToken = default) => Task.FromResult<McpConsoleStatus?>(null);

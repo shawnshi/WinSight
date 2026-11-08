@@ -208,6 +208,40 @@ public static class FileActionPlanner
                     UseShellExecute: false,
                     NoticeMessage: $"Opening in Cursor at line {line}.");
             }
+            if (string.Equals(editor, "windsurf", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ActionPlan(
+                    IsAuthorized: true,
+                    DenialReason: null,
+                    ActionType: ActionPlanType.LaunchProcess,
+                    Executable: "windsurf",
+                    Arguments: new string[] { "-g", $"{path}:{line}" },
+                    UseShellExecute: false,
+                    NoticeMessage: $"Opening in Windsurf at line {line}.");
+            }
+            if (string.Equals(editor, "notepad++", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ActionPlan(
+                    IsAuthorized: true,
+                    DenialReason: null,
+                    ActionType: ActionPlanType.LaunchProcess,
+                    Executable: "notepad++.exe",
+                    Arguments: new string[] { $"-n{line}", path },
+                    UseShellExecute: false,
+                    NoticeMessage: $"Opening in Notepad++ at line {line}.");
+            }
+            if (string.Equals(editor, "sublime", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(editor, "subl", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ActionPlan(
+                    IsAuthorized: true,
+                    DenialReason: null,
+                    ActionType: ActionPlanType.LaunchProcess,
+                    Executable: "subl",
+                    Arguments: new string[] { $"{path}:{line}" },
+                    UseShellExecute: false,
+                    NoticeMessage: $"Opening in Sublime Text at line {line}.");
+            }
 
             // Default system notepad / text editor
             return new ActionPlan(

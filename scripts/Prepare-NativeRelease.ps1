@@ -255,11 +255,24 @@ for ($parent = Split-Path $stage -Parent; $parent.StartsWith($boundary, [StringC
 if (Test-Path $stage) { throw "Refusing to overwrite an existing release stage: $stage" }
 $manifestPath = Join-Path $root 'inference/WinSight.InferenceHost/model-manifest.json'
 $tokenizer = Join-Path $root 'native/winsight-tokenizer/target/x86_64-pc-windows-msvc/release/winsight_tokenizer.dll'
+if (-not $OcrModelDirectory) {
+    $defaultOcr = Join-Path $root 'models/ocr'
+    if (Test-Path (Join-Path $defaultOcr 'models/v6/ppocrv6_dict.txt')) { $OcrModelDirectory = [IO.Path]::GetFullPath($defaultOcr) }
+    elseif (Test-Path (Join-Path $defaultOcr 'v6/ppocrv6_dict.txt')) { $OcrModelDirectory = [IO.Path]::GetFullPath($defaultOcr) }
+}
+if (-not $ModelDirectory) {
+    $defaultModels = Join-Path $root 'models'
+    if (Test-Path (Join-Path $defaultModels 'tokenizer.json')) { $ModelDirectory = [IO.Path]::GetFullPath($defaultModels) }
+}
 if ($OcrModelDirectory) {
     if (-not [IO.Path]::IsPathFullyQualified($OcrModelDirectory)) { throw '-OcrModelDirectory must be an absolute path.' }
     $ocrModelManifest = Get-Content -Raw -LiteralPath (Join-Path $root 'inference/WinSight.OcrHost/model-manifest.json') | ConvertFrom-Json
     foreach ($pin in $ocrModelManifest.files) {
         $asset = Join-Path $OcrModelDirectory $pin.path
+        if (-not (Test-Path -LiteralPath $asset)) {
+            $alt = Join-Path $OcrModelDirectory ($pin.path -replace '^models[\\/]', '')
+            if (Test-Path -LiteralPath $alt) { $asset = $alt }
+        }
         if ((Get-Item -LiteralPath $asset).Length -ne $pin.bytes -or
             (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.sha256) {
             throw "Pinned OCR asset mismatch: $($pin.path)"
@@ -355,9 +368,80 @@ try {
     Copy-Item (Join-Path $desktop 'THIRD-PARTY-NOTICES.txt') (Join-Path $stage 'app/THIRD-PARTY-NOTICES.txt')
     Copy-Item (Join-Path $desktop 'licenses') (Join-Path $stage 'app/licenses') -Recurse
     $tokenizerNotices = Join-Path $stage 'app/licenses/tokenizer'
-        New-Item -ItemType Directory -Path $tokenizerNotices -Force | Out-Null
-        Copy-Item (Join-Path $root 'native/winsight-tokenizer/licenses') (Join-Path $tokenizerNotices 'texts') -Recurse
-        Copy-Item (Join-Path $root 'native/winsight-tokenizer/source-provenance.json') $tokenizerNotices
+    New-Item -ItemType Directory -Path $tokenizerNotices -Force | Out-Null
+    Copy-Item (Join-Path $root 'native/winsight-tokenizer/licenses') (Join-Path $tokenizerNotices 'texts') -Recurse
+    Copy-Item (Join-Path $root 'native/winsight-tokenizer/source-provenance.json') $tokenizerNotices
+
+    # Layer 1 + Layer 2 Payload Slimming:
+    # 1. Remove unused language satellite folders (keep zh-CN, zh-TW, en-US)
+    $appRoot = Join-Path $stage 'app'
+    $keepDirs = @('zh-cn', 'zh-tw', 'en-us', 'assets', 'bridge', 'foundry', 'inference', 'licenses', 'microsoft.ui.xaml', 'models', 'runtimes', 'views')
+    Get-ChildItem -LiteralPath $appRoot -Directory | Where-Object { $keepDirs -notcontains $_.Name.ToLowerInvariant() } | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Recurse -Force
+    }
+
+    # 2. Remove debug symbols (.pdb) and diagnostic dump/debugger libraries across all directories
+    $diagNames = @('mscordbi.dll', 'mscordaccore.dll', 'microsoft.diasymreader.native.amd64.dll', 'createdump.exe')
+    Get-ChildItem -LiteralPath $appRoot -Recurse -File | Where-Object {
+        $n = $_.Name.ToLowerInvariant()
+        $n.EndsWith('.pdb') -or ($diagNames -contains $n) -or $n.StartsWith('mscordaccore_amd64_')
+    } | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force
+    }
+
+    # 3. Remove unused in-process ONNX/DirectML from root app/ (WinSight.App uses isolated child hosts)
+    foreach ($unusedRootFile in @('onnxruntime.dll', 'DirectML.dll', 'onnxruntime_providers_shared.dll')) {
+        $p = Join-Path $appRoot $unusedRootFile
+        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+    }
+
+    # 4. Remove unused WinRT desktop projections (Microsoft.Windows.SDK.NET.dll, WinRT.Runtime.dll) from pure console hosts
+    foreach ($sub in @('bridge', 'inference/ocr', 'foundry')) {
+        foreach ($winrtFile in @('Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll')) {
+            $p = Join-Path (Join-Path $appRoot $sub) $winrtFile
+            if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+        }
+    }
+
+    # 5. Remove unused DirectML.dll from CPU-only inference/ and foundry/ hosts (DirectML GPU runs in inference/winml/)
+    foreach ($sub in @('inference', 'foundry')) {
+        $p = Join-Path (Join-Path $appRoot $sub) 'DirectML.dll'
+        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+    }
+
+    # 6. Synchronize *.deps.json manifests so hostfxr only validates retained files
+    Get-ChildItem -LiteralPath $appRoot -Recurse -Filter '*.deps.json' -File | ForEach-Object {
+        $depsFile = $_.FullName
+        $depsDir = $_.DirectoryName
+        $json = Get-Content -LiteralPath $depsFile -Raw | ConvertFrom-Json
+        if ($json.targets) {
+            foreach ($targetProp in $json.targets.PSObject.Properties) {
+                foreach ($pkgProp in $targetProp.Value.PSObject.Properties) {
+                    $pkgObj = $pkgProp.Value
+                    foreach ($sec in @('runtime', 'native', 'resources')) {
+                        if ($pkgObj.PSObject.Properties[$sec]) {
+                            $secObj = $pkgObj.$sec
+                            $toRemove = @()
+                            foreach ($fileProp in $secObj.PSObject.Properties) {
+                                $relPath = $fileProp.Name.Replace('/', '\')
+                                $leafName = Split-Path $relPath -Leaf
+                                $existsRel = Test-Path -LiteralPath (Join-Path $depsDir $relPath)
+                                $existsFlat = Test-Path -LiteralPath (Join-Path $depsDir $leafName)
+                                if (-not $existsRel -and -not $existsFlat) {
+                                    $toRemove += $fileProp.Name
+                                }
+                            }
+                            foreach ($rmKey in $toRemove) {
+                                $secObj.PSObject.Properties.Remove($rmKey)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        $json | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $depsFile -Encoding utf8
+    }
+
     $files = @(Get-ChildItem $stage -Recurse -File | Where-Object { $_.FullName -notlike "$logs*" } | ForEach-Object {
         @{ path = [IO.Path]::GetRelativePath($stage, $_.FullName).Replace('\', '/'); bytes = $_.Length;
            sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }

@@ -56,11 +56,37 @@ public sealed class ContentExtractor : IContentExtractor
                 return new([], "skipped", "MPEG transport stream, not TypeScript source.");
         }
         if (code && ext == "ipynb") return await ReadNotebookAsync(stream, path, cancellationToken);
-        if (!code && ext is "doc" or "odt" or "rtf")
-            return new([], "skipped", $"Unsupported legacy/rich document type: .{ext}; not treated as plain text.");
+        if (!code && FilePolicy.LegacyBinaryOffice.Contains(ext))
+        {
+            // OLE/BIFF parsing only ever runs in the isolated host: a malformed file can end that short-lived process, not this one.
+            if (nativeMedia is not null && FilePolicy.LegacyOfficeText.Contains(ext))
+            {
+                var legacy = await nativeMedia.ExtractLegacyOfficeTextAsync(path, cancellationToken).ConfigureAwait(false);
+                if (legacy.State == "skipped") return new([], "skipped", legacy.Detail ?? $"No searchable text in the legacy .{ext} file.");
+                if (legacy.Text.Contains("PRIVATE KEY-----", StringComparison.Ordinal)) return new([], "skipped", "Content holds a private key.");
+                var (legacyChunks, legacyOmitted) = Chunks(legacy.Text, cancellationToken);
+                return Result(legacyChunks, legacy.State == "partial" || legacyOmitted, legacy.Detail ?? "Document text/chunk limit reached.", Path.GetFileNameWithoutExtension(path));
+            }
+            return new([], "skipped", $"Legacy binary Office format .{ext} is not extracted"
+                + (FilePolicy.LegacyOfficeText.Contains(ext) ? " because the isolated reader host is unavailable" : " (WPS formats are not supported)")
+                + "; save it as .docx/.xlsx/.pptx (or PDF) to make its content searchable. The file name remains searchable.");
+        }
         if (!code && ext is "docx" or "pptx" or "xlsx")
             return OfficeDocumentExtractor.Read(stream, ext, Path.GetFileNameWithoutExtension(path), options, cancellationToken);
-        var (text, truncated) = await ReadTextAsync(stream, cancellationToken);
+        string text;
+        var truncated = false;
+        if (!code && ext == "odt")
+        {
+            text = OdfText.Extract(stream, MaxCharacters, cancellationToken);
+            if (text.Length > MaxCharacters) { text = Prefix(text, MaxCharacters); truncated = true; }
+        }
+        else if (!code && ext == "rtf")
+        {
+            (text, truncated) = await ReadDecodedAsync(stream, Encoding.Latin1, cancellationToken);
+            text = RtfText.Extract(text, MaxCharacters, cancellationToken);
+            if (text.Length > MaxCharacters) { text = Prefix(text, MaxCharacters); truncated = true; }
+        }
+        else (text, truncated) = await ReadTextAsync(stream, cancellationToken);
         if (!code && ext is "html" or "htm") text = HtmlText(text);
         if (text.Contains("PRIVATE KEY-----", StringComparison.Ordinal)) return new([], "skipped", "Content holds a private key.");
         if (text.Contains('\0')) return new([], "skipped", "Not text (NUL characters).");
@@ -82,13 +108,21 @@ public sealed class ContentExtractor : IContentExtractor
 
     private static async Task<(string Text, bool Truncated)> ReadTextAsync(Stream stream, CancellationToken token)
     {
-        // Match the portable UTF-8/Latin-1 fallback, but honor UTF-16 BOMs rather than reading their NULs as binary.
+        // UTF-8 (strict) first; UTF-16 BOMs are honoured rather than read as NUL-bearing binary. A legacy Windows file that is
+        // not UTF-8 is far more often GBK/GB18030 than Latin-1 for this product's users, so it is detected by byte structure.
         try { return await ReadDecodedAsync(stream, new UTF8Encoding(false, true), token); }
-        catch (DecoderFallbackException)
+        catch (DecoderFallbackException) { }
+        stream.Position = 0;
+        var sample = new byte[Math.Min(stream.Length, 1 << 20)];
+        await stream.ReadExactlyAsync(sample, token);
+        if (LegacyText.LooksLikeGb18030(sample) && LegacyText.TryGetEncoding(54936, strict: true) is { } gb)
         {
             stream.Position = 0;
-            return await ReadDecodedAsync(stream, Encoding.Latin1, token);
+            try { return await ReadDecodedAsync(stream, gb, token); }
+            catch (DecoderFallbackException) { }
         }
+        stream.Position = 0;
+        return await ReadDecodedAsync(stream, Encoding.Latin1, token);
     }
     private static async Task<(string Text, bool Truncated)> ReadDecodedAsync(Stream stream, Encoding encoding, CancellationToken token)
     {

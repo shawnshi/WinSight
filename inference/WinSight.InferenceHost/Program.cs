@@ -52,6 +52,21 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
                 return 0;
             }
+            if (args.Length > 0 && args[0] == "extract-legacy-text")
+            {
+                if (args is not [_, var requestPath])
+                    throw new ArgumentException("Usage: extract-legacy-text ABSOLUTE_REQUEST_JSON");
+                var result = NativeMediaCommand.RunLegacyOfficeRequestFileAsync(requestPath).GetAwaiter().GetResult();
+                // Relaxed escaping keeps CJK text as UTF-8 (3 bytes per character) instead of 6-byte escapes inside the output bound.
+                var line = JsonSerializer.SerializeToUtf8Bytes(result, new JsonSerializerOptions
+                { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+                // Raw UTF-8 on the pipe: Console.Out would transcode to the OEM code page and turn CJK text into '?'.
+                using var stdout = Console.OpenStandardOutput();
+                stdout.Write(line);
+                stdout.WriteByte(10);
+                stdout.Flush();
+                return 0;
+            }
             if (args.Length > 0 && args[0] == "inspect-image")
             {
                 if (args is not [_, var requestPath])
@@ -111,7 +126,7 @@ internal static class Program
             }
             if (args.Length != 0 && args[0] != "environment")
             {
-                throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu] | environment | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON | render-pdf-page ABSOLUTE_REQUEST_JSON");
+                throw new ArgumentException("Usage: --stdio --models DIR --manifest FILE [--text-only] [--device auto|discrete-gpu|npu|gpu|cpu] | environment | inspect <model-dir> | embed-tokens <model-dir> <fixture.json> <report-dir> | extract-media ABSOLUTE_REQUEST_JSON | inspect-media ABSOLUTE_REQUEST_JSON | inspect-image ABSOLUTE_REQUEST_JSON | extract-legacy-text ABSOLUTE_REQUEST_JSON | extract-soundtrack ABSOLUTE_REQUEST_JSON | render-pdf-page ABSOLUTE_REQUEST_JSON");
             }
 
             object? catalogInfo = null;

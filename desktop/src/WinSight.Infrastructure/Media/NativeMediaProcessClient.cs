@@ -54,6 +54,25 @@ public sealed class NativeMediaProcessClient : IAsyncDisposable
             return MediaTaskFiles.CreateInspect(hostPath, workspacePath, sourcePath, "image");
         }, (_, output, _) => NativeImageInspection.Parse(output, sourcePath), cancellationToken);
 
+    /// <summary>
+    /// Reads the text of a legacy binary Office file (.doc/.xls/.ppt and template/show variants) in the isolated host, so a
+    /// malformed OLE structure can end only that short-lived process.
+    /// </summary>
+    public Task<NativeLegacyOfficeText> ExtractLegacyOfficeTextAsync(string sourcePath, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+        var extension = Path.GetExtension(sourcePath).TrimStart('.').ToLowerInvariant();
+        return ExecuteAsync(NativeMediaOperation.ExtractLegacyText, () =>
+        {
+            if (extension is not ("doc" or "dot" or "xls" or "xlt" or "ppt" or "pot" or "pps"))
+                throw new ArgumentException("Unsupported legacy Office extension.", nameof(sourcePath));
+        }, () =>
+        {
+            sourcePath = MediaTaskFiles.LocalPath(sourcePath);
+            return MediaTaskFiles.CreateInspect(hostPath, workspacePath, sourcePath, "legacy-office");
+        }, (_, output, _) => NativeLegacyOfficeTextProtocol.Parse(output, extension), cancellationToken);
+    }
+
     public Task<NativePdfPageLease> RenderPdfPageAsync(NativePdfPageRequest request, CancellationToken cancellationToken = default) =>
         ExecuteAsync(NativeMediaOperation.RenderPdfPage, () => { ArgumentNullException.ThrowIfNull(request); request.Validate(); },
             () =>
@@ -145,7 +164,7 @@ public sealed class NativeMediaProcessClient : IAsyncDisposable
             linked.Token.ThrowIfCancellationRequested();
             process = WindowsNativeMediaProcess.Start(hostPath, files.RequestPath, files.TaskDirectory, terminationTimeout,
                 forceUnconfirmedTerminationForTesting, operation);
-            var result = await process.RunAsync(maxOutputBytes, terminationTimeout, linked.Token).ConfigureAwait(false);
+            var result = await process.RunAsync(operation == NativeMediaOperation.ExtractLegacyText ? NativeLegacyOfficeTextProtocol.MaxOutputBytes : maxOutputBytes, terminationTimeout, linked.Token).ConfigureAwait(false);
             process.Dispose(); process = null;
             // Successful, settled Office handoff is already committed remotely. A late local cancel must not hide it.
             // Nonzero/unknown results and all other operations retain their cancellation/retention behavior.
@@ -170,7 +189,7 @@ public sealed class NativeMediaProcessClient : IAsyncDisposable
             lock (gate)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
-                if (operation is NativeMediaOperation.Inspect or NativeMediaOperation.InspectImage or NativeMediaOperation.OfficeNavigation) files.Cleanup();
+                if (operation is NativeMediaOperation.Inspect or NativeMediaOperation.InspectImage or NativeMediaOperation.ExtractLegacyText or NativeMediaOperation.OfficeNavigation) files.Cleanup();
                 files = null;
                 return value;
             }

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using WinSight.Core;
+using WinSight.Infrastructure.Extraction;
 using WinSight.Infrastructure.Storage;
 
 namespace WinSight.Infrastructure.Search;
@@ -20,6 +21,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         if (request.Kind is not (null or "doc" or "pdf" or "image" or "screenshot" or "video" or "audio" or "code")) throw new ArgumentException("Unknown kind.");
         if (request.Root is not null && (string.IsNullOrWhiteSpace(request.Root) || request.Root.Contains('\0'))) throw new ArgumentException("Invalid root.");
         cancellationToken.ThrowIfCancellationRequested();
+        SearchText.SetCurrentThreadQoS(highPerformance: true);
         var clock = Stopwatch.StartNew();
         bool code = string.Equals(Path.GetFileName(repository.DatabasePath), "code.sqlite", StringComparison.OrdinalIgnoreCase);
         var input = request.Query.Trim();
@@ -44,7 +46,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         SearchSnapshot snapshot = repository is SqliteIndexRepository sqlite
             ? await sqlite.ReadSearchSnapshotAsync(keywordQuery, request.Kind, request.Root, wantSemantic,
                 request.Mode != SearchMode.Semantic && plan.Text.Length != 0, request.Limit, cancellationToken,
-                authorize, MatchesSource, allHeaders: true).ConfigureAwait(false)
+                authorize, plan.HasFilters ? MatchesSource : null, allHeaders: true).ConfigureAwait(false)
             : await ReadGenericSnapshot(keywordQuery, request, cancellationToken).ConfigureAwait(false);
         var files = snapshot.Files.Where(f => InScope(f, request) && (authorize is null || authorize(f.Path))).ToDictionary(f => f.Id);
         float[]? queryVector = null;
@@ -57,7 +59,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
                 if (string.IsNullOrWhiteSpace(snapshot.Profile)) throw new InvalidDataException("Index has no profile_id; reindex separately.");
                 ValidateProfile(await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false), snapshot.Profile);
                 if (!files.Values.Any(f => f.Segments.Any(s => s.Vector is not null))) throw new InvalidOperationException("Index has no semantic vectors.");
-                var encoded = await embeddings.EmbedAsync([new("text", (code ? "task: code retrieval | query: " : "task: search result | query: ") + plan.Text)], cancellationToken).ConfigureAwait(false);
+                var encoded = await embeddings.EmbedInteractiveAsync([new("text", (code ? "task: code retrieval | query: " : "task: search result | query: ") + plan.Text)], cancellationToken).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (encoded.Count != 1 || encoded[0].Vector is null || encoded[0].Error is not null)
                     throw new InvalidDataException(encoded.Count == 1 ? "Query embedding failed: " + (encoded[0].Error ?? "missing vector") : "Query embedding result count is invalid.");
@@ -71,7 +73,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
                 notice = $"Semantic search unavailable; keyword results only. {error.GetType().Name}: {error.Message}";
             }
         }
-        int channelLimit = Math.Clamp(request.Limit * 4, 100, 400);
+        int channelLimit = Math.Clamp(request.Limit * 4, 100, 4000);
         var channels = new List<(string Name, double Weight, IReadOnlyList<Candidate> Rows)>();
         void Channel(string name, double weight, IEnumerable<Candidate> ordered)
         {
@@ -120,10 +122,26 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
             else
             {
                 var terms = SearchText.Terms(plan.Text);
-                bool ContainsTerms(string value) => terms.Length != 0 && terms.All(t => SearchText.Normalize(value).Contains(t, StringComparison.OrdinalIgnoreCase));
-                var eligible = files.Values.OrderBy(f => f.Id).Where(f => plan.Matches(f.Path, f.Info, null));
+                var normPlanText = string.IsNullOrWhiteSpace(plan.Text) ? "" : SearchText.Normalize(plan.Text);
+                bool ContainsTerms(string value)
+                {
+                    if (terms.Length == 0 || string.IsNullOrEmpty(value)) return false;
+                    var norm = SearchText.Normalize(value);
+                    return terms.All(t => norm.Contains(t, StringComparison.OrdinalIgnoreCase))
+                        || (normPlanText.Length > 0 && norm.Contains(normPlanText, StringComparison.OrdinalIgnoreCase));
+                }
+                var folderMatchCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+                bool FolderMatches(string path)
+                {
+                    var dir = Path.GetDirectoryName(path) ?? "";
+                    if (folderMatchCache.TryGetValue(dir, out var ok)) return ok;
+                    ok = ContainsTerms(dir) && plan.FolderLiteralsMatch(path);
+                    folderMatchCache[dir] = ok;
+                    return ok;
+                }
+                var eligible = files.Values.OrderBy(f => f.Id).Where(f => plan.Matches(f.Path, f.Info, null)).ToArray();
                 Channel("filename", 1.5, eligible.Where(f => ContainsTerms(Path.GetFileName(f.Path)) && plan.NameLiteralsMatch(f.Path)).Select(f => new Candidate(f, new("name", "none", null, null, Path.GetFileName(f.Path)))));
-                Channel("folder", 0.7, eligible.Where(f => ContainsTerms(Path.GetDirectoryName(f.Path) ?? "") && plan.FolderLiteralsMatch(f.Path)).Select(f => new Candidate(f, new("name", "none", null, null, null))));
+                Channel("folder", 0.7, eligible.Where(f => FolderMatches(f.Path)).Select(f => new Candidate(f, new("name", "none", null, null, null))));
             }
         }
         var fused = new Dictionary<(long File, string Unit), Fused>();
@@ -138,13 +156,18 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
                 hit.Channels.Add(channel.Name);
                 if (hit.Row.Segment.Kind == "name" && row.Segment.Kind != "name") hit.Row = row;
             }
-        var hits = fused.Values.OrderByDescending(f => f.Score).ThenBy(f => f.Row.File.Id).ThenBy(f => Unit(f.Row.Segment), StringComparer.Ordinal)
+        double topScore = fused.Values.Select(f => f.Score).DefaultIfEmpty(0).Max();
+        // Dynamic relevance filter: when MinScore > 0, filter strictly by relative relevance: (f.Score / topScore) >= MinScore.
+        var eligibleCandidates = fused.Values
+            .Where(f => topScore == 0 || request.MinScore <= 0 || (f.Score / topScore) >= request.MinScore)
+            .OrderByDescending(f => f.Score).ThenBy(f => f.Row.File.Id).ThenBy(f => Unit(f.Row.Segment), StringComparer.Ordinal);
+        var hits = eligibleCandidates
             .Take(request.Limit).Select(f =>
             {
                 var file = f.Row.File; var segment = f.Row.Segment;
                 string match = f.Channels.Any(c => c.StartsWith("semantic:", StringComparison.Ordinal)) ? f.Channels.Count > 1 ? "hybrid" : "semantic" : "keyword";
                 return new SearchHit(file.Id, file.Path, file.Kind, maximum == 0 ? 0 : f.Score / maximum, match,
-                    segment.Excerpt, segment.Location, segment.LocationEnd, segment.Kind, segment.Source, f.Channels.ToArray());
+                    segment.Excerpt, segment.Location, segment.LocationEnd, segment.Kind, segment.Source, f.Channels.ToArray(), file.Size, file.ModifiedTime);
             }).ToArray();
         if (request.Limit > channelLimit) notice = Append(notice, $"Recall capped at{channelLimit} source units per channel before fusion.");
         // The segmented lexical channel depends on a native library; when it is missing the response says so
@@ -168,7 +191,8 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
     private static string Append(string? notice, string message) => notice is null ? message : notice.Contains(message, StringComparison.Ordinal) ? notice : notice + " " + message;
     private static void ValidateProfile(EmbeddingInfo info, string profile)
     {
-        if (info.Dimension != VectorContract.Dimension || info.ProfileId != profile) throw new InvalidDataException("Query model profile/dimension does not match index profile_id.");
+        if (info.Dimension != VectorContract.Dimension || !FilePolicy.IsCompatibleProfile(info.ProfileId, profile))
+            throw new InvalidDataException("Query model profile/dimension does not match index profile_id.");
         if (!info.Capabilities.Contains("text", StringComparer.Ordinal)) throw new NotSupportedException("Embedding service does not support text queries.");
     }
     private static bool InScope(IndexedFile file, SearchRequest request)
@@ -235,7 +259,8 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
 
     private static IReadOnlyList<SemanticRow> Semantic(IEnumerable<IndexedFile> files, float[] query, DocumentSearchQuery plan, CancellationToken ct, bool validateVectors = true)
     {
-        var rows = new List<SemanticRow>();
+        // Single-pass: directly aggregate the best vector per (file, unit, channel) to reduce memory allocations
+        var best = new Dictionary<(long, string, string), SemanticRow>();
         foreach (var file in files)
             foreach (var segment in file.Segments)
             {
@@ -244,15 +269,10 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
                 if (validateVectors) VectorContract.Validate(vector);
                 double cosine = VectorMath.Dot(vector, query);
                 var channel = segment.Source?.Channel ?? (segment.Modality == "image" ? "page-visual" : segment.Modality);
-                rows.Add(new(file, segment, channel, cosine));
+                var key = (file.Id, SearchText.SourceUnit(segment), channel);
+                if (!best.TryGetValue(key, out var old) || cosine > old.Cosine)
+                    best[key] = new(file, segment, channel, cosine);
             }
-        // One row per (file, unit, channel): the best vector of a unit represents it.
-        var best = new Dictionary<(long, string, string), SemanticRow>();
-        foreach (var row in rows)
-        {
-            var key = (row.File.Id, SearchText.SourceUnit(row.Segment), row.Channel);
-            if (!best.TryGetValue(key, out var old) || row.Cosine > old.Cosine) best[key] = row;
-        }
         var result = new List<SemanticRow>(best.Count);
         foreach (var channel in best.Values.GroupBy(r => r.Channel))
         {
@@ -281,7 +301,25 @@ internal static class VectorMath
     internal static double Dot(ReadOnlySpan<float> left, ReadOnlySpan<float> right)
     {
         if (left.Length != right.Length) throw new ArgumentException("Vector lengths differ.");
-        int width = System.Numerics.Vector<float>.Count, i = 0;
+        int i = 0;
+        if (System.Runtime.Intrinsics.Vector512.IsHardwareAccelerated && left.Length >= 32)
+        {
+            var sum0 = System.Runtime.Intrinsics.Vector512<float>.Zero;
+            var sum1 = System.Runtime.Intrinsics.Vector512<float>.Zero;
+            for (; i <= left.Length - 32; i += 32)
+            {
+                var l0 = System.Runtime.Intrinsics.Vector512.Create(left.Slice(i, 16));
+                var r0 = System.Runtime.Intrinsics.Vector512.Create(right.Slice(i, 16));
+                var l1 = System.Runtime.Intrinsics.Vector512.Create(left.Slice(i + 16, 16));
+                var r1 = System.Runtime.Intrinsics.Vector512.Create(right.Slice(i + 16, 16));
+                sum0 += l0 * r0;
+                sum1 += l1 * r1;
+            }
+            double total512 = System.Runtime.Intrinsics.Vector512.Sum(sum0 + sum1);
+            for (; i < left.Length; i++) total512 += (double)left[i] * right[i];
+            return total512;
+        }
+        int width = System.Numerics.Vector<float>.Count;
         var sum = System.Numerics.Vector<float>.Zero;
         for (; i <= left.Length - width; i += width)
             sum += new System.Numerics.Vector<float>(left.Slice(i, width)) * new System.Numerics.Vector<float>(right.Slice(i, width));

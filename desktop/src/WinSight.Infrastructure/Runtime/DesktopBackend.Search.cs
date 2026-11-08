@@ -18,10 +18,12 @@ public async Task<SearchResponse> SearchAsync(SearchRequest request, Cancellatio
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Query);
-        if (request.Limit is < 1 or > 200) throw new ArgumentOutOfRangeException(nameof(request), "Limit must be in 1..200.");
+        if (request.Limit is < 1 or > 2000) throw new ArgumentOutOfRangeException(nameof(request), "Limit must be in 1..2000.");
         ObjectDisposedException.ThrowIf(stopping != 0, this);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetimeStop.Token);
         cancellationToken = linked.Token;
+        SearchService service;
+        Stopwatch clock;
         await lifecycle.WaitAsync(cancellationToken);
         try
         {
@@ -31,14 +33,14 @@ public async Task<SearchResponse> SearchAsync(SearchRequest request, Cancellatio
             if (request.Root is not null && !IsAuthorizedResult(request.Root, codeQuery))
                 throw new UnauthorizedAccessException("Search root is outside the authorized selection or is an application data directory.");
             if (roots.Length == 0) return new SearchResponse([], TimeSpan.Zero, false, "Choose an authorized folder before searching.");
-            var clock = System.Diagnostics.Stopwatch.StartNew();
+            clock = System.Diagnostics.Stopwatch.StartNew();
             var stores = await GetRepositoriesAsync(cancellationToken);
-            var service = new SearchService(stores[codeQuery ? 1 : 0], request.Mode == SearchMode.Keyword ? null : GetEmbeddings(),
-                path => IsAuthorizedResult(path, codeQuery));
-            var response = await service.SearchAsync(request, cancellationToken);
-            return response with { Elapsed = clock.Elapsed };
+            service = new SearchService(stores[codeQuery ? 1 : 0], request.Mode == SearchMode.Keyword ? null : GetEmbeddings(),
+                CreateAuthorizer(codeQuery));
         }
         finally { lifecycle.Release(); }
+        var response = await service.SearchAsync(request, cancellationToken);
+        return response with { Elapsed = clock.Elapsed };
     }
 
 private string IndexDirectory => settings.IndexDirectory ?? Path.Combine(dataDirectory, "index");
@@ -70,12 +72,44 @@ private async Task<IReadOnlyList<IIndexRepository>> GetRepositoriesAsync(Cancell
     private async Task<int> CountIndexedFilesAsync(string root, CancellationToken cancellationToken)
     {
         var repository = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];
-        var files = await repository.ReadFilesAsync(cancellationToken).ConfigureAwait(false);
-        var normalized = Path.GetFullPath(root);
-        return files.Count(file => Path.GetFullPath(file.Path).StartsWith(normalized, StringComparison.OrdinalIgnoreCase));
+        return await repository.CountFilesUnderAsync(root, cancellationToken).ConfigureAwait(false);
     }
 
-private bool IsAuthorizedResult(string path, bool code)
+/// <summary>
+    /// Builds the per-query scope check once: roots, skips and the excluded data directories are normalised a single time,
+    /// so each of the (possibly hundreds of thousands of) indexed paths costs only ordinal prefix comparisons.
+    /// Stored paths are already canonical; anything that is not falls back to the full normalising check.
+    /// </summary>
+    internal Func<string, bool> CreateAuthorizer(bool code)
+    {
+        static string Canonical(string value) => Path.GetFullPath(value).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        static bool Within(string path, string root) =>
+            path.Equals(root, StringComparison.OrdinalIgnoreCase)
+            || (path.Length > root.Length && path.StartsWith(root, StringComparison.OrdinalIgnoreCase) && path[root.Length] is '\\' or '/');
+        var excluded = new[] { Canonical(dataDirectory), Canonical(IndexDirectory) };
+        var skips = (code ? settings.CodeSkipped : settings.Skipped).Select(Canonical).ToArray();
+        var scopes = (code ? settings.CodeFolders : settings.Folders).Select(Canonical).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(root => (Root: root, Skips: skips.Where(skip => Within(skip, root) && !skip.Equals(root, StringComparison.OrdinalIgnoreCase)).ToArray()))
+            .ToArray();
+        return path =>
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            // Mixed separators, dot segments and trailing separators are the only shapes GetFullPath would change.
+            var plain = path.IndexOf('/') < 0 && !path.Contains("\\.", StringComparison.Ordinal) && !path.EndsWith('\\');
+            var target = plain && Path.IsPathFullyQualified(path) ? path : Canonical(path);
+            foreach (var blocked in excluded) if (Within(target, blocked)) return false;
+            foreach (var (root, rootSkips) in scopes)
+            {
+                if (!Within(target, root)) continue;
+                var skipped = false;
+                foreach (var skip in rootSkips) if (Within(target, skip)) { skipped = true; break; }
+                if (!skipped) return true;
+            }
+            return false;
+        };
+    }
+
+internal bool IsAuthorizedResult(string path, bool code)
     {
         if (IsUnder(path, dataDirectory) || IsUnder(path, IndexDirectory)) return false;
         var roots = code ? settings.CodeFolders : settings.Folders;

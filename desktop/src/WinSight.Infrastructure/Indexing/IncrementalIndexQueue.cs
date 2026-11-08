@@ -318,7 +318,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
     // Reconciliation enumerates the whole root, so it is gated: an explicit caller (startup, overflow,
     // resume) forces it, while ordinary file events must not pay for a full diff on every save.
-    public async Task<bool> ReconcileRootAsync(string root, bool code, bool force = false, CancellationToken cancellationToken = default, bool requireStabilization = true)
+    public async Task<bool> ReconcileRootAsync(string root, bool code, bool force = false, CancellationToken cancellationToken = default, bool requireStabilization = true, bool upgradePageImages = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!Directory.Exists(root)) return false;
@@ -327,12 +327,12 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         if (!force && !dirty && !due) return false;
 
         // Try USN catch-up first if on NTFS and checkpoint is valid
-        if (await TryUsnCatchUpAsync(root, code, cancellationToken).ConfigureAwait(false))
+        if (!upgradePageImages && await TryUsnCatchUpAsync(root, code, cancellationToken).ConfigureAwait(false))
         {
             return true;
         }
 
-        var existingFiles = await repository.ReadFilesAsync(cancellationToken).ConfigureAwait(false);
+        var existingFiles = await repository.ReadFileHeadersAsync(cancellationToken).ConfigureAwait(false);
         var normRoot = FilePolicy.Normalize(root);
         var indexMap = existingFiles
             .Where(f => FilePolicy.Under(f.Path, normRoot))
@@ -350,17 +350,19 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
             pending.Clear();
         }
 
-        foreach (var file in EnumerateFilesSafe(rootDir, code))
+        foreach (var file in EnumerateFilesFast(normRoot, code))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var norm = FilePolicy.Normalize(file.FullName);
             diskPaths.Add(norm);
 
-            double mtime = new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds() / 1000.0;
+            double mtime = file.Mtime;
             if (indexMap.TryGetValue(norm, out var indexed))
             {
                 indexMap.Remove(norm);
-                if (indexed.Size == file.Length && Math.Abs(indexed.ModifiedTime - mtime) < 0.001)
+                bool needsPageImageUpgrade = upgradePageImages && indexed.State == "partial" &&
+                    indexed.Detail?.StartsWith("Text-only PDF:", StringComparison.Ordinal) == true;
+                if (!needsPageImageUpgrade && indexed.State != "failed" && indexed.Size == file.Length && Math.Abs(indexed.ModifiedTime - mtime) < 0.001)
                 {
                     continue;
                 }
@@ -511,8 +513,15 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                 usnReader.IsNtfsVolume(normRoot, out var volumeSerial) &&
                 !string.IsNullOrEmpty(volumeSerial))
             {
-                var (queryOk, queryInfo, _) = usnReader.QueryJournal(normRoot);
-                if (queryOk && queryInfo != null)
+                var (queryOk, queryInfo, queryError) = usnReader.QueryJournal(normRoot);
+                if (!queryOk || queryInfo is null)
+                {
+                    // Opening a volume for USN reads needs administrator rights (verified: a standard-user token gets ERROR_ACCESS_DENIED),
+                    // so no checkpoint can ever be recorded. Report the real cause instead of a perpetual "missing-checkpoint".
+                    if (UsnState is "usn_unavailable(missing-checkpoint)" or "not-attempted")
+                        UsnState = $"usn_unavailable({queryError ?? "query-failed"})";
+                }
+                else
                 {
                     await checkpointRepo.SaveUsnCheckpointAsync(
                         volumeSerial,
@@ -526,6 +535,38 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         catch (Exception ex)
         {
             onError?.Invoke(ex);
+        }
+    }
+
+    private static IEnumerable<(string FullName, long Length, double Mtime)> EnumerateFilesFast(string rootPath, bool code)
+    {
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.System | FileAttributes.Device | FileAttributes.Offline
+        };
+        var enumerable = new System.IO.Enumeration.FileSystemEnumerable<(string FullName, long Length, double Mtime, bool Valid)>(
+            rootPath,
+            (ref System.IO.Enumeration.FileSystemEntry entry) =>
+            {
+                if (entry.IsDirectory) return (string.Empty, 0L, 0.0, false);
+                var full = entry.ToFullPath();
+                if (IsTemporaryFile(full) || FilePolicy.Kind(full, code) is null)
+                    return (string.Empty, 0L, 0.0, false);
+                double mtime = entry.LastWriteTimeUtc.ToUnixTimeMilliseconds() / 1000.0;
+                return (full, entry.Length, mtime, true);
+            },
+            options)
+        {
+            ShouldIncludePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) => !entry.IsDirectory,
+            ShouldRecursePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) =>
+                !FilePolicy.SkipFolder(entry.ToFullPath(), code)
+        };
+
+        foreach (var item in enumerable)
+        {
+            if (item.Valid) yield return (item.FullName, item.Length, item.Mtime);
         }
     }
 

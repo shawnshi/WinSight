@@ -59,7 +59,7 @@ public sealed record McpInitializeResult(
 
 public sealed record McpServerInfo(
     [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("version")] string Version);
+    [property: JsonPropertyName("version")] string Version = "2.0.0");
 
 public sealed record McpToolsListResult(
     [property: JsonPropertyName("tools")] IReadOnlyList<McpToolDefinition> Tools);
@@ -82,7 +82,9 @@ public sealed record FileContextResult(
     int TotalLines,
     string Version,
     string Content,
-    bool Truncated);
+    bool Truncated,
+    bool TotalLinesExact = true,
+    bool IndexStale = false);
 
 public sealed record IndexStatusResult(
     IReadOnlyList<string> Modalities,

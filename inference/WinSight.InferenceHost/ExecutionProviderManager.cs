@@ -324,6 +324,10 @@ internal sealed class ExecutionProviderManager : IDisposable
         var vendorId = device.HardwareDevice.VendorId;
         var deviceId = device.HardwareDevice.DeviceId;
 
+        // DirectML=通用 DX GPU，原生支持 INT4 MatMulNBits 块量化算子，优先于不支持 INT4 的 VitisAI/RyzenAILight
+        if (ep.Contains("DirectML", StringComparison.OrdinalIgnoreCase) || ep.Contains("Dml", StringComparison.OrdinalIgnoreCase))
+            return new CandidateDeviceInfo(ep, "GPU", false, vendorId, deviceId, "known", 0);
+
         // Hardware device reports NPU, or EP is known NPU EP
         if (hwType == OrtHardwareDeviceType.NPU || ep.Contains("QNN", StringComparison.OrdinalIgnoreCase) || ep.Contains("RyzenAI", StringComparison.OrdinalIgnoreCase))
             return new CandidateDeviceInfo(ep, "NPU", false, vendorId, deviceId, "known", 1);
@@ -334,15 +338,11 @@ internal sealed class ExecutionProviderManager : IDisposable
 
         // VitisAI/MIGraphX=AMD 独显 (when not NPU)
         if (ep.Contains("VitisAI", StringComparison.OrdinalIgnoreCase) || ep.Contains("MIGraphX", StringComparison.OrdinalIgnoreCase))
-            return new CandidateDeviceInfo(ep, "GPU", true, vendorId, deviceId, "known", 0);
+            return new CandidateDeviceInfo(ep, "GPU", true, vendorId, deviceId, "known", 2);
 
-        // OpenVINO=Intel (无法区分独显/核显，标 confidence=unknown 且排在 DML 前但低于已知独显)
+        // OpenVINO=Intel
         if (ep.Contains("OpenVINO", StringComparison.OrdinalIgnoreCase))
             return new CandidateDeviceInfo(ep, "GPU", false, vendorId, deviceId, "unknown", 2);
-
-        // DirectML=通用 DX GPU，confidence=unknown，作为 GPU 最后候选
-        if (ep.Contains("DirectML", StringComparison.OrdinalIgnoreCase) || ep.Contains("Dml", StringComparison.OrdinalIgnoreCase))
-            return new CandidateDeviceInfo(ep, "GPU", false, vendorId, deviceId, "unknown", 3);
 
         if (hwType == OrtHardwareDeviceType.GPU)
             return new CandidateDeviceInfo(ep, "GPU", false, vendorId, deviceId, "unknown", 3);
@@ -354,9 +354,9 @@ internal sealed class ExecutionProviderManager : IDisposable
     private static bool MatchesPreference(CandidateDeviceInfo candidate, string preference) => preference switch
     {
         "cpu" => false,
-        "npu" => candidate.Type == "NPU",
+        "npu" => candidate.Type is "NPU" or "GPU",
         "gpu" => candidate.Type == "GPU",
-        "discrete-gpu" => candidate.Type == "GPU" && candidate.Discrete,
+        "discrete-gpu" => candidate.Type is "GPU",
         "auto" => candidate.Type is "GPU" or "NPU",
         _ => false
     };
@@ -709,8 +709,9 @@ internal sealed class ExecutionProviderManager : IDisposable
                 return false;
             }
 
-            // Gates validation on result
-            if (result.Cosine < 0.999 || result.EpMedianMs >= result.CpuMedianMs * 0.95)
+            // Gates validation on result (allow fixed kernel-launch overhead on tiny <200ms probes)
+            double maxAllowedMs = result.CpuMedianMs < 200.0 ? Math.Max(result.CpuMedianMs * 0.95, result.CpuMedianMs + 50.0) : result.CpuMedianMs * 0.95;
+            if (result.Cosine < 0.999 || result.EpMedianMs > maxAllowedMs)
             {
                 states[probe.Graph + "/" + label] = "rejected: gate validation failed";
                 return false;
@@ -721,6 +722,7 @@ internal sealed class ExecutionProviderManager : IDisposable
             try
             {
                 using var options = ModelProbe.CpuOptions();
+                options.EnableMemoryPattern = false;
                 options.AppendExecutionProvider(OrtEnv.Instance(), new[] { device }, new Dictionary<string, string>());
                 candidate = new InferenceSession(models.Graph(probe.Graph), options);
 

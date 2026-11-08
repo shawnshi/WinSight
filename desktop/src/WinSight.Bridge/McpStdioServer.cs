@@ -198,8 +198,15 @@ public sealed class McpStdioServer
             switch (method)
             {
                 case "initialize":
+                    string proto = "2024-11-05";
+                    if (paramsElement.ValueKind == JsonValueKind.Object &&
+                        paramsElement.TryGetProperty("protocolVersion", out var clientProto) && clientProto.ValueKind == JsonValueKind.String)
+                    {
+                        var reqProto = clientProto.GetString();
+                        if (!string.IsNullOrWhiteSpace(reqProto)) proto = reqProto;
+                    }
                     var initResult = new McpInitializeResult(
-                        ProtocolVersion: "2024-11-05",
+                        ProtocolVersion: proto,
                         Capabilities: new
                         {
                             tools = new
@@ -207,7 +214,7 @@ public sealed class McpStdioServer
                                 listChanged = false
                             }
                         },
-                        ServerInfo: new McpServerInfo("winsight-mcp", "1.0.0")
+                        ServerInfo: new McpServerInfo("winsight-mcp", "2.0.0")
                     );
                     SendSuccessResponse(id, initResult, emit);
                     break;

@@ -5,7 +5,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
-    Title="WinSight 智寻 (原生预览版)">
+    Title="WinSight 智寻">
 
     <Window.SystemBackdrop>
         <MicaBackdrop Kind="BaseAlt"/>
@@ -29,7 +29,8 @@
 
         <!-- Preview status is informational; runtime failures are reported separately. -->
         <InfoBar Grid.Row="1"
-                 IsOpen="True"
+                 IsOpen="False"
+                 Visibility="Collapsed"
                  IsClosable="False"
                  Severity="Informational"
                  Title="WinSight 原生预览版"
@@ -65,50 +66,74 @@
             <Frame x:Name="ContentFrame"/>
         </NavigationView>
 
-        <!-- Bottom Status Bar -->
+        <!-- Modern Compact Bottom Status Bar -->
         <Border Grid.Row="3"
                 Background="{ThemeResource LayerFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"
-                Padding="16,8">
+                Padding="16,7">
             <Grid ColumnSpacing="16">
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- Status Message & Summary -->
-                <StackPanel Spacing="4" VerticalAlignment="Center" Margin="0,0,16,0">
-                    <TextBlock x:Name="IndexingStateLabel"
-                               Text="{x:Bind ViewModel.IndexingStateText, Mode=OneWay}"
-                               AutomationProperties.LiveSetting="Polite"
-                               Style="{ThemeResource CaptionTextBlockStyle}"/>
-                    <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
-                               TextWrapping="Wrap"
-                               AutomationProperties.LiveSetting="Polite"
+                <!-- Left: Pill Status Badge -->
+                <Border Grid.Column="0"
+                        Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="10" Padding="9,3"
+                        VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <Ellipse Width="7" Height="7" Fill="{ThemeResource SystemFillColorSuccessBrush}" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="IndexingStateLabel"
+                                   Text="{x:Bind ViewModel.IndexingStateText, Mode=OneWay}"
+                                   AutomationProperties.LiveSetting="Polite"
+                                   FontWeight="SemiBold"
+                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Center: Live Progress & Stats Summary -->
+                <Grid Grid.Column="1" ColumnSpacing="14" VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="{x:Bind FormatStats(ViewModel.DoneCount, ViewModel.FilesCount), Mode=OneWay}"
                                Style="{ThemeResource CaptionTextBlockStyle}"
+                               FontWeight="SemiBold"
+                               Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                                VerticalAlignment="Center"/>
-                    <TextBlock Text="{x:Bind FormatStats(ViewModel.DoneCount, ViewModel.FilesCount), Mode=OneWay}"
+                    <Border Grid.Column="1" Width="1" Height="13" Background="{ThemeResource DividerStrokeColorDefaultBrush}" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="2"
+                               Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                               TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                               AutomationProperties.LiveSetting="Polite"
                                Style="{ThemeResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                VerticalAlignment="Center"/>
-                </StackPanel>
+                </Grid>
 
-                <!-- Indexing Actions -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <!-- Right: Indexing Actions -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <Button x:Name="PauseIndexingButton"
                             Content="{x:Bind ViewModel.PauseActionText, Mode=OneWay}"
                             IsEnabled="{x:Bind ViewModel.CanToggleIndexingPause, Mode=OneWay}"
                             Click="OnPauseIndexingClick"
                             AutomationProperties.AutomationId="PauseIndexingButton"
                             ToolTipService.ToolTip="暂停或恢复本次会话的索引；搜索仍保持可用"
-                            Padding="12,4"/>
+                            CornerRadius="6" Padding="12,5"/>
 
                     <Button x:Name="IndexNowButton" Content="立即索引"
                             Click="OnIndexNowClick"
                             IsEnabled="{x:Bind ViewModel.CanIndexNow, Mode=OneWay}"
                             Style="{ThemeResource AccentButtonStyle}"
-                            Padding="12,4"/>
+                            CornerRadius="6" Padding="14,5"/>
                 </StackPanel>
             </Grid>
         </Border>

@@ -12,21 +12,36 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
     private bool isInspecting;
     private bool hasEmbeddingInfo;
     private string? inspectionError;
-    private string statusMessage = "Click 'Inspect Model' to probe embedding host.";
+    private string statusMessage = "点击‘探查模型与嵌入引擎’以测试向量宿主与硬件加速状态。";
 
     private IndexingQueueStatus? queue;
     public string QueueSummary => queue is null
-        ? "Queue status unavailable."
-        : $"pending {queue.Pending}, settling {queue.Stabilizing}, ready {queue.Ready}, running {queue.Running}, failed {queue.Failed}, deferred {queue.Deferred}";
+        ? "队列状态不可用。"
+        : $"等待处理 {queue.Pending}，等待稳定 {queue.Stabilizing}，就绪 {queue.Ready}，运行中 {queue.Running}，失败 {queue.Failed}，推迟 {queue.Deferred}";
     public string QueueHealth => queue is null
         ? "—"
-        : $"dropped {queue.Dropped}, watcher overflows {queue.WatcherOverflows}, last reconcile {(queue.LastReconcileUtc is { } at ? at.ToLocalTime().ToString("HH:mm:ss") : "never")}, USN {queue.UsnState}";
-    private IReadOnlyList<string> failures = Array.Empty<string>();
-    public string FailureSummary => failures.Count == 0 ? "No failed files recorded." : string.Join(" | ", failures);
+        : $"已丢弃 {queue.Dropped} · 监听溢出 {queue.WatcherOverflows} · 上次对账 {(queue.LastReconcileUtc is { } at ? at.ToLocalTime().ToString("HH:mm:ss") : "从未")} · 同步引擎: {DescribeUsn(queue.UsnState)}";
+    /// <summary>Adds the practical meaning to the raw USN state: no volume access means watcher + periodic reconcile, not a fault.</summary>
+    internal static string DescribeUsn(string state) => state switch
+    {
+        "manual-mode" => "手动全速索引模式",
+        "background-disabled" => "后台监听未开启 (按需手动索引)",
+        "active" => "NTFS USN 极速变更日志已激活",
+        _ when state.Contains("access-denied", StringComparison.Ordinal) => state + " - 读取 NTFS 变更日志需要管理员权限；文件监听与定时对账机制正持续同步文件变动",
+        _ => state
+    };
 
-    public IReadOnlyList<string> BudgetRows => queue is null
+    private IReadOnlyList<string> failures = Array.Empty<string>();
+    public string FailureSummary => failures.Count == 0 ? "无文件索引失败记录。" : string.Join(" | ", failures);
+    public bool HasFailures => failures.Count > 0;
+
+    /// <summary>
+    /// The classes are an advisory estimate of what the host could afford (power, idle time, memory). Background indexing itself
+    /// is gated by the schedule and "AC power only" settings, so a "paused:idle" row does not mean indexing stopped.
+    /// </summary>
+    public IReadOnlyList<string> BudgetRows => queue is null || queue.Budgets.Count == 0
         ? Array.Empty<string>()
-        : queue.Budgets.Select(b => $"{b.Class}: extract {b.ExtractConcurrency}, inference {b.InferenceConcurrency} ({b.State})").ToArray();
+        : queue.Budgets.Select(b => $"资源调度档位 ({b.Class}): 提取并发 {b.ExtractConcurrency}, 推理并发 {b.InferenceConcurrency} ({b.State})").ToArray();
 
     public string MigrationNotice =>
         $"Local preview. Active index: {DatabasePath}. Legacy indexes are not migrated.";
@@ -36,6 +51,7 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
     public int DoneCount => status?.Done ?? 0;
     public int PendingCount => status?.Pending ?? 0;
     public int PartialCount => status?.Partial ?? 0;
+    public int IndexedAndPartialCount => (status?.Done ?? 0) + (status?.Partial ?? 0);
     public int FailedCount => status?.Failed ?? 0;
     public string? StatusDetail => status?.Detail;
 
@@ -90,6 +106,7 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(DoneCount));
             OnPropertyChanged(nameof(PendingCount));
             OnPropertyChanged(nameof(PartialCount));
+            OnPropertyChanged(nameof(IndexedAndPartialCount));
             OnPropertyChanged(nameof(FailedCount));
             OnPropertyChanged(nameof(StatusDetail));
             await RefreshQueueStatusAsync();
@@ -97,6 +114,30 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
         catch (Exception ex)
         {
             StatusMessage = $"Status check failed: {ex.Message}";
+        }
+    }
+
+    public async Task RetryFailedAsync()
+    {
+        try
+        {
+            var count = await backend.ResetFailedFilesAsync();
+            StatusMessage = count > 0 
+                ? $"已重置 {count} 个文件为待处理状态，正在启动索引..."
+                : "当前没有需要重置的文件。";
+            await RefreshStatusAsync();
+            if (count > 0)
+            {
+                var s = await backend.LoadSettingsAsync();
+                if (s.Folders.Count > 0)
+                {
+                    _ = backend.IndexAsync(new IndexRequest(s.Folders, Excluded: s.Skipped, SkipTypes: s.SkipTypes, Code: false, AllowPowerPointAutomation: true));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"重试失败文件出错: {ex.Message}";
         }
     }
 
@@ -114,6 +155,7 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
             StatusMessage = $"Queue status unavailable: {ex.Message}";
         }
         OnPropertyChanged(nameof(FailureSummary));
+        OnPropertyChanged(nameof(HasFailures));
         OnPropertyChanged(nameof(QueueSummary));
         OnPropertyChanged(nameof(QueueHealth));
         OnPropertyChanged(nameof(BudgetRows));

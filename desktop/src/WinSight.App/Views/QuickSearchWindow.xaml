@@ -39,9 +39,10 @@
 
             <TextBox Grid.Column="1"
                      x:Name="SearchBox"
+                     IsSpellCheckEnabled="False"
                      Text="{x:Bind ViewModel.Query, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                     PlaceholderText="搜索文件、文档、媒体与代码..."
-                     FontSize="16"
+                     PlaceholderText="描述内容、搜精确单号，或以 code: 搜代码 (Ctrl+O 展开大窗)..."
+                     FontSize="15"
                      BorderThickness="0"
                      Background="Transparent"
                      KeyDown="OnSearchBoxKeyDown"
@@ -58,24 +59,24 @@
         </Grid>
 
         <!-- Category Filters -->
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6" Padding="16,0,16,8">
-            <Button x:Name="FilterAllBtn" Content="全部" Click="OnFilterClick" Tag="all" Style="{ThemeResource AccentButtonStyle}"/>
-            <Button x:Name="FilterDocBtn" Content="文档" Click="OnFilterClick" Tag="doc"/>
-            <Button x:Name="FilterPdfBtn" Content="PDF" Click="OnFilterClick" Tag="pdf"/>
-            <Button x:Name="FilterImgBtn" Content="图片" Click="OnFilterClick" Tag="image"/>
-            <Button x:Name="FilterVideoBtn" Content="视频" Click="OnFilterClick" Tag="video"/>
-            <Button x:Name="FilterCodeBtn" Content="代码" Click="OnFilterClick" Tag="code"/>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6" Padding="16,0,16,10">
+            <Button x:Name="FilterAllBtn" Content="全部" Click="OnFilterClick" Tag="all" CornerRadius="13" Padding="12,3" FontSize="12" Style="{ThemeResource AccentButtonStyle}"/>
+            <Button x:Name="FilterDocBtn" Content="文档" Click="OnFilterClick" Tag="doc" CornerRadius="13" Padding="12,3" FontSize="12"/>
+            <Button x:Name="FilterPdfBtn" Content="PDF" Click="OnFilterClick" Tag="pdf" CornerRadius="13" Padding="12,3" FontSize="12"/>
+            <Button x:Name="FilterImgBtn" Content="图片" Click="OnFilterClick" Tag="image" CornerRadius="13" Padding="12,3" FontSize="12"/>
+            <Button x:Name="FilterVideoBtn" Content="音视频" Click="OnFilterClick" Tag="video" CornerRadius="13" Padding="12,3" FontSize="12"/>
+            <Button x:Name="FilterCodeBtn" Content="代码" Click="OnFilterClick" Tag="code" CornerRadius="13" Padding="12,3" FontSize="12"/>
         </StackPanel>
 
-        <!-- Results Area (Master-Detail Dual Column) -->
+        <!-- Results Area (Master-Detail Dual Column 38% : 62%) -->
         <Grid Grid.Row="2" Background="{ThemeResource LayerFillColorDefaultBrush}">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="4.5*"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="5.5*"/>
+                <ColumnDefinition Width="3.8*" MinWidth="240"/>
+                <ColumnDefinition Width="1"/>
+                <ColumnDefinition Width="6.2*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Left: Virtualized Results List -->
+            <!-- Left: Compact Results List with Inline Pill Badges -->
             <Grid Grid.Column="0">
                 <ProgressRing IsActive="{x:Bind ViewModel.IsLoading, Mode=OneWay}"
                               HorizontalAlignment="Center"
@@ -88,6 +89,7 @@
                          IsClosable="False"/>
 
                 <ListView x:Name="ResultsListView"
+                          Padding="6"
                           ItemsSource="{x:Bind ViewModel.Hits, Mode=OneWay}"
                           SelectedIndex="{x:Bind ViewModel.SelectedIndex, Mode=TwoWay}"
                           SelectionMode="Single"
@@ -97,114 +99,162 @@
                           KeyDown="OnListViewKeyDown">
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="vm:SearchItemViewModel">
-                            <Grid Padding="10,8" ColumnSpacing="10">
+                            <Grid Padding="8,7" ColumnSpacing="10">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
 
-                                <FontIcon Grid.Column="0"
-                                          Glyph="{x:Bind IconGlyph}"
-                                          FontSize="18"
-                                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
-                                          VerticalAlignment="Center"/>
+                                <Border Grid.Column="0" Width="36" Height="36" CornerRadius="7"
+                                        Background="{x:Bind IconBackgroundBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        VerticalAlignment="Center">
+                                    <FontIcon Glyph="{x:Bind IconGlyph}"
+                                              FontSize="16"
+                                              Foreground="{x:Bind IconForegroundBrush}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
 
-                                <StackPanel Grid.Column="1" Spacing="2">
-                                    <Grid ColumnSpacing="6">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
                                         <TextBlock Text="{x:Bind FileName}"
                                                    Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                                   MaxLines="1"
-                                                   TextTrimming="CharacterEllipsis"/>
-                                        <TextBlock Grid.Column="1"
-                                                   Text="{x:Bind LocationDisplay}"
-                                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                                   MaxLines="1" MaxWidth="190"
+                                                   TextTrimming="CharacterEllipsis"
                                                    VerticalAlignment="Center"/>
-                                    </Grid>
+                                        <Border Background="{ThemeResource ControlAltFillColorTertiaryBrush}"
+                                                CornerRadius="8" Padding="6,1" VerticalAlignment="Center"
+                                                Visibility="{x:Bind HasLocationBadge}">
+                                            <TextBlock Text="{x:Bind CompactBadgeText}"
+                                                       FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                       Typography.NumeralAlignment="Tabular"/>
+                                        </Border>
+                                    </StackPanel>
 
-                                    <TextBlock Text="{x:Bind DirectoryPath}"
+                                    <TextBlock Text="{x:Bind ListItemMetadataLine}"
+                                               FontSize="11"
+                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                               MaxLines="1"
+                                               TextTrimming="CharacterEllipsis"/>
+
+                                    <TextBlock Text="{x:Bind SubtitleText}"
                                                Style="{ThemeResource CaptionTextBlockStyle}"
                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                MaxLines="1"
                                                TextTrimming="CharacterEllipsis"/>
-
-                                    <TextBlock Text="{x:Bind Excerpt}"
-                                               Style="{ThemeResource CaptionTextBlockStyle}"
-                                               MaxLines="1"
-                                               TextTrimming="CharacterEllipsis"
-                                               Visibility="{x:Bind ExcerptVisibility}"/>
                                 </StackPanel>
-
-                                <TextBlock Grid.Column="2"
-                                           Text="{x:Bind ScoreDisplay}" Typography.NumeralAlignment="Tabular"
-                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                           VerticalAlignment="Center"/>
                             </Grid>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
             </Grid>
 
-            <!-- Column Separator -->
-            <Border Grid.Column="1" Width="1" Background="{ThemeResource CardStrokeColorDefaultBrush}"/>
+            <!-- 1px Hairline Divider -->
+            <Border Grid.Column="1" Width="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
 
-            <!-- Right: Instant Context Preview Panel -->
-            <Grid Grid.Column="2" Padding="14,12" Background="{ThemeResource ControlAltFillColorSecondaryBrush}">
+            <!-- Right: DigUp 4-Tier Evidence Stage -->
+            <Grid Grid.Column="2" Padding="20,16">
                 <!-- Empty state when nothing is selected -->
-                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8"
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="10"
                             Visibility="{x:Bind SelectedToEmptyVisibility(ViewModel.SelectedItem), Mode=OneWay}">
-                    <FontIcon Glyph="&#xE8A5;" FontSize="32" Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
-                    <TextBlock Text="选择结果项即时查阅上下文" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <FontIcon Glyph="&#xE721;" FontSize="36" Foreground="{ThemeResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center"/>
+                    <TextBlock Text="即时穿透检索本地知识库" Style="{ThemeResource BodyStrongTextBlockStyle}" HorizontalAlignment="Center"/>
+                    <TextBlock Text="支持自然语言语义理解、中文分词与代码特征 (code:)"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               HorizontalAlignment="Center"/>
                 </StackPanel>
 
-                <!-- Detail card when an item is selected -->
+                <!-- 4-Tier Evidence Stage when an item is selected -->
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                               Visibility="{x:Bind SelectedToDetailVisibility(ViewModel.SelectedItem), Mode=OneWay}">
-                    <StackPanel Spacing="10">
+                    <StackPanel Spacing="14">
+                        <!-- Tier 1: Hero Evidence Canvas -->
+                        <Grid>
+                            <!-- Paper Page Card (Documents / PDFs) -->
+                            <Border Visibility="{x:Bind ViewModel.SelectedItem.IsDocumentVisibility, Mode=OneWay, FallbackValue=Visible}"
+                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1" CornerRadius="10"
+                                    MinHeight="170" MaxHeight="230" Padding="18,14">
+                                <Grid>
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <TextBlock x:Name="QuickCanvasExcerptBlock"
+                                                   Text="{x:Bind ViewModel.SelectedItem.CanvasExcerptText, Mode=OneWay, FallbackValue=''}"
+                                                   IsTextSelectionEnabled="True" TextWrapping="Wrap"
+                                                   FontSize="13" LineHeight="21"
+                                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                                   Margin="0,0,0,24"/>
+                                    </ScrollViewer>
+                                    <Border Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="1" CornerRadius="9" Padding="8,2"
+                                            HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                            Visibility="{x:Bind ViewModel.SelectedItem.HasLocationBadge, Mode=OneWay, FallbackValue=Collapsed}">
+                                        <TextBlock Text="{x:Bind ViewModel.SelectedItem.CompactBadgeText, Mode=OneWay, FallbackValue=''}"
+                                                   FontSize="11" FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    </Border>
+                                </Grid>
+                            </Border>
+
+                            <!-- Code Monospace Canvas -->
+                            <Border Visibility="{x:Bind ViewModel.SelectedItem.IsCodeVisibility, Mode=OneWay, FallbackValue=Collapsed}"
+                                    Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1" CornerRadius="10"
+                                    MinHeight="170" MaxHeight="230" Padding="16,12">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                                    <TextBlock x:Name="QuickCodeExcerptBlock"
+                                               Text="{x:Bind ViewModel.SelectedItem.CanvasExcerptText, Mode=OneWay, FallbackValue=''}"
+                                               FontFamily="Cascadia Code, Consolas, Courier New"
+                                               FontSize="12" LineHeight="19"
+                                               TextWrapping="NoWrap" IsTextSelectionEnabled="True"
+                                               Foreground="{ThemeResource TextFillColorPrimaryBrush}"/>
+                                </ScrollViewer>
+                            </Border>
+                        </Grid>
+
+                        <!-- Tier 2: 3-Line Metadata Block -->
                         <StackPanel Spacing="2">
-                            <TextBlock Text="{x:Bind ViewModel.SelectedItem.FileName, Mode=OneWay}"
-                                       Style="{ThemeResource SubtitleTextBlockStyle}" TextWrapping="Wrap"/>
-                            <TextBlock Text="{x:Bind ViewModel.SelectedItem.DirectoryPath, Mode=OneWay}"
-                                       Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
+                            <TextBlock Text="{x:Bind ViewModel.SelectedItem.FileName, Mode=OneWay, FallbackValue=''}"
+                                       FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                            <TextBlock Text="{x:Bind ViewModel.SelectedItem.FriendlyDirectoryPath, Mode=OneWay, FallbackValue=''}"
+                                       FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{x:Bind ViewModel.SelectedItem.FileMetadataLine, Mode=OneWay, FallbackValue=''}"
+                                       FontSize="11.5" Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
                         </StackPanel>
 
-                        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                BorderThickness="1" CornerRadius="6" Padding="10">
-                            <StackPanel Spacing="4">
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Text="匹配类型:" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                                    <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.SelectedItem.MatchType, Mode=OneWay}" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold"/>
-                                </Grid>
-                                <Grid ColumnSpacing="8" Visibility="{x:Bind ViewModel.SelectedItem.ExcerptVisibility, Mode=OneWay}">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Text="位置标定:" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                                    <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.SelectedItem.LocationDisplay, Mode=OneWay}" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
-                                </Grid>
+                        <!-- Tier 3: Explainable Match Callout (Amber Magnifying Glass) -->
+                        <StackPanel Spacing="3">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE721;" FontSize="12" Foreground="#F2A900" VerticalAlignment="Center"/>
+                                <TextBlock Text="{x:Bind ViewModel.SelectedItem.MatchRationale, Mode=OneWay, FallbackValue=''}"
+                                           FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
                             </StackPanel>
-                        </Border>
+                            <TextBlock Text="{x:Bind ViewModel.SelectedItem.SubtitleText, Mode=OneWay, FallbackValue=''}"
+                                       FontSize="12" MaxLines="2" TextTrimming="CharacterEllipsis"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       Visibility="{x:Bind ViewModel.SelectedItem.ExcerptVisibility, Mode=OneWay, FallbackValue=Collapsed}"/>
+                        </StackPanel>
 
-                        <TextBlock Text="命中文档上下文片段" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                BorderThickness="1" CornerRadius="6" Padding="12">
-                            <TextBlock Text="{x:Bind ViewModel.SelectedItem.Excerpt, Mode=OneWay}"
-                                       IsTextSelectionEnabled="True" TextWrapping="Wrap"
-                                       Style="{ThemeResource BodyTextBlockStyle}" LineHeight="20"/>
-                        </Border>
+                        <!-- Tier 4: Dual Pill Action Buttons -->
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Style="{ThemeResource AccentButtonStyle}"
+                                    Click="OnQuickOpenHeroClick"
+                                    CornerRadius="6" Padding="14,6"
+                                    ToolTipService.ToolTip="打开至匹配位置 (Enter)">
+                                <TextBlock Text="{x:Bind ViewModel.SelectedItem.PrimaryOpenLabel, Mode=OneWay, FallbackValue='打开文件'}"
+                                           FontWeight="SemiBold" FontSize="12.5"/>
+                            </Button>
+                            <Button Click="OnQuickRevealClick"
+                                    CornerRadius="6" Padding="12,6"
+                                    ToolTipService.ToolTip="在资源管理器中显示 (Ctrl+Enter)">
+                                <TextBlock Text="在资源管理器中显示" FontSize="12.5"/>
+                            </Button>
+                        </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
             </Grid>
@@ -222,12 +272,27 @@
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                            VerticalAlignment="Center"/>
 
-                <StackPanel Orientation="Horizontal" Spacing="14" HorizontalAlignment="Right">
-                    <TextBlock Text="↵ 打开" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock Text="Ctrl+↵ 定位" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock Text="Ctrl+C 复制摘要" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock Text="Ctrl+⇧+C 复制路径" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock Text="Esc 隐藏" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <StackPanel Orientation="Horizontal" Spacing="16" HorizontalAlignment="Right">
+                    <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                        <Border Background="{ThemeResource ControlFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="3" Padding="4,1"><TextBlock Text="↵" FontSize="11" FontFamily="Consolas"/></Border>
+                        <TextBlock Text="打开" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                        <Border Background="{ThemeResource ControlFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="3" Padding="4,1"><TextBlock Text="Ctrl+↵" FontSize="11" FontFamily="Consolas"/></Border>
+                        <TextBlock Text="定位" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                        <Border Background="{ThemeResource ControlFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="3" Padding="4,1"><TextBlock Text="Ctrl+C" FontSize="11" FontFamily="Consolas"/></Border>
+                        <TextBlock Text="复制文件" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                        <Border Background="{ThemeResource ControlFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="3" Padding="4,1"><TextBlock Text="Ctrl+O" FontSize="11" FontFamily="Consolas"/></Border>
+                        <TextBlock Text="展开大窗" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                        <Border Background="{ThemeResource ControlFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="3" Padding="4,1"><TextBlock Text="Esc" FontSize="11" FontFamily="Consolas"/></Border>
+                        <TextBlock Text="隐藏" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
                 </StackPanel>
             </Grid>
         </Border>

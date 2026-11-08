@@ -6,81 +6,120 @@
     <ScrollViewer Padding="24">
         <StackPanel Spacing="16">
             <Grid>
-                <TextBlock Text="MCP 客户端控制台" Style="{ThemeResource TitleTextBlockStyle}" VerticalAlignment="Center"/>
-                <Border HorizontalAlignment="Right" Background="{ThemeResource SystemFillColorSuccessBackgroundBrush}"
+                <StackPanel Spacing="4">
+                    <TextBlock Text="MCP 客户端控制台 (SDK 2.0)" Style="{ThemeResource TitleTextBlockStyle}" VerticalAlignment="Center"/>
+                    <TextBlock Text="将 WinSight 本地多模态知识库一键挂载至 Claude Desktop、Cursor、Windsurf 等 AI 智能体。"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" Style="{ThemeResource CaptionTextBlockStyle}"/>
+                </StackPanel>
+                <Border HorizontalAlignment="Right" VerticalAlignment="Top" Background="{ThemeResource SystemFillColorSuccessBackgroundBrush}"
                         BorderBrush="{ThemeResource SystemFillColorSuccessBrush}" BorderThickness="1" CornerRadius="12" Padding="10,4">
                     <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                         <Ellipse Width="8" Height="8" Fill="{ThemeResource SystemFillColorSuccessBrush}"/>
-                        <TextBlock Text="本地服务就绪" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold" Foreground="{ThemeResource SystemFillColorSuccessBrush}"/>
+                        <TextBlock Text="MCP 2.0 服务就绪" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold" Foreground="{ThemeResource SystemFillColorSuccessBrush}"/>
                     </StackPanel>
                 </Border>
             </Grid>
+
+            <!-- #1 Primary Card: Ready-to-use mcpServers JSON Configuration -->
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1" CornerRadius="8" Padding="20">
+                    BorderThickness="1" CornerRadius="10" Padding="20">
                 <StackPanel Spacing="10">
+                    <Grid>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="智能体快速接入配置 (mcpServers)" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                            <TextBlock Text="点击右侧按钮一键复制 JSON 配置，粘贴至 Claude Desktop (claude_desktop_config.json) 或 Cursor (Settings -> MCP) 即可立即使用。"
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       TextWrapping="Wrap" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <Button HorizontalAlignment="Right" VerticalAlignment="Center"
+                                Click="OnCopyConfigClick"
+                                Style="{ThemeResource AccentButtonStyle}" Padding="14,7" CornerRadius="6"
+                                AutomationProperties.AutomationId="McpConsoleCopyConfigButton">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE8C8;" FontSize="14"/>
+                                <TextBlock Text="一键复制配置" FontWeight="SemiBold"/>
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                    <TextBox Text="{x:Bind ViewModel.ConfigSnippet, Mode=OneWay}"
+                             IsReadOnly="True" AcceptsReturn="True"
+                             FontFamily="Consolas, Cascadia Code, Courier New"
+                             FontSize="12" MinHeight="140"
+                             TextWrapping="NoWrap"
+                             AutomationProperties.AutomationId="McpConsoleConfigSnippetBox"/>
+                    <TextBlock Text="{x:Bind ViewModel.CopyFeedback, Mode=OneWay}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource SystemFillColorSuccessBrush}"
+                               TextWrapping="Wrap"/>
+                </StackPanel>
+            </Border>
+
+            <!-- #2 Card: Exposed MCP 2.0 Tools & Security Boundaries -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1" CornerRadius="10" Padding="20">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="已发布的 MCP 工具清单与安全边界" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.Notes, Mode=OneWay}"
+                                  AutomationProperties.AutomationId="McpConsoleNotes">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <Border Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                                        CornerRadius="6" Padding="12,8" Margin="0,3">
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <FontIcon Glyph="&#xE943;" FontSize="14" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1" Text="{x:Bind}" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
+            <!-- #3 Card: Bridge Request Queue & History -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1" CornerRadius="10" Padding="20">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="外部智能体维护请求队列" Style="{ThemeResource SubtitleTextBlockStyle}"/>
                     <TextBlock Text="{x:Bind ViewModel.Summary, Mode=OneWay}" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                AutomationProperties.AutomationId="McpConsoleSummary"/>
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.Recent, Mode=OneWay}"
+                                  AutomationProperties.AutomationId="McpConsoleRecent">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <Border Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                                        CornerRadius="4" Padding="10,6" Margin="0,2">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <FontIcon Glyph="&#xE756;" FontSize="13" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1" Text="{x:Bind}" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
                     <StackPanel Orientation="Horizontal" Spacing="12">
-                        <Button Content="刷新状态" Click="OnRefreshClick"
+                        <Button Content="刷新队列状态" Click="OnRefreshClick"
                                 AutomationProperties.AutomationId="McpConsoleRefreshButton"/>
-                        <Button Content="处理等待请求" Click="OnDrainClick"
+                        <Button Content="执行等待请求" Click="OnDrainClick"
                                 IsEnabled="{x:Bind ViewModel.CanDrain, Mode=OneWay}"
                                 AutomationProperties.AutomationId="McpConsoleDrainButton"/>
                     </StackPanel>
                     <TextBlock Text="{x:Bind ViewModel.ActionResult, Mode=OneWay}" TextWrapping="Wrap"
                                Style="{ThemeResource CaptionTextBlockStyle}"
                                AutomationProperties.AutomationId="McpConsoleActionResult"/>
-                </StackPanel>
-            </Border>
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1" CornerRadius="8" Padding="20">
-                <StackPanel Spacing="8">
-                    <TextBlock Text="最近请求历史" Style="{ThemeResource SubtitleTextBlockStyle}"/>
-                    <ItemsControl ItemsSource="{x:Bind ViewModel.Recent, Mode=OneWay}"
-                                  AutomationProperties.AutomationId="McpConsoleRecent">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="x:String">
-                                <Border Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                                        CornerRadius="4" Padding="10,6" Margin="0,3">
-                                    <Grid ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <FontIcon Glyph="&#xE756;" FontSize="14" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center"/>
-                                        <TextBlock Grid.Column="1" Text="{x:Bind}" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" VerticalAlignment="Center"/>
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </StackPanel>
-            </Border>
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1" CornerRadius="8" Padding="20">
-                <StackPanel Spacing="8">
-                    <TextBlock Text="传输协议与连接说明" Style="{ThemeResource SubtitleTextBlockStyle}"/>
-                    <ItemsControl ItemsSource="{x:Bind ViewModel.Notes, Mode=OneWay}"
-                                  AutomationProperties.AutomationId="McpConsoleNotes">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="x:String">
-                                <Border Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                                        CornerRadius="4" Padding="10,6" Margin="0,3">
-                                    <Grid ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <FontIcon Glyph="&#xE88E;" FontSize="14" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" VerticalAlignment="Center"/>
-                                        <TextBlock Grid.Column="1" Text="{x:Bind}" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" VerticalAlignment="Center"/>
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
                 </StackPanel>
             </Border>
         </StackPanel>

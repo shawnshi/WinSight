@@ -1,6 +1,7 @@
 using System.Threading.Channels;
 using WinSight.Core;
 using WinSight.Infrastructure.Indexing;
+using WinSight.Infrastructure.Search;
 
 namespace WinSight.Infrastructure.Runtime;
 
@@ -250,7 +251,16 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
                     }
                     queueReconciled = true;
 
-                    var processed = await queue.ProcessReadyTasksAsync(50, stop.Token).ConfigureAwait(false);
+                    var processed = 0;
+                    try
+                    {
+                        SearchText.SetCurrentThreadQoS(highPerformance: false);
+                        processed = await queue.ProcessReadyTasksAsync(50, stop.Token).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        SearchText.SetCurrentThreadQoS(highPerformance: true);
+                    }
                     if (processed > 0 && indexPaths != null)
                     {
                         continue;

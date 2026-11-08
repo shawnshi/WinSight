@@ -44,6 +44,7 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
             NativeMediaOperation.Extract => "extract-media",
             NativeMediaOperation.Inspect => "inspect-media",
             NativeMediaOperation.InspectImage => "inspect-image",
+            NativeMediaOperation.ExtractLegacyText => "extract-legacy-text",
             NativeMediaOperation.InspectOcr => "inspect-ocr",
             NativeMediaOperation.RenderPdfPage => "render-pdf-page",
             NativeMediaOperation.RenderPresentation => "render-presentation",
@@ -366,7 +367,7 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool ReadFile(SafeFileHandle file, byte[] buffer, uint count, out uint read, IntPtr overlapped);
 }
 
-internal enum NativeMediaOperation { Extract, Inspect, Soundtrack, InspectImage, InspectOcr, RenderPdfPage, RenderPresentation, PowerPointServer, RenderPresentationPage, RenderRasterPreview, OfficeNavigation, OfficeNavigationServer }
+internal enum NativeMediaOperation { Extract, Inspect, Soundtrack, InspectImage, ExtractLegacyText, InspectOcr, RenderPdfPage, RenderPresentation, PowerPointServer, RenderPresentationPage, RenderRasterPreview, OfficeNavigation, OfficeNavigationServer }
 
 internal sealed class MediaTerminationException(string message, Exception inner) : IOException(message, inner);
 

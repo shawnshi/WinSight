@@ -32,10 +32,10 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
         get
         {
             if (IsMonitoringActive)
-                return "Active: folders are authorized and background monitoring is enabled.";
+                return "运行中：已授权目录受保护监听，文件保存后自动增量更新。";
             if (backgroundIndexingEnabled && !settings.SetUp)
-                return "Needs confirmation: toggle is on, but folders require explicit confirmation to arm background watcher.";
-            return "Disabled: background monitoring will not run.";
+                return "等待激活：增量开关已打开，请点击下方‘确认目录并启用监听’按钮生效。";
+            return "未启用：后台监听处于关闭状态。可随时手动点击‘全部重新索引’。";
         }
     }
 
@@ -109,7 +109,7 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
     {
         if (Folders.Count == 0 && settings.CodeFolders.Count == 0)
         {
-            StatusMessage = "Cannot enable background monitoring: please add at least one folder.";
+            StatusMessage = "无法启用后台监听：请至少添加一个搜索目录。";
             return false;
         }
 
@@ -130,7 +130,7 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(IsMonitoringActive));
             OnPropertyChanged(nameof(MonitoringStatusText));
             SettingsChanged?.Invoke(this, EventArgs.Empty);
-            StatusMessage = "Folders confirmed. Background monitoring enabled.";
+            StatusMessage = "目录已确认，后台监听增量索引已激活。";
             return true;
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("revision conflict", StringComparison.OrdinalIgnoreCase))

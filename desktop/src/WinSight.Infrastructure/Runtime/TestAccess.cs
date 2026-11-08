@@ -5,3 +5,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("WinSight.Pause.Tests")]
 [assembly: InternalsVisibleTo("WinSight.MediaProcess.Tests")]
 [assembly: InternalsVisibleTo("WinSight.MediaIndexing.Tests")]
+[assembly: InternalsVisibleTo("WinSight.DocumentSearch.Tests")]

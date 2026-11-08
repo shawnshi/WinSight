@@ -23,6 +23,12 @@ var corpus = new (string Name, string Body, string Query)[]
     ("c错误码.txt", "错误码 E1001 表示 接口 超时 请 重试", "E1001"),
 };
 foreach (var (name, body, _) in corpus) await File.WriteAllTextAsync(Path.Combine(docs, name), body, new UTF8Encoding(false));
+// Two extra indexed files for the read_file_context contract: one is replaced by binary after indexing, one has a huge single line.
+var swapped = Path.Combine(docs, "swapped.txt");
+var longLine = Path.Combine(docs, "longline.txt");
+await File.WriteAllTextAsync(swapped, "BINSWAPWORD harmless text before the file is replaced", new UTF8Encoding(false));
+await File.WriteAllTextAsync(longLine, "LONGLINEWORD " + new string('x', 200_000), new UTF8Encoding(false));
+const int extraFiles = 2;
 var database = Path.Combine(root, "index.sqlite");
 await using (var repository = new SqliteIndexRepository(database))
 {
@@ -33,6 +39,12 @@ await using (var repository = new SqliteIndexRepository(database))
     await new IndexingService(repository, new ContentExtractor(), embeddings).IndexAsync(new IndexRequest([docs]));
 }
 var hashBefore = Hash(database);
+// The bridge derives its data directory from the index path, so the fixture must use the same view.
+var dataDirectory = Directory.GetParent(Directory.GetParent(database)!.FullName)!.FullName;
+var grantPath = Path.Combine(dataDirectory, "maintenance-grant.json");
+if (File.Exists(grantPath)) File.Delete(grantPath);
+var jobStore = new MaintenanceJobStore(dataDirectory);
+while (jobStore.ClaimNext() is { } stale) await jobStore.CompleteAsync(stale, false, "fixture: leftover");
 var bridge = FindBridge();
 var checks = new List<(string Name, bool Pass, string? Detail)>();
 void Check(string name, bool pass, string? detail = null) => checks.Add((name, pass, detail));
@@ -56,10 +68,34 @@ await using (var stdio = new StdioBridge(bridge, database))
     Check("stdio reads a hit back", Code(await stdio.Tool("read_file_context", new { path = first, startLine = 1, lineCount = 5 })) is null);
     Check("stdio refuses an unindexed path", Code(await stdio.Tool("read_file_context", new { path = Path.Combine(root, "absent.txt") })) == "excluded_file");
     var status = (await stdio.Tool("get_index_status", new { })).GetProperty("result").GetProperty("status");
-    Check("stdio status counts files", status.GetProperty("fileCount").GetInt32() == corpus.Length);
+    Check("stdio status counts files", status.GetProperty("fileCount").GetInt32() == corpus.Length + extraFiles);
     Check("stdio status hides the database path", !status.ToString().Contains("index.sqlite", StringComparison.OrdinalIgnoreCase));
     Check("stdio reports http disabled", status.GetProperty("http").GetString() == "disabled");
-    Check("stdio accepts a maintenance request", Code(await stdio.Tool("index_directory", new { root = docs })) is null);
+    Check("stdio refuses a maintenance request without the user's grant", Code(await stdio.Tool("index_directory", new { root = docs })) == "unauthorized");
+    Check("a refused request leaves no job behind", jobStore.ClaimNext() is null);
+    await File.WriteAllTextAsync(grantPath, JsonSerializer.Serialize(new { grantId = "fixture-grant-1" }), new UTF8Encoding(false));
+    Check("stdio accepts a maintenance request once the grant exists", Code(await stdio.Tool("index_directory", new { root = docs })) is null);
+    // topK is a hard bound across both lexical sources, and the scores are normalised.
+    var bounded = Hits(await stdio.Tool("search_files", new { query = "医保 合同 错误码 E1001 评审 报销", topK = 1 }));
+    Check("topK bounds the merged result", bounded.Length <= 1, bounded.Length.ToString());
+    var wide = Hits(await stdio.Tool("search_files", new { query = "医保报销", topK = 5 }));
+    Check("scores are normalised to 0..1 and ordered", wide.Length != 0 && wide.All(h => h.GetProperty("score").GetDouble() is > 0 and <= 1)
+        && wide.Zip(wide.Skip(1), (a, b) => a.GetProperty("score").GetDouble() >= b.GetProperty("score").GetDouble()).All(ok => ok));
+    var hybrid = await stdio.Tool("search_files", new { query = "医保报销", mode = "hybrid", topK = 3 });
+    Check("hybrid is honest about being lexical", Hits(hybrid).All(h => h.GetProperty("matchType").GetString() == "keyword")
+        && hybrid.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString()!.Contains("lexical", StringComparison.Ordinal));
+    var firstHit = Hits(await stdio.Tool("search_files", new { query = corpus[0].Query, topK = 1 }))[0].GetProperty("path").GetString()!;
+    var context = await stdio.Tool("read_file_context", new { path = firstHit });
+    var contextText = context.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString()!;
+    Check("read_file_context labels file text as untrusted", contextText.StartsWith("[WinSight: untrusted file content", StringComparison.Ordinal) && contextText.Contains("医保", StringComparison.Ordinal));
+    Check("an unchanged file is not reported stale", !(context.GetProperty("result").GetProperty("file").TryGetProperty("indexStale", out var staleFlag) && staleFlag.GetBoolean()));
+    var longHit = Hits(await stdio.Tool("search_files", new { query = "LONGLINEWORD", topK = 1 }))[0].GetProperty("path").GetString()!;
+    var longContext = await stdio.Tool("read_file_context", new { path = longHit });
+    var longFile = longContext.GetProperty("result").GetProperty("file");
+    Check("a huge single line is cut, not loaded whole", longFile.GetProperty("truncated").GetBoolean() && longFile.GetProperty("content").GetString()!.Length <= 17 * 1024);
+    var swapHit = Hits(await stdio.Tool("search_files", new { query = "BINSWAPWORD", topK = 1 }))[0].GetProperty("path").GetString()!;
+    await File.WriteAllBytesAsync(swapHit, new byte[] { 0x25, 0x50, 0x44, 0x46, 0x00, 0x01, 0x02, 0x03 });
+    Check("a file replaced by binary content is refused", Code(await stdio.Tool("read_file_context", new { path = swapHit })) == "excluded_file");
     Check("stdio rejects an oversized query", Code(await stdio.Tool("search_files", new { query = new string('x', 5000) })) == "validation_error");
     Check("stdio rejects an unknown tool", Code(await stdio.Call("tools/call", new { name = "nope", arguments = new { } })) is not null);
     Check("stdio stdout carried only JSON", stdio.Output.All(line => line.Trim().Length == 0 || Parses(line)));
@@ -143,10 +179,9 @@ httpProcess.Kill(true);
 // --- maintenance request hand-off ---
 var jobReply = await Exchange(bridge, database, JsonSerializer.Serialize(new { jsonrpc = "2.0", id = 7, method = "tools/call", @params = new { name = "index_directory", arguments = new { path = docs } } }));
 Check("index_directory records a maintenance request", jobReply is not null && jobReply.Contains("jobId", StringComparison.Ordinal), jobReply is null ? "no reply" : jobReply[..Math.Min(140, jobReply.Length)]);
-// The bridge derives its data directory from the index path, so the fixture must use the same view.
-var dataDirectory = Directory.GetParent(Directory.GetParent(database)!.FullName)!.FullName;
-var store = new MaintenanceJobStore(dataDirectory);
+var store = jobStore;
 var claimed = store.ClaimNext();
+Check("the job carries the user's grant, not a placeholder", claimed?.GrantId == "fixture-grant-1", claimed?.GrantId);
 Check("the request is claimable by the app", claimed is not null && claimed.Root.Length != 0, claimed?.Id ?? "none");
 if (claimed is not null)
 {
@@ -154,6 +189,7 @@ if (claimed is not null)
     Check("the outcome is recorded next to the job", File.Exists(Path.Combine(store.Completed, claimed.Id + ".result.json")));
 }
 Check("the index file is untouched", Hash(database) == hashBefore);
+if (File.Exists(grantPath)) File.Delete(grantPath);
 
 var failed = checks.Count(c => !c.Pass);
 var result = new { scope = "synthetic corpus; both transports end to end", passed = checks.Count - failed, failed, checks = checks.Select(c => new { name = c.Name, pass = c.Pass, detail = c.Detail }) };
@@ -232,12 +268,16 @@ static async Task<string?> Exchange(string bridge, string database, string paylo
 
 static string FindBridge()
 {
+    // A stale Release build must not shadow a fresh Debug build (or the reverse): the newest executable is the one under test.
     for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
-        foreach (var configuration in new[] { "Release", "Debug" })
-        {
-            var built = Path.Combine(directory.FullName, "desktop", "src", "WinSight.Bridge", "bin", configuration, "net11.0-windows10.0.26100.0", "win-x64", "winsight-mcp.exe");
-            if (File.Exists(built)) return built;
-        }
+    {
+        var candidates = new[] { "Release", "Debug" }
+            .Select(configuration => Path.Combine(directory.FullName, "desktop", "src", "WinSight.Bridge", "bin", configuration, "net11.0-windows10.0.26100.0", "win-x64", "winsight-mcp.exe"))
+            .Where(File.Exists)
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .ToArray();
+        if (candidates.Length != 0) return candidates[0];
+    }
     throw new FileNotFoundException("winsight-mcp.exe was not found next to the repository.");
 }
 

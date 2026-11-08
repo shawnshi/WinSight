@@ -57,6 +57,13 @@ $version = if ($suffix) { "$prefix-$suffix" } else { $prefix }
 $iscc = $CompilerPath
 if (-not $iscc) {
     $candidates = @(
+        'C:\Program Files\Inno Setup 7\ISCC.exe',
+        "$env:ProgramW6432\Inno Setup 7\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
+        'C:\Program Files\Inno Setup 6\ISCC.exe',
+        "$env:ProgramW6432\Inno Setup 6\ISCC.exe",
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
         "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
         "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",

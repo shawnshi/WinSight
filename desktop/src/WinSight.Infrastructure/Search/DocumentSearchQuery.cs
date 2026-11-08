@@ -92,6 +92,16 @@ internal sealed class DocumentSearchQuery
     {
         // Nothing to verify: skip field extraction (a regex scan of the excerpt) on the per-segment hot path.
         if (Filters.Count == 0 && (!checkLiterals || Literals.Length == 0)) return true;
+        // Fast pre-filter: if a literal is required, the substring must appear in excerpt or path before running expensive regex field extraction.
+        if (checkLiterals && Literals.Length > 0 && excerpt is not null)
+        {
+            foreach (var literal in Literals)
+            {
+                if (!excerpt.Contains(literal, StringComparison.OrdinalIgnoreCase) &&
+                    !path.Contains(literal, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+        }
         var fields = source?.Fields ?? (excerpt is null ? [] : FieldsFromText(excerpt));
         foreach (var literal in checkLiterals ? Literals : [])
         {

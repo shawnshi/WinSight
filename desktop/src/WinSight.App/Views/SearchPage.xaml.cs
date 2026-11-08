@@ -19,6 +19,154 @@ public sealed partial class SearchPage : Page
     {
         ViewModel = new QuickSearchViewModel(backend);
         InitializeComponent();
+        ViewModel.PropertyChanged += OnViewModelPropertyChanged;
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(QuickSearchViewModel.SelectedItem) or nameof(QuickSearchViewModel.SelectedIndex))
+        {
+            DispatcherQueue?.TryEnqueue(() =>
+            {
+                Bindings.Update();
+                UpdateHeroStage(ViewModel.SelectedItem);
+            });
+        }
+    }
+
+    private void OnResultsSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        Bindings.Update();
+        UpdateHeroStage(ViewModel.SelectedItem);
+    }
+
+    private void UpdateHeroStage(SearchItemViewModel? selected)
+    {
+        ApplyQueryHighlights(CanvasExcerptBlock, ViewModel.Query);
+        ApplyQueryHighlights(CodeExcerptBlock, ViewModel.Query);
+        ApplyQueryHighlights(MatchCalloutExcerptBlock, ViewModel.Query);
+
+        if (HeroPreviewImage is null) return;
+        if (selected is not null && selected.IsImageVisibility == Visibility.Visible && System.IO.File.Exists(selected.Path))
+        {
+            try
+            {
+                var bmp = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage { DecodePixelWidth = 800 };
+                bmp.UriSource = new Uri(selected.Path);
+                HeroPreviewImage.Source = bmp;
+                return;
+            }
+            catch { }
+        }
+        HeroPreviewImage.Source = null;
+    }
+
+    internal static void ApplyQueryHighlights(TextBlock? block, string? rawQuery)
+    {
+        if (block is null) return;
+        block.TextHighlighters.Clear();
+        if (string.IsNullOrWhiteSpace(rawQuery) || string.IsNullOrEmpty(block.Text)) return;
+
+        var q = rawQuery.Trim();
+        if (q.StartsWith("code:", StringComparison.OrdinalIgnoreCase)) q = q[5..].Trim();
+        if (string.IsNullOrWhiteSpace(q)) return;
+
+        var terms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var part in q.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var clean = part.Trim('"', '\'', '，', '。', ',', ';');
+            if (clean.Length >= 1) terms.Add(clean);
+            // For CJK phrases >= 4 chars (e.g. "卫宁健康"), also highlight 2-char sub-terms ("卫宁", "健康")
+            if (clean.Length >= 4 && clean.All(c => c >= 0x4E00 && c <= 0x9FFF))
+            {
+                for (int i = 0; i <= clean.Length - 2; i += 2)
+                    terms.Add(clean.Substring(i, 2));
+            }
+        }
+        if (terms.Count == 0) return;
+
+        var text = block.Text;
+        var highlighter = new Microsoft.UI.Xaml.Documents.TextHighlighter
+        {
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(100, 242, 169, 0))
+        };
+
+        foreach (var term in terms.OrderByDescending(t => t.Length))
+        {
+            int idx = 0;
+            while (idx < text.Length)
+            {
+                int found = text.IndexOf(term, idx, StringComparison.OrdinalIgnoreCase);
+                if (found < 0) break;
+                highlighter.Ranges.Add(new Microsoft.UI.Xaml.Documents.TextRange { StartIndex = found, Length = term.Length });
+                idx = found + Math.Max(1, term.Length);
+                if (highlighter.Ranges.Count >= 64) break;
+            }
+            if (highlighter.Ranges.Count >= 64) break;
+        }
+
+        if (highlighter.Ranges.Count > 0)
+            block.TextHighlighters.Add(highlighter);
+    }
+
+    private void OnResultsDragItemsStarting(object sender, DragItemsStartingEventArgs e)
+    {
+        var items = e.Items.OfType<SearchItemViewModel>().Where(i => System.IO.File.Exists(i.Path)).ToArray();
+        if (items.Length == 0)
+        {
+            e.Cancel = true;
+            return;
+        }
+        e.Data.RequestedOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy;
+        e.Data.SetText(string.Join(Environment.NewLine, items.Select(i => i.Path)));
+        e.Data.SetDataProvider(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems, async request =>
+        {
+            var deferral = request.GetDeferral();
+            try
+            {
+                var storageFiles = new List<Windows.Storage.IStorageItem>();
+                foreach (var item in items)
+                {
+                    try { storageFiles.Add(await Windows.Storage.StorageFile.GetFileFromPathAsync(item.Path)); }
+                    catch { }
+                }
+                if (storageFiles.Count > 0) request.SetData(storageFiles);
+            }
+            finally
+            {
+                deferral.Complete();
+            }
+        });
+    }
+
+    private void OnContextOpenClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item) _ = ViewModel.OpenHitAsync(item);
+    }
+
+    private void OnContextRevealClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item) _ = ViewModel.RevealHitAsync(item);
+    }
+
+    private void OnContextCopyExcerptClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item)
+        {
+            var dp = new Windows.ApplicationModel.DataTransfer.DataPackage();
+            dp.SetText(!string.IsNullOrWhiteSpace(item.Excerpt) ? item.Excerpt : item.Path);
+            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dp);
+        }
+    }
+
+    private async void OnContextCopyPathClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item) await ViewModel.CopyHitAsync(item);
+    }
+
+    private async void OnContextPreviewClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item) await ShowPreviewAsync(item, keyboard: false);
     }
 
     public void SetInitialQuery(string query, string? kind = null)
@@ -68,7 +216,48 @@ public sealed partial class SearchPage : Page
     {
         if (e.ClickedItem is SearchItemViewModel item)
         {
+            var idx = ViewModel.Hits.IndexOf(item);
+            if (idx >= 0) ViewModel.SelectedIndex = idx;
+        }
+    }
+
+    private void OnResultsDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        if (ViewModel.SelectedItem is { } item)
+        {
             _ = ViewModel.OpenHitAsync(item);
+        }
+    }
+
+    private void OnOpenSelectedClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SelectedItem is { } item)
+        {
+            _ = ViewModel.OpenHitAsync(item);
+        }
+    }
+
+    private void OnRevealSelectedClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SelectedItem is { } item)
+        {
+            _ = ViewModel.RevealHitAsync(item);
+        }
+    }
+
+    private async void OnCopySelectedClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SelectedItem is { } item)
+        {
+            await ViewModel.CopyHitAsync(item);
+        }
+    }
+
+    private async void OnPreviewSelectedClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SelectedItem is { } selected)
+        {
+            await ShowPreviewAsync(selected, keyboard: false);
         }
     }
 
@@ -229,4 +418,10 @@ public sealed partial class SearchPage : Page
 
     public Visibility GetEmptyStateVisibility(int hitCount, bool isLoading) =>
         hitCount == 0 && !isLoading ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility GetResultsVisibility(int hitCount) =>
+        hitCount > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility GetSelectedVisibility(SearchItemViewModel? item) =>
+        item is not null ? Visibility.Visible : Visibility.Collapsed;
 }

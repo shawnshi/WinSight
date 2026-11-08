@@ -121,7 +121,7 @@ public string RebuildStatus => rebuildStatus;
                 {
                     await using var probe = new SqliteIndexRepository(database);
                     await probe.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-                    var files = await probe.ReadFilesAsync(CancellationToken.None).ConfigureAwait(false);
+                    var files = await probe.ReadFileHeadersAsync(CancellationToken.None).ConfigureAwait(false);
                     return files.Count == 0 ? Array.Empty<string>() : new[] { "files:" + files.Count };
                 }, CancellationToken.None).ConfigureAwait(false);
                 repositories.Clear();

@@ -70,6 +70,37 @@ try
         await Throws<OperationCanceledException>(() => store.SaveAsync(new AppSettings(), canceled.Token));
         Check(!File.Exists(store.SettingsPath), "Canceled save committed.");
     });
+    await Test("SEARCH-AUTHORIZER-MATCHES-SLOW-CHECK", async () =>
+    {
+        var data = Path.Combine(root, "authorizer");
+        var a = Path.Combine(root, "scope-a");
+        var b = Path.Combine(root, "scope-b");
+        var settings = new AppSettings
+        {
+            Folders = [a, Path.Combine(a, "sub", "keep"), b + Path.DirectorySeparatorChar],
+            Skipped = [Path.Combine(a, "sub"), b, Path.Combine(b, "private")],
+            CodeFolders = [Path.Combine(root, "code")],
+        };
+        await new JsonSettingsStore(Path.Combine(data, "settings.json")).SaveAsync(settings);
+        await using var backend = await DesktopBackend.CreateAsync(new DesktopOptions(data));
+        var candidates = new[]
+        {
+            a, Path.Combine(a, "x.txt"), Path.Combine(a, "sub", "x.txt"), Path.Combine(a, "sub", "keep", "y.txt"),
+            Path.Combine(a, "SUB", "Keep", "Y.TXT"), Path.Combine(a, "subtle", "z.txt"), Path.Combine(a + "x", "z.txt"),
+            Path.Combine(b, "x.txt"), Path.Combine(b, "private", "x.txt"), Path.Combine(root, "elsewhere", "x.txt"),
+            Path.Combine(data, "index", "index.sqlite"), Path.Combine(data, "x.txt"), a + "/forward/slash.txt",
+            Path.Combine(a, "dir", "..", "sub", "x.txt"), Path.Combine(a, ".hidden", "x.txt"), Path.Combine(root, "code", "main.cs"),
+            a + Path.DirectorySeparatorChar,
+        };
+        foreach (var code in new[] { false, true })
+        {
+            var fast = backend.CreateAuthorizer(code);
+            foreach (var path in candidates)
+                Check(fast(path) == backend.IsAuthorizedResult(path, code), $"Authorizer differs for {path} (code={code}).");
+        }
+        Check(!backend.CreateAuthorizer(false)(Path.Combine(a, "sub", "x.txt")) && backend.CreateAuthorizer(false)(Path.Combine(a, "sub", "keep", "y.txt")),
+            "Nested root must override its ancestor's skip.");
+    });
     await Test("RUNTIME-NO-ROOT-NO-MODEL", async () =>
     {
         await using var backend = await DesktopBackend.CreateAsync(new DesktopOptions(Path.Combine(root, "runtime")));

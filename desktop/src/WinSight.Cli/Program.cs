@@ -80,10 +80,10 @@ try
                 "keyword" => SearchMode.Keyword, "hybrid" => SearchMode.Hybrid, "semantic" => SearchMode.Semantic,
                 _ => throw new ArgumentException("--mode must be keyword, hybrid or semantic.")
             };
-            var limit = 50;
+            var limit = 200;
             if (One("--limit") is { } text && !int.TryParse(text, out limit))
                 throw new ArgumentException("--limit must be an integer.");
-            if (limit is < 1 or > 200) throw new ArgumentException("--limit must be in 1..200.");
+            if (limit is < 1 or > 2000) throw new ArgumentException("--limit must be in 1..2000.");
             response = await backend.SearchAsync(new SearchRequest(query, limit, mode, One("--kind"), One("--root")), stop.Token);
             break;
         case "index":

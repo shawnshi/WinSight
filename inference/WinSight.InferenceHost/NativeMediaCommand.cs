@@ -282,7 +282,7 @@ internal static partial class NativeMediaCommand
         ValidateAncestors(path, includeLeaf: true);
         if ((File.GetAttributes(path) & FileAttributes.Directory) != 0) throw new IOException("Input must be a regular file.");
         // OPEN_REPARSE_POINT checks the opened leaf itself rather than trusting only a preceding name lookup.
-        var handle = CreateFile(path, 0x80000000, 1, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero);
+        var handle = CreateFile(path, 0x80000000, 1 | 2 | 4, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero);
         if (handle.IsInvalid)
         {
             var error = Marshal.GetLastWin32Error();

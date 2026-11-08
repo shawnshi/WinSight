@@ -114,6 +114,24 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public string IndexPath => status?.IndexPath ?? "Default";
     public string? StatusDetail => status?.Detail;
 
+    public string StatsSummary
+    {
+        get
+        {
+            if (status is null || status.Files == 0) return "暂无已索引文件";
+            if (status.Pending > 0 || status.Failed > 0 || status.Partial > 0)
+            {
+                var parts = new List<string>();
+                parts.Add($"{status.Done} 完成");
+                if (status.Partial > 0) parts.Add($"{status.Partial} 部分");
+                if (status.Pending > 0) parts.Add($"{status.Pending} 待处理");
+                if (status.Failed > 0) parts.Add($"{status.Failed} 失败");
+                return $"已入库: {string.Join(", ", parts)} / 共 {status.Files}";
+            }
+            return $"已入库: {status.Done} / {status.Files}";
+        }
+    }
+
     public bool IsIndexingActive
     {
         get => isIndexingActive;
@@ -229,10 +247,30 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 return;
             }
 
+            var lastRefresh = System.Diagnostics.Stopwatch.StartNew();
             var progress = new Progress<IndexProgress>(p =>
             {
                 if (!lifetime.IsCancellationRequested && !isPauseControlBusy && IndexingState == IndexingControlState.Running)
-                    StatusMessage = $"{p.Phase}: {p.Completed} completed, {p.Failed} failed{(p.Detail is not null ? $" ({p.Detail})" : "")}";
+                {
+                    string phaseText = p.Phase switch
+                    {
+                        "pending" => "正在处理",
+                        "done" => "已完成",
+                        "failed" => "失败",
+                        "skipped" => "已跳过",
+                        "partial" => "部分完成",
+                        "unchanged" => "未改动",
+                        "finished" => "索引扫描结束",
+                        _ => p.Phase
+                    };
+                    var fileName = !string.IsNullOrEmpty(p.Path) ? System.IO.Path.GetFileName(p.Path) : null;
+                    StatusMessage = $"{phaseText}: 已处理 {p.Completed} 个{(p.Failed > 0 ? $", {p.Failed} 失败" : "")}{(fileName is not null ? $" — {fileName}" : "")}";
+                    if (lastRefresh.ElapsedMilliseconds >= 1500)
+                    {
+                        lastRefresh.Restart();
+                        _ = RefreshStatusAsync();
+                    }
+                }
             });
 
             // NM-UI-05: Handle document folders and code folders separately.
@@ -245,7 +283,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     Excluded: settings.Skipped,
                     SkipTypes: settings.SkipTypes,
                     Code: false,
-                    AllowPowerPointAutomation: true);
+                    AllowPowerPointAutomation: true,
+                    GeneratePageImages: settings.GeneratePageImages);
 
                 await backend.IndexAsync(docRequest, progress, ct);
             }
@@ -264,7 +303,28 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
             await RefreshStatusAsync();
             if (!lifetime.IsCancellationRequested && !isPauseControlBusy && IndexingState == IndexingControlState.Running)
-                StatusMessage = "Indexing completed successfully.";
+            {
+                if (status is not null)
+                {
+                    if (status.Pending > 0 || status.Failed > 0)
+                    {
+                        var parts = new List<string>();
+                        parts.Add($"{status.Done} 完成");
+                        if (status.Partial > 0) parts.Add($"{status.Partial} 部分");
+                        if (status.Pending > 0) parts.Add($"{status.Pending} 待处理");
+                        if (status.Failed > 0) parts.Add($"{status.Failed} 失败");
+                        StatusMessage = $"索引未完成：{string.Join("，", parts)} / 共 {status.Files}。";
+                    }
+                    else
+                    {
+                        StatusMessage = $"索引完成：共 {status.Files} 个文件全部入库。";
+                    }
+                }
+                else
+                {
+                    StatusMessage = "索引完成。";
+                }
+            }
         }
         catch (OperationCanceledException)
         {

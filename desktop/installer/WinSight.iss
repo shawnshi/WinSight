@@ -8,10 +8,10 @@
   #error Pass /DPayloadDir=<staged app folder>; use scripts/Build-NativeInstaller.ps1.
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #define AppVersion "0.9.0"
 #endif
 #ifndef NumericVersion
-  #define NumericVersion "0.3.0.0"
+  #define NumericVersion "0.9.0.0"
 #endif
 #ifndef OutputDir
   #define OutputDir "."
@@ -35,7 +35,9 @@ UninstallDisplayName=WinSight
 UninstallDisplayIcon={app}\WinSight.App.exe
 OutputDir={#OutputDir}
 OutputBaseFilename=WinSight-{#AppVersion}-x64-setup
-Compression=lzma2
+Compression=lzma2/ultra64
+LZMAUseSeparateProcess=yes
+LZMADictionarySize=131072
 SolidCompression=yes
 WizardStyle=modern
 SetupLogging=yes
@@ -59,14 +61,15 @@ Name: "desktopicon"; Description: "创建桌面快捷方式 (&Desktop shortcut)"
 Name: "addtopath"; Description: "将 WinSight 工具添加至系统 PATH 环境变量 (&Add to PATH)"; Flags: unchecked
 
 [Files]
-Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PayloadDir}\*"; Excludes: "models\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PayloadDir}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\WinSight"; Filename: "{app}\WinSight.App.exe"
 Name: "{autodesktop}\WinSight"; Filename: "{app}\WinSight.App.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\WinSight.App.exe"; Description: "启动 WinSight (Start WinSight)"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\WinSight.App.exe"; Description: "启动 WinSight (Start WinSight)"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [Code]
 const

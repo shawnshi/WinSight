@@ -14,6 +14,7 @@ public static class Program
         if (!CommandLineParser.TryParse(args, out var dataDir, out var isSmokeTest, out var isToggle, out var isAutostart, out var error))
         {
             Console.Error.WriteLine($"[FATAL] Command line error: {error}");
+            FatalErrorDialog.Show("WinSight 无法启动 / WinSight could not start", $"命令行参数无效 / Invalid command line: {error}");
             Environment.ExitCode = 2;
             return;
         }

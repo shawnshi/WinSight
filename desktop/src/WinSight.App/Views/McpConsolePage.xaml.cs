@@ -22,4 +22,6 @@ public sealed partial class McpConsolePage : Page
     private async void OnRefreshClick(object sender, RoutedEventArgs e) => await ViewModel.RefreshAsync();
 
     private async void OnDrainClick(object sender, RoutedEventArgs e) => await ViewModel.DrainAsync();
+
+    private void OnCopyConfigClick(object sender, RoutedEventArgs e) => ViewModel.CopyConfig();
 }

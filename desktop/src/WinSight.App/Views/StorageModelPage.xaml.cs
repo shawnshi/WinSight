@@ -8,17 +8,27 @@ namespace WinSight.App.Views;
 public sealed partial class StorageModelPage : Page
 {
     public StorageModelViewModel ViewModel { get; }
+    private readonly DispatcherTimer refreshTimer;
 
     public StorageModelPage(IDesktopBackend backend, AppSettings? settings = null)
     {
         ViewModel = new StorageModelViewModel(backend);
         InitializeComponent();
+        refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        refreshTimer.Tick += async (_, _) => await ViewModel.RefreshStatusAsync();
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
+        refreshTimer.Start();
         await ViewModel.RefreshStatusAsync();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        refreshTimer.Stop();
     }
 
     private async void OnInspectModelClick(object sender, RoutedEventArgs e)
@@ -38,5 +48,10 @@ public sealed partial class StorageModelPage : Page
     private async void OnRefreshQueueClick(object sender, RoutedEventArgs e)
     {
         await ViewModel.RefreshQueueStatusAsync();
+    }
+
+    private async void OnRetryFailedClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.RetryFailedAsync();
     }
 }

@@ -40,10 +40,17 @@ public static class FileActionService
                     return new ActionResult(true, plan.NoticeMessage);
 
                 case ActionPlanType.RevealInExplorer:
+                    var arg0 = plan.Arguments.Count > 0 ? plan.Arguments[0] : "";
+                    if (arg0.StartsWith("/select,\"", StringComparison.OrdinalIgnoreCase) && arg0.EndsWith('"'))
+                    {
+                        var rawTarget = arg0[9..^1];
+                        if (NativeMethods.RevealInExplorerNative(rawTarget))
+                            return new ActionResult(true, null);
+                    }
                     var revealPsi = new ProcessStartInfo
                     {
                         FileName = "explorer.exe",
-                        Arguments = plan.Arguments.Count > 0 ? plan.Arguments[0] : "",
+                        Arguments = arg0,
                         UseShellExecute = false
                     };
                     Process.Start(revealPsi);

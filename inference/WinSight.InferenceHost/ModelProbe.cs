@@ -12,11 +12,10 @@ internal static class ModelProbe
             ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
             GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
             InterOpNumThreads = 1,
-            IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount / 2, 1, 4),
+            IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount / 2, 1, 10),
             LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING
         };
-        // No accelerator is appended and no dynamic provider is registered: ORT's default is CPU.
-        options.AddSessionConfigEntry("session.intra_op.allow_spinning", "0");
+        options.AddSessionConfigEntry("session.intra_op.allow_spinning", "1");
         return options;
     }
 

@@ -10,11 +10,58 @@ using WinSight.Infrastructure.Media;
 using WinSight.Infrastructure.Search;
 using WinSight.Infrastructure.Storage;
 
+using System.Text.Json.Nodes;
+
 namespace WinSight.Infrastructure.Runtime;
 
 public sealed partial class DesktopBackend
 {
-/// <summary>
+    /// <summary>
+    /// Generates a ready-to-use MCP client configuration snippet (in standard mcpServers format)
+    /// suitable for pasting directly into Claude Desktop, Cursor, Windsurf, Cline, etc.
+    /// </summary>
+    public Task<string> GetMcpClientConfigSnippetAsync(string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default)
+    {
+        var bridge = Path.Combine(applicationDirectory, "bridge", "winsight-mcp.exe");
+        if (!File.Exists(bridge))
+        {
+            var defaultInstall = @"C:\Program Files\WinSight\bridge\winsight-mcp.exe";
+            if (File.Exists(defaultInstall)) bridge = defaultInstall;
+        }
+
+        var indexPath = Path.Combine(IndexDirectory, "index.sqlite");
+        var isHttp = string.Equals(transport, "http", StringComparison.OrdinalIgnoreCase);
+
+        JsonObject serverObj;
+        if (isHttp)
+        {
+            var port = httpPort is >= 1024 and <= 65535 ? httpPort : 8765;
+            serverObj = new JsonObject
+            {
+                ["url"] = $"http://127.0.0.1:{port}/mcp/"
+            };
+        }
+        else
+        {
+            serverObj = new JsonObject
+            {
+                ["command"] = bridge,
+                ["args"] = new JsonArray { "--index", indexPath, "--stdio" }
+            };
+        }
+
+        var root = new JsonObject
+        {
+            ["mcpServers"] = new JsonObject
+            {
+                ["winsight"] = serverObj
+            }
+        };
+
+        return Task.FromResult(root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    /// <summary>
     /// Inspects a client configuration the user pointed at. Nothing is written and no client is scanned for.
     /// </summary>
     public async Task<ClientConfigPreview?> PreviewClientConfigAsync(string configPath, string transport = "stdio", int httpPort = 0, CancellationToken cancellationToken = default)
@@ -164,13 +211,16 @@ public async Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancell
         ObjectDisposedException.ThrowIf(stopping != 0, this);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetimeStop.Token);
         cancellationToken = linked.Token;
+        IEmbeddingService client;
         await lifecycle.WaitAsync(cancellationToken);
         try
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            return await GetEmbeddings().GetInfoAsync(cancellationToken);
+            client = GetEmbeddings();
         }
         finally { lifecycle.Release(); }
+        // The host call may queue behind inference work or start the child; never hold the global lifecycle lock for it.
+        return await client.GetInfoAsync(cancellationToken);
     }
 
 /// <summary>
@@ -185,12 +235,13 @@ public async Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancell
         settings.ManifestPath ?? Path.Combine(applicationDirectory, "inference", "model-manifest.json"),
         settings.Accelerator);
 
-private string ResolveInferenceExecutable()
+    private string ResolveInferenceExecutable()
     {
         var defaultHost = Path.Combine(applicationDirectory, "inference", "WinSight.InferenceHost.exe");
-        if (!string.Equals(settings.Accelerator, "npu", StringComparison.OrdinalIgnoreCase)) return defaultHost;
         var winMlHost = Path.Combine(applicationDirectory, "inference", "winml", "WinSight.WinMlHost.exe");
-        return File.Exists(winMlHost) ? winMlHost : defaultHost;
+        if (File.Exists(winMlHost) && !string.Equals(settings.Accelerator, "cpu", StringComparison.OrdinalIgnoreCase))
+            return winMlHost;
+        return defaultHost;
     }
 
 /// <summary>

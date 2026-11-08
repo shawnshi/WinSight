@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using WinSight.Infrastructure.Extraction;
 
 namespace WinSight.Infrastructure.Storage;
 
@@ -37,7 +38,7 @@ public static class IndexRebuildCoordinator
             // profile has no vectors to invalidate (fresh, or keyword-only content) and must not be rebuilt just for existing:
             // the rebuild would replace it with an empty staging copy and discard rows a cancelled first run had queued.
             var storedProfile = meta.GetValueOrDefault("profile_id");
-            if (!string.IsNullOrEmpty(storedProfile) && storedProfile != expectedProfile) return true;
+            if (!string.IsNullOrEmpty(storedProfile) && !FilePolicy.IsCompatibleProfile(expectedProfile, storedProfile)) return true;
             if (meta.GetValueOrDefault("lexicon_schema") != LexiconSchema) return true;
             var stored = meta.GetValueOrDefault("dictionary_fingerprint");
             // An unset fingerprint on a database with content means the identity is unknown: rebuild once.

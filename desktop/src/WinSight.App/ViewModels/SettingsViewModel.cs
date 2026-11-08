@@ -1,7 +1,10 @@
 using WinSight.Core.Diagnostics;
 using System.ComponentModel;
+using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using WinSight.Core;
 using WinSight.App.Services;
 
@@ -195,6 +198,11 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(UpdateFeedUrl));
         OnPropertyChanged(nameof(Accelerator));
         OnPropertyChanged(nameof(InstallExecutionProviders));
+        OnPropertyChanged(nameof(GeneratePageImages));
+
+        enableMcpServer = s.EnableMcpServer;
+        OnPropertyChanged(nameof(EnableMcpServer));
+        UpdateMcpConfigSnippet();
     }
 
     public async Task<bool> SaveAsync()
@@ -204,7 +212,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             Hotkey = hotkey, BackgroundIndexing = backgroundIndexingEnabled, BackgroundTouched = backgroundIndexingTouched,
             BackgroundRevision = backgroundEditRevision, HoursOn = indexHoursOn, HoursStart = indexHoursStart, HoursEnd = indexHoursEnd,
             ProcessorOnly = processorOnly, TrayClick = trayClick, Theme = theme, CodeEditor = codeEditor, OpenAtLogin = openAtLogin, UpdateFeedUrl = updateFeedUrl,
-            Accelerator = accelerator, InstallExecutionProviders = installExecutionProviders, GeneratePageImages = generatePageImages
+            Accelerator = accelerator, InstallExecutionProviders = installExecutionProviders, GeneratePageImages = generatePageImages,
+            EnableMcpServer = enableMcpServer
         };
         await saveGate.WaitAsync();
         string? previousHotkey = null;
@@ -265,6 +274,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             latest.UpdateFeedUrl = string.IsNullOrWhiteSpace(input.UpdateFeedUrl) ? null : input.UpdateFeedUrl.Trim();
             latest.Accelerator = input.Accelerator;
             latest.InstallExecutionProviders = input.InstallExecutionProviders;
+            latest.GeneratePageImages = input.GeneratePageImages;
+            latest.EnableMcpServer = input.EnableMcpServer;
             await backend.SaveSettingsAsync(latest);
             settings = latest;
             if (backgroundEditRevision == input.BackgroundRevision) backgroundIndexingTouched = false;
@@ -416,7 +427,13 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public bool GeneratePageImages
     {
         get => generatePageImages;
-        set => SetProperty(ref generatePageImages, value);
+        set
+        {
+            if (SetProperty(ref generatePageImages, value))
+            {
+                _ = SaveAsync();
+            }
+        }
     }
 
     public async Task RefreshVectorScaleAsync()
@@ -568,7 +585,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             var id = await backend.GrantMaintenanceAsync();
             maintenanceSummary = id is null
                 ? "This build cannot create a maintenance grant."
-                : "Grant created. Give the client this identifier: " + id + ". Revoke it when you are done.";
+                : "Grant created (" + id + "). The MCP bridge on this account now presents it automatically, so any agent using the bridge can request indexing of folders you have already authorized. Revoke it when you are done.";
         }
         catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -655,6 +672,85 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         var backup = plan.BackupPath is { Length: > 0 } path ? " Backup: " + System.IO.Path.GetFileName(path) + "." : "";
         var reason = plan.BlockReason is { Length: > 0 } detail ? " " + detail : "";
         return $"{verb}: {state}. {plan.Summary}{reason}{backup}";
+    }
+
+    private bool enableMcpServer;
+    private string mcpConfigSnippet = "";
+    private string mcpCopyStatusMessage = "";
+
+    public bool EnableMcpServer
+    {
+        get => enableMcpServer;
+        set
+        {
+            if (SetProperty(ref enableMcpServer, value))
+            {
+                if (enableMcpServer) UpdateMcpConfigSnippet();
+            }
+        }
+    }
+
+    public string McpConfigSnippet
+    {
+        get => mcpConfigSnippet;
+        private set => SetProperty(ref mcpConfigSnippet, value);
+    }
+
+    public string McpCopyStatusMessage
+    {
+        get => mcpCopyStatusMessage;
+        set => SetProperty(ref mcpCopyStatusMessage, value);
+    }
+
+    public void UpdateMcpConfigSnippet()
+    {
+        var appDir = AppContext.BaseDirectory;
+        var bridge = Path.Combine(appDir, "bridge", "winsight-mcp.exe");
+        if (!File.Exists(bridge))
+        {
+            var defaultInstall = @"C:\Program Files\WinSight\bridge\winsight-mcp.exe";
+            if (File.Exists(defaultInstall)) bridge = defaultInstall;
+        }
+
+        var indexDir = "D:\\WinSightIndex";
+        try
+        {
+            var prop = backend.GetType().GetProperty("IndexDirectory");
+            if (prop?.GetValue(backend) is string dir && !string.IsNullOrWhiteSpace(dir))
+                indexDir = dir;
+        }
+        catch { }
+        var indexPath = Path.Combine(indexDir, "index.sqlite");
+
+        var doc = new JsonObject
+        {
+            ["mcpServers"] = new JsonObject
+            {
+                ["winsight"] = new JsonObject
+                {
+                    ["command"] = bridge,
+                    ["args"] = new JsonArray
+                    {
+                        "--index",
+                        indexPath,
+                        "--stdio"
+                    }
+                }
+            }
+        };
+
+        McpConfigSnippet = doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    public void CopyMcpConfig()
+    {
+        if (string.IsNullOrWhiteSpace(mcpConfigSnippet)) UpdateMcpConfigSnippet();
+#if WINDOWS
+        var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
+        dataPackage.SetText(mcpConfigSnippet);
+        Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
+#endif
+        McpCopyStatusMessage = "✓ 已成功复制 MCP 配置到剪贴板！可直接粘贴至 Claude Desktop、Cursor 等客户端配置文件中。";
     }
 
     /// <summary>Live view of the isolated Windows ML host: the devices it sees and the gate's own verdict text.</summary>

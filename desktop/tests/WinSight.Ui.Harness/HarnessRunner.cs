@@ -121,8 +121,9 @@ public static class HarnessRunner
             vm.Query = "abc";
             vm.Query = "patient";
 
-            await Task.Delay(100);
+            await Task.Delay(500);
 
+            if (backend.SearchCallCount > 1) throw new Exception($"Debounce should collapse rapid typing into one search, saw {backend.SearchCallCount}");
             if (vm.Hits.Count == 0) throw new Exception("Expected search hits for 'patient'");
             var top = vm.Hits[0];
             if (string.IsNullOrEmpty(top.FileName)) throw new Exception("Search hit missing filename");
@@ -130,7 +131,7 @@ public static class HarnessRunner
             if (string.IsNullOrEmpty(top.IconGlyph)) throw new Exception("Search hit missing icon glyph");
 
             vm.SelectedKind = "code";
-            await Task.Delay(50);
+            await Task.Delay(400);
             foreach (var hit in vm.Hits)
             {
                 if (!string.Equals(hit.Kind, "code", StringComparison.OrdinalIgnoreCase))

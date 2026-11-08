@@ -13,7 +13,7 @@ public sealed partial class MainWindow : Window
     public MainWindowViewModel ViewModel { get; }
     private readonly IDesktopBackend backend;
     private readonly string? dataDirectory;
-    private readonly AppSettings settings;
+    private AppSettings settings;
     private readonly HotkeyService? hotkeyService;
     private readonly IntPtr windowHandle;
     private readonly AppWindow appWindow;
@@ -47,6 +47,12 @@ public sealed partial class MainWindow : Window
         }
 
         appWindow.Closing += OnAppWindowClosing;
+
+        backend.SettingsSaved += saved =>
+        {
+            this.settings = saved;
+            DispatcherQueue.TryEnqueue(() => ApplyTheme(saved.Theme));
+        };
 
         ApplyTheme(this.settings.Theme);
 
@@ -148,6 +154,6 @@ public sealed partial class MainWindow : Window
         await ViewModel.TriggerIndexNowAsync();
     }
 
-    public string FormatStats(int done, int total) => $"Indexed: {done} / {total}";
+    public string FormatStats(int done, int total) => ViewModel.StatsSummary;
     public bool Invert(bool value) => !value;
 }

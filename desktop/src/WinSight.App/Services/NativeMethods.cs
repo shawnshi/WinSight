@@ -160,4 +160,35 @@ internal static class NativeMethods
     /// <summary>Registers a window message; "TaskbarCreated" is broadcast when Explorer (re)creates the taskbar.</summary>
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern uint RegisterWindowMessage(string name);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern int SHParseDisplayName(string pszName, IntPtr pbc, out IntPtr ppidl, uint sfgaoIn, out uint psfgaoOut);
+
+    [DllImport("shell32.dll")]
+    public static extern int SHOpenFolderAndSelectItems(IntPtr pidlFolder, uint cidl, IntPtr[]? apidl, uint dwFlags);
+
+    [DllImport("shell32.dll")]
+    public static extern void ILFree(IntPtr pidl);
+
+    public static bool RevealInExplorerNative(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath)) return false;
+        IntPtr pidl = IntPtr.Zero;
+        try
+        {
+            if (SHParseDisplayName(fullPath, IntPtr.Zero, out pidl, 0, out _) == 0 && pidl != IntPtr.Zero)
+            {
+                return SHOpenFolderAndSelectItems(pidl, 0, null, 0) == 0;
+            }
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            if (pidl != IntPtr.Zero) ILFree(pidl);
+        }
+    }
 }

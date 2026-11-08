@@ -77,3 +77,46 @@ jobs:
               dotnet run --project $project --no-build --no-restore --configuration Debug -- @arguments
               if ($LASTEXITCODE -ne 0) { throw "Suite failed: $($run.Suite) $($run.Args -join ' ')" }
           }
+  product-build:
+    # The suites above only compile what they test. This job compiles every executable that ships in the installer
+    # (WinUI app, CLI, MCP bridge and the four inference hosts) from locked restores, so a green run means the
+    # payload can actually be built.
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Provision exact SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: '11.0.100-rc.2.26504.105'
+          cache: false
+      - name: Build native Chinese segmenter
+        working-directory: native/winsight-segmenter
+        run: cargo build --release --locked
+      - name: Build native tokenizer with its source binding receipt
+        shell: pwsh
+        run: |
+          # The build script itself is offline and locked; fetch the pinned crates first.
+          cargo fetch --locked --manifest-path native/winsight-tokenizer/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'cargo fetch failed.' }
+          ./scripts/build-native-tokenizer.ps1
+      - name: Restore (locked) and build the shipped executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $projects = @(
+              'desktop/src/WinSight.App/WinSight.App.csproj',
+              'desktop/src/WinSight.Cli/WinSight.Cli.csproj',
+              'desktop/src/WinSight.Bridge/WinSight.Bridge.csproj',
+              'inference/WinSight.InferenceHost/WinSight.InferenceHost.csproj',
+              'inference/WinSight.OcrHost/WinSight.OcrHost.csproj',
+              'inference/WinSight.FoundryHost/WinSight.FoundryHost.csproj',
+              'inference/WinSight.WinMlHost/WinSight.WinMlHost.csproj'
+          )
+          foreach ($project in $projects) {
+              # The committed lock files were produced with an explicit RID; restoring without it reports NU1004.
+              dotnet restore $project -r win-x64 --locked-mode
+              if ($LASTEXITCODE -ne 0) { throw "Restore failed: $project" }
+              dotnet build $project -r win-x64 --no-restore --configuration Release
+              if ($LASTEXITCODE -ne 0) { throw "Build failed: $project" }
+          }

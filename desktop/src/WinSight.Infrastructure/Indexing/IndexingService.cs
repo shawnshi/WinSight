@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using WinSight.Core;
 using WinSight.Infrastructure.Extraction;
 using WinSight.Infrastructure.Media;
+using WinSight.Infrastructure.Search;
 
 namespace WinSight.Infrastructure.Indexing;
 
@@ -15,6 +16,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
     private readonly NativeMediaSamplingService? mediaSampling;
     private readonly NativeDocumentPages? documentPages;
     private readonly NativePresentationPages? presentationPages;
+    private EmbeddingInfo? cachedEmbeddingInfo;
 
     internal IndexingService(IIndexRepository repository, IContentExtractor extractor, IEmbeddingService? embeddings,
         NativeMediaSamplingService? mediaSampling, NativeDocumentPages? documentPages = null) : this(repository,extractor,embeddings,mediaSampling,documentPages,null) { }
@@ -55,7 +57,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
         try
         {
             await repository.InitializeAsync(cancellationToken);
-            var existing = await repository.ReadFilesAsync(cancellationToken);
+            var existing = await repository.ReadFileHeadersAsync(cancellationToken);
             var info = embeddings is null ? null : await embeddings.GetInfoAsync(cancellationToken);
             await GuardMetadataAsync(existing, info, request.Code, cancellationToken);
             var crawls = new List<Crawl>();
@@ -222,9 +224,20 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
         try
         {
             await repository.InitializeAsync(cancellationToken);
-            var existing = await repository.ReadFilesAsync(cancellationToken);
-            var info = embeddings is null ? null : await embeddings.GetInfoAsync(cancellationToken);
-            await GuardMetadataAsync(existing, info, code, cancellationToken);
+            var normalizedPaths = paths.Select(FilePolicy.Normalize).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var stored = await repository.GetMetaAsync("indexing_fingerprint", cancellationToken);
+            var profile = await repository.GetMetaAsync("profile_id", cancellationToken);
+            var info = embeddings is null ? null : (cachedEmbeddingInfo ??= await embeddings.GetInfoAsync(cancellationToken));
+            if (stored is null || (info is not null && profile is null))
+            {
+                var allFiles = await repository.ReadFileHeadersAsync(cancellationToken);
+                await GuardMetadataAsync(allFiles, info, code, cancellationToken, writeIfUnchanged: false);
+            }
+            else
+            {
+                await GuardMetadataAsync([], info, code, cancellationToken, writeIfUnchanged: false);
+            }
+            var existing = await repository.ReadFileHeadersByPathsAsync(normalizedPaths, cancellationToken);
             var previous = existing.ToDictionary(f => FilePolicy.Normalize(f.Path), StringComparer.OrdinalIgnoreCase);
 
             var completed = 0;
@@ -259,7 +272,10 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                 previous.TryGetValue(normPath, out var oldFile);
 
                 var row = new IndexedFile(oldFile?.Id ?? 0, oldFile?.Path ?? normPath, candidate.Kind, candidate.Size, candidate.Mtime, "pending", null, null, []);
-                await repository.UpsertFileAsync(row, cancellationToken);
+                if (oldFile is not { State: "pending" } || oldFile.Size != candidate.Size || Math.Abs(oldFile.ModifiedTime - candidate.Mtime) >= 0.001)
+                {
+                    await repository.UpsertFileAsync(row, cancellationToken);
+                }
                 progress?.Report(new("pending", normPath, completed, failed, partial));
 
                 var result = await ProcessAsync(candidate, code, info, new DocumentExtractionOptions(), false, cancellationToken);
@@ -298,7 +314,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
         finally { runGate.Release(); }
     }
 
-    private async Task GuardMetadataAsync(IReadOnlyList<IndexedFile> files, EmbeddingInfo? info, bool code, CancellationToken token)
+    private async Task GuardMetadataAsync(IReadOnlyList<IndexedFile> files, EmbeddingInfo? info, bool code, CancellationToken token, bool writeIfUnchanged = true)
     {
         var fingerprint = "native-extraction-v2|" + (code ? "code-lines1800-cells" : "documents-tok450-ov50-pdfpig0.1.16-imagehost");
         var stored = await repository.GetMetaAsync("indexing_fingerprint", token);
@@ -309,12 +325,12 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
         {
             if (string.IsNullOrWhiteSpace(info.ProfileId) || info.Dimension != VectorContract.Dimension)
                 throw new InvalidDataException("Embedding profile must be identified and have dimension 768.");
-            if (profile is not null && profile != info.ProfileId || profile is null && files.Any(f => f.Segments.Any(s => s.Vector is not null)))
+            if (profile is not null && !FilePolicy.IsCompatibleProfile(info.ProfileId, profile) || profile is null && files.Any(f => f.Segments.Any(s => s.Vector is not null)))
                 throw new InvalidDataException("Index model profile differs or is missing. Rebuild in a separate empty index; Force never mixes vectors.");
         }
         // All guards precede all metadata writes. A crash between writes remains fail-closed on the next run.
         if (stored is null) await repository.SetMetaAsync("indexing_fingerprint", fingerprint, token);
-        if (info is not null)
+        if (info is not null && (writeIfUnchanged || profile != info.ProfileId))
         {
             await repository.SetMetaAsync("profile_id", info.ProfileId, token);
             await repository.SetMetaAsync("embedding_info", JsonSerializer.Serialize(info), token);
@@ -352,14 +368,19 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                     }
                 }
                 var project = item.Project || FilePolicy.ProjectMarkers.Any(m => File.Exists(Path.Combine(item.Path, m)) || Directory.Exists(Path.Combine(item.Path, m)));
-                foreach (var entry in Directory.EnumerateFileSystemEntries(item.Path, "*", new EnumerationOptions { RecurseSubdirectories = false, IgnoreInaccessible = false, AttributesToSkip = 0 }))
+                var entries = new System.IO.Enumeration.FileSystemEnumerable<(string FullPath, FileAttributes Attributes, long Length, double Mtime)>(
+                    item.Path,
+                    (ref System.IO.Enumeration.FileSystemEntry entry) =>
+                        (entry.ToFullPath(), entry.Attributes, entry.Length, entry.LastWriteTimeUtc.ToUnixTimeMilliseconds() / 1000.0),
+                    new EnumerationOptions { RecurseSubdirectories = false, IgnoreInaccessible = false, AttributesToSkip = 0 });
+                foreach (var entry in entries)
                 {
                     token.ThrowIfCancellationRequested();
                     if (++count > remainingEntries) throw new IOException($"Walk exceeds {MaxWalkEntries} entries; reconciliation disabled for this root.");
-                    var path = FilePolicy.Normalize(entry);
+                    var path = FilePolicy.Normalize(entry.FullPath);
                     if (!FilePolicy.Inside(path, root)) throw new IOException("Enumeration escaped authorized root.");
                     if (skips.Any(s => FilePolicy.Under(path, s))) continue;
-                    var attributes = File.GetAttributes(path);
+                    var attributes = entry.Attributes;
                     if (FilePolicy.Unsafe(attributes))
                     {
                         skippedUnsafe++;
@@ -383,10 +404,9 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                     if (kind is null || (!request.Code && project && kind != "screenshot")) continue;
                     if (repositoryFiles is not null && !repositoryFiles.Keeps(path)) continue;
                     seen.Add(path);
-                    var stat = new FileInfo(path);
                     var maximum = request.Code ? Math.Min(request.MaxFileBytes, FilePolicy.Extension(path) == "ipynb" ? 20L << 20 : 1L << 20) : request.MaxFileBytes;
-                    var reason = stat.Length > maximum ? $"File exceeds MaxFileBytes/type limit ({maximum})." : null;
-                    files.Add(new(path, kind, stat.Length, Mtime(stat), reason));
+                    var reason = entry.Length > maximum ? $"File exceeds MaxFileBytes/type limit ({maximum})." : null;
+                    files.Add(new(path, kind, entry.Length, entry.Mtime, reason));
                 }
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -423,20 +443,24 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
     }
     private async Task<ExtractionResult> ProcessAsync(Candidate file, bool code, EmbeddingInfo? info, DocumentExtractionOptions options, bool allowPowerPointAutomation, CancellationToken token)
     {
-        if(code || !NeedsSourceSnapshot(file.Path))return await ProcessContentAsync(file,code,info,options,allowPowerPointAutomation,token);
+        if (code || !NeedsSourceSnapshot(file.Path)) return await ProcessContentAsync(file, code, info, options, allowPowerPointAutomation, token);
+        var result = await ProcessContentAsync(file, code, info, options, allowPowerPointAutomation, token);
+        if (result.State is not ("done" or "partial") || result.Info is null) return result;
         try
         {
-            using var source=SafeFile.Open(file.Path);
-            var result=await ProcessContentAsync(file,code,info,options,allowPowerPointAutomation,token);
-            if(result.State is not ("done" or "partial") || result.Info is null)return result;
-            source.Stream!.Position=0;var hash=Convert.ToHexString(await SHA256.HashDataAsync(source.Stream,token)).ToLowerInvariant();
-            var metadata=JsonNode.Parse(result.Info)!.AsObject();metadata["sourceSha256V1"]=hash;
-            return result with {Info=metadata.ToJsonString()};
+            using var source = SafeFile.Open(file.Path);
+            source.Stream!.Position = 0;
+            var hash = Convert.ToHexString(await SHA256.HashDataAsync(source.Stream, token)).ToLowerInvariant();
+            var metadata = JsonNode.Parse(result.Info)!.AsObject();
+            metadata["sourceSha256V1"] = hash;
+            return result with { Info = metadata.ToJsonString() };
         }
-        catch(OperationCanceledException)when(token.IsCancellationRequested){throw;}
-        catch(EmbeddingDependencyException){throw;}
-        catch(Exception e)when(e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
-        {return new([],"failed","Source snapshot failed: "+e.GetType().Name);}
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (EmbeddingDependencyException) { throw; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        {
+            return new([], "failed", "Source snapshot failed: " + e.Message);
+        }
     }
     private async Task<ExtractionResult> ProcessContentAsync(Candidate file, bool code, EmbeddingInfo? info, DocumentExtractionOptions options, bool allowPowerPointAutomation, CancellationToken token)
     {
@@ -486,7 +510,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                 {
                     "none" => null,
                     "text" when segment.Excerpt is null || !HasWords(segment.Excerpt) => null,
-                    "text" => new("text", $"title: {title} | text: {(segment.Kind == "page" ? ContentExtractor.Prefix(segment.Excerpt!, 4000) : segment.Excerpt)}"),
+                    "text" => new("text", $"title: {title} | text: {(segment.Kind == "page" ? ContentExtractor.Prefix(segment.Excerpt!, 1000) : segment.Excerpt)}"),
                     "image" when segment.Kind == "image" => new("image", file.Path, file.Kind == "screenshot" ? 280 : 140),
                     _ => throw new NotSupportedException("Extractor modality has no safe media path/ownership contract.")
                 };
@@ -495,9 +519,19 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                 { unavailable = true; continue; }
                 jobs.Add((pair.index, input));
             }
+            if (jobs.Count > 24)
+            {
+                var sampled = new List<(int Index, EmbeddingInput Input)>(24);
+                for (int i = 0; i < 24; i++)
+                {
+                    int idx = (int)Math.Round(i * (jobs.Count - 1.0) / 23.0);
+                    sampled.Add(jobs[idx]);
+                }
+                jobs = sampled;
+            }
             var succeeded = 0;
             foreach (var group in jobs.GroupBy(j => (j.Input.Operation, j.Input.Budget)))
-            foreach (var batch in group.Chunk(16))
+            foreach (var batch in group.Chunk(2))
             {
                 token.ThrowIfCancellationRequested();
                 IReadOnlyList<EmbeddingResult> vectors;

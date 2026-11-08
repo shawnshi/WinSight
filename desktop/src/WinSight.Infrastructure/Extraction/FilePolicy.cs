@@ -2,7 +2,11 @@ namespace WinSight.Infrastructure.Extraction;
 
 internal static class FilePolicy
 {
-    internal static readonly HashSet<string> Documents = Set("txt text md markdown rtf docx doc odt html htm pptx xlsx");
+    /// <summary>OLE/BIFF Office files and WPS equivalents: recognised so they are reported honestly (and stay findable by name), not extracted.</summary>
+    internal static readonly HashSet<string> LegacyBinaryOffice = Set("doc dot xls xlt ppt pot pps wps et dps");
+    /// <summary>The legacy formats the isolated host can read; WPS (.wps/.et/.dps) stays unsupported.</summary>
+    internal static readonly HashSet<string> LegacyOfficeText = Set("doc dot xls xlt ppt pot pps");
+    internal static readonly HashSet<string> Documents = Set("txt text md markdown rtf docx odt html htm pptx xlsx csv tsv log doc dot xls xlt ppt pot pps wps et dps");
     internal static readonly HashSet<string> Images = Set("jpg jpeg jpe jfif png gif bmp tif tiff webp heic heif avif psd tga pnm ppm pgm cr2 nef arw dng raf orf rw2");
     internal static readonly HashSet<string> Audio = Set("mp3 m4a m4b aac wav wave flac ogg oga opus aiff aif wma amr caf mka");
     internal static readonly HashSet<string> Video = Set("mp4 m4v mov mkv webm avi wmv flv 3gp 3g2 mpg mpeg m2v ogv mxf m2ts");
@@ -49,4 +53,15 @@ internal static class FilePolicy
         return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
     }
     internal static bool Unsafe(FileAttributes attributes) => (attributes & (FileAttributes.ReparsePoint | FileAttributes.Offline | FileAttributes.Device | (FileAttributes)0x00440000)) != 0;
+
+    internal static bool IsCompatibleProfile(string infoProfile, string indexProfile)
+    {
+        if (string.Equals(infoProfile, indexProfile, StringComparison.OrdinalIgnoreCase)) return true;
+        // The official EmbeddingGemma-2 ONNX model is mathematically identical between the default CPU host (c5d19a34...)
+        // and the hardware-accelerated Windows ML GPU/NPU host (6058d511...):
+        if ((infoProfile.StartsWith("6058d511", StringComparison.OrdinalIgnoreCase) || infoProfile.StartsWith("c5d19a34", StringComparison.OrdinalIgnoreCase)) &&
+            (indexProfile.StartsWith("6058d511", StringComparison.OrdinalIgnoreCase) || indexProfile.StartsWith("c5d19a34", StringComparison.OrdinalIgnoreCase)))
+            return true;
+        return false;
+    }
 }

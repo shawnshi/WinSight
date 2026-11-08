@@ -79,8 +79,10 @@ public sealed partial class SettingsPage : Page
         Loaded += OnLoaded;
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs e)
+    private async void OnLoaded(object sender, RoutedEventArgs e)
     {
+        try { await ViewModel.InitializeAsync(); } catch { }
+
         // Select matching combo items
         ThemeComboBox.SelectedIndex = ViewModel.Theme switch
         {
@@ -90,7 +92,15 @@ public sealed partial class SettingsPage : Page
         };
 
         TrayClickComboBox.SelectedIndex = ViewModel.TrayClick == "window" ? 1 : 0;
-        CodeEditorComboBox.SelectedIndex = ViewModel.CodeEditor == "vscode" ? 1 : 0;
+        CodeEditorComboBox.SelectedIndex = ViewModel.CodeEditor switch
+        {
+            "vscode" => 1,
+            "cursor" => 2,
+            "windsurf" => 3,
+            "notepad++" => 4,
+            "sublime" => 5,
+            _ => 0
+        };
         AcceleratorComboBox.SelectedIndex = ViewModel.Accelerator switch
         {
             "discrete-gpu" => 1,
@@ -122,7 +132,12 @@ public sealed partial class SettingsPage : Page
     {
         if (ThemeComboBox.SelectedItem is ComboBoxItem item)
         {
-            string theme = item.Content.ToString() ?? "Default";
+            string theme = (item.Tag as string) ?? (item.Content?.ToString() switch
+            {
+                "浅色" or "Light" => "Light",
+                "深色" or "Dark" => "Dark",
+                _ => "Default"
+            });
             ViewModel.Theme = theme;
             onThemeChanged?.Invoke(theme);
         }
@@ -132,7 +147,11 @@ public sealed partial class SettingsPage : Page
     {
         if (TrayClickComboBox.SelectedItem is ComboBoxItem item)
         {
-            ViewModel.TrayClick = item.Content.ToString() == "Main Window" ? "window" : "panel";
+            ViewModel.TrayClick = (item.Tag as string) ?? (item.Content?.ToString() switch
+            {
+                "打开主窗口" or "Main Window" => "window",
+                _ => "panel"
+            });
         }
     }
 
@@ -140,9 +159,7 @@ public sealed partial class SettingsPage : Page
     {
         if (CodeEditorComboBox.SelectedItem is ComboBoxItem item)
         {
-            ViewModel.CodeEditor = item.Content.ToString()?.Contains("Visual Studio Code", StringComparison.OrdinalIgnoreCase) == true
-                ? "vscode"
-                : "default";
+            ViewModel.CodeEditor = (item.Tag as string) ?? "default";
         }
     }
 
@@ -186,6 +203,13 @@ public sealed partial class SettingsPage : Page
     {
         try { await ViewModel.ApplyClientConfigAsync(); } catch (Exception ex) { AppLog.Error("OnApplyClientConfigClick failed", ex); }
     }
+
+    private void OnCopyMcpConfigClick(object sender, RoutedEventArgs e)
+    {
+        try { ViewModel.CopyMcpConfig(); } catch (Exception ex) { AppLog.Error("OnCopyMcpConfigClick failed", ex); }
+    }
+
+    private Visibility ToVisibility(bool v) => v ? Visibility.Visible : Visibility.Collapsed;
 
 
 

@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using WinSight.Core;
+using WinSight.Infrastructure.Extraction;
 using WinSight.Infrastructure.Indexing;
 using WinSight.Infrastructure.Search;
 
@@ -146,6 +147,14 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         try
         {
             db.Open();
+            try
+            {
+                if (mode != SqliteOpenMode.ReadOnly)
+                    Execute(db, null, "PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-65536; PRAGMA mmap_size=268435456;");
+                else
+                    Execute(db, null, "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-65536; PRAGMA mmap_size=268435456;");
+            }
+            catch (SqliteException) { }
             // Query-only collation: Windows ordinal path casing without changing the on-disk tokenizer or indexes.
             db.CreateCollation("WINSIGHT_PATH", StringComparer.OrdinalIgnoreCase.Compare);
             string? lastLiteralJson = null;
@@ -168,6 +177,8 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         try
         {
             Execute(db, null, "CREATE VIRTUAL TABLE IF NOT EXISTS fts_seg USING fts5(tokens, tokenize=\"unicode61 remove_diacritics 2\")");
+            Execute(db, null, "CREATE INDEX IF NOT EXISTS ix_segments_meta ON segments(id, file, kind, loc, loc_end)");
+            Execute(db, null, "CREATE INDEX IF NOT EXISTS ix_files_meta ON files(id, kind, path)");
         }
         catch (SqliteException error) when (error.SqliteErrorCode == 8)
         {
@@ -276,6 +287,16 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     public Task<IReadOnlyList<IndexedFile>> ReadFilesAsync(CancellationToken cancellationToken = default) =>
         RunAsync(() => Read(cancellationToken, (db, tx) => ReadFiles(db, tx, true, cancellationToken)), cancellationToken);
 
+    public Task<IReadOnlyList<IndexedFile>> ReadFileHeadersAsync(CancellationToken cancellationToken = default) =>
+        RunAsync(() => Read(cancellationToken, (db, tx) => (IReadOnlyList<IndexedFile>)ReadHeaders(db, tx, cancellationToken, includeInfo: false)), cancellationToken);
+
+    public Task<IReadOnlyList<IndexedFile>> ReadFileHeadersByPathsAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        if (paths.Count == 0) return Task.FromResult<IReadOnlyList<IndexedFile>>([]);
+        return RunAsync(() => Read(cancellationToken, (db, tx) => (IReadOnlyList<IndexedFile>)ReadHeaders(db, tx, cancellationToken, includeInfo: false, paths: paths)), cancellationToken);
+    }
+
     public Task<IndexedFile?> GetFileAsync(string path, CancellationToken cancellationToken = default)
     {
         ValidatePath(path);
@@ -283,12 +304,18 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     }
 
     private static List<IndexedFile> ReadHeaders(SqliteConnection db, SqliteTransaction tx, CancellationToken ct,
-        string? path = null, IReadOnlyCollection<long>? ids = null)
+        string? path = null, IReadOnlyCollection<long>? ids = null, bool includeInfo = true, IReadOnlyCollection<string>? paths = null)
     {
         var files = new List<IndexedFile>();
-        string scope = path != null ? " WHERE path=$path" : ids != null ? " WHERE id IN (SELECT value FROM json_each($ids))" : "";
-        using var cmd = Command(db, tx, "SELECT id,path,kind,size,mtime,state,detail,info FROM files" + scope + " ORDER BY id",
-            ("$path", path), ("$ids", ids == null ? null : JsonSerializer.Serialize(ids)));
+        string scope = path != null ? " WHERE path=$path"
+            : ids != null ? " WHERE id IN (SELECT value FROM json_each($ids))"
+            : paths != null ? " WHERE path IN (SELECT value FROM json_each($paths))"
+            : "";
+        string infoCol = includeInfo ? "info" : "NULL";
+        using var cmd = Command(db, tx, "SELECT id,path,kind,size,mtime,state,detail," + infoCol + " FROM files" + scope + " ORDER BY id",
+            ("$path", path),
+            ("$ids", ids == null ? null : JsonSerializer.Serialize(ids)),
+            ("$paths", paths == null ? null : JsonSerializer.Serialize(paths)));
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
@@ -298,21 +325,31 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         return files;
     }
 
-    private static IReadOnlyList<IndexedFile> ReadFiles(SqliteConnection db, SqliteTransaction tx, bool vectors, CancellationToken ct, string? path = null, bool vectorSegmentsOnly = false)
+    private static IReadOnlyList<IndexedFile> ReadFiles(SqliteConnection db, SqliteTransaction tx, bool vectors, CancellationToken ct,
+        string? path = null, bool vectorSegmentsOnly = false, IReadOnlyCollection<string>? paths = null)
     {
-        var files = ReadHeaders(db, tx, ct, path);
+        var files = ReadHeaders(db, tx, ct, path, paths: paths);
+        if (files.Count == 0) return files;
         var byId = files.ToDictionary(f => f.Id);
-        var anchors = files.ToDictionary(f => f.Id, f => ReadAnchors(f.Info));
-        string scope = path == null ? "" : " WHERE f.path=$path";
-        if (vectorSegmentsOnly) scope += path == null ? " WHERE s.vec IS NOT NULL" : " AND s.vec IS NOT NULL";
+        var anchors = new Dictionary<long, IReadOnlyDictionary<long, SourceAnchor>>();
+        string join = path != null || paths != null ? " JOIN files f ON f.id=s.file" : "";
+        string scope = path != null ? " WHERE f.path=$path"
+            : paths != null ? " WHERE f.path IN (SELECT value FROM json_each($paths))"
+            : "";
+        if (vectorSegmentsOnly) scope += scope.Length == 0 ? " WHERE s.vec IS NOT NULL" : " AND s.vec IS NOT NULL";
         using var segments = Command(db, tx, "SELECT s.file,s.kind,s.modality,s.loc,s.loc_end,s.excerpt," + (vectors ? "s.vec" : "NULL") +
-            ",s.id FROM segments s JOIN files f ON f.id=s.file" + scope + " ORDER BY s.id", ("$path", path));
+            ",s.id FROM segments s" + join + scope + " ORDER BY s.id",
+            ("$path", path),
+            ("$paths", paths == null ? null : JsonSerializer.Serialize(paths)));
         using var rows = segments.ExecuteReader();
         while (rows.Read())
         {
             ct.ThrowIfCancellationRequested();
             var fileId = rows.GetInt64(0);
-            ((List<IndexSegment>)byId[fileId].Segments).Add(Segment(rows, 1, vectors) with { Source = anchors[fileId].GetValueOrDefault(rows.GetInt64(7)) });
+            if (!byId.TryGetValue(fileId, out var file)) continue;
+            if (!anchors.TryGetValue(fileId, out var fileAnchors))
+                anchors[fileId] = fileAnchors = ReadAnchors(file.Info);
+            ((List<IndexSegment>)file.Segments).Add(Segment(rows, 1, vectors) with { Source = fileAnchors.GetValueOrDefault(rows.GetInt64(7)) });
         }
         return files;
     }
@@ -497,6 +534,18 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             return 0;
         }, cancellationToken);
     }
+
+    public Task<int> CountFilesUnderAsync(string root, CancellationToken cancellationToken = default)
+    {
+        var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        var prefix = normalized + Path.DirectorySeparatorChar;
+        return RunAsync(() => Read(cancellationToken, (db, tx) => Convert.ToInt32(Scalar(db, tx,
+            "SELECT COUNT(*) FROM files WHERE path = $root COLLATE NOCASE OR substr(path, 1, $length) = $prefix COLLATE NOCASE",
+            ("$root", normalized), ("$length", prefix.Length), ("$prefix", prefix)) ?? 0)), cancellationToken);
+    }
+
+    public Task<long> CountVectorsAsync(CancellationToken cancellationToken = default) =>
+        RunAsync(() => Read(cancellationToken, (db, tx) => Convert.ToInt64(Scalar(db, tx, "SELECT COUNT(*) FROM segments WHERE vec IS NOT NULL") ?? 0L)), cancellationToken);
 
     /// <summary>Aggregated failure reasons (no paths) so the UI can explain why files did not index.</summary>
     public Task<IReadOnlyList<string>> ReadFailureSummaryAsync(int limit, CancellationToken cancellationToken = default)
@@ -764,13 +813,21 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 string? infoJson = Scalar(db, tx, "SELECT value FROM meta WHERE key='embedding_info'") as string;
                 if (key == "profile_id")
                 {
-                    if (profile != value && Convert.ToInt64(Scalar(db, tx, "SELECT count(*) FROM segments WHERE vec IS NOT NULL")) > 0)
+                    if (profile != null && profile != value && !FilePolicy.IsCompatibleProfile(value, profile) && Convert.ToInt64(Scalar(db, tx, "SELECT count(*) FROM segments WHERE vec IS NOT NULL")) > 0)
                         throw new InvalidOperationException("Cannot change profile while vectors exist; create a separate new index.");
-                    if (infoJson != null && JsonSerializer.Deserialize<EmbeddingInfo>(infoJson, MetadataJson)?.ProfileId != value)
-                        throw new InvalidDataException("Profile conflicts with embedding_info.");
+                    if (infoJson != null)
+                    {
+                        var existing = JsonSerializer.Deserialize<EmbeddingInfo>(infoJson, MetadataJson);
+                        if (existing != null && existing.ProfileId != value && !FilePolicy.IsCompatibleProfile(value, existing.ProfileId))
+                            throw new InvalidDataException("Profile conflicts with embedding_info.");
+                    }
                 }
-                if (key == "embedding_info" && profile != null && JsonSerializer.Deserialize<EmbeddingInfo>(value, MetadataJson)?.ProfileId != profile)
-                    throw new InvalidDataException("embedding_info conflicts with profile_id.");
+                if (key == "embedding_info" && profile != null)
+                {
+                    var incoming = JsonSerializer.Deserialize<EmbeddingInfo>(value, MetadataJson);
+                    if (incoming != null && incoming.ProfileId != profile && !FilePolicy.IsCompatibleProfile(incoming.ProfileId, profile))
+                        throw new InvalidDataException("embedding_info conflicts with profile_id.");
+                }
                 Execute(db, tx, "INSERT INTO meta(key,value) VALUES($key,$value) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("$key", key), ("$value", value));
             }, VectorEffect.All);
             return 0;
@@ -791,6 +848,20 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         return new EngineStatus(total, done, pending, partial, failed, DatabasePath, writable ? null : "Legacy schema5: read-only; native reindex required for writes.");
     }), cancellationToken);
 
+    public Task<int> ResetFailedFilesAsync(CancellationToken ct = default) => RunAsync(() =>
+    {
+        var count = 0;
+        Write(ct, (db, tx) =>
+        {
+            using var cmd = Command(db, tx, "UPDATE files SET state = 'pending', detail = NULL WHERE state = 'failed'");
+            count = cmd.ExecuteNonQuery();
+            // Also reset any failed tasks in index_tasks back to Ready with 0 attempts so the queue re-runs them
+            using var resetTasksCmd = Command(db, tx, "UPDATE index_tasks SET state = 'Ready', attempts = 0, reason = NULL WHERE state = 'Failed'");
+            resetTasksCmd.ExecuteNonQuery();
+        }, VectorEffect.None, []);
+        return count;
+    }, ct);
+
     public Task<IReadOnlyList<KeywordMatch>> KeywordSearchAsync(string query, int limit, CancellationToken cancellationToken = default)
     {
         ValidateQuery(query, limit);
@@ -805,8 +876,8 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     private IReadOnlyList<IndexedFile> PatchVectorCache(SqliteConnection db, SqliteTransaction tx, IReadOnlyList<IndexedFile> cached, CancellationToken ct)
     {
         var dirty = new HashSet<string>(dirtyVectorPaths, StringComparer.Ordinal);
-        var refreshed = new List<IndexedFile>();
-        foreach (var path in dirty) refreshed.AddRange(ReadFiles(db, tx, true, ct, path, vectorSegmentsOnly: true));
+        if (dirty.Count == 0) return cached;
+        var refreshed = ReadFiles(db, tx, true, ct, vectorSegmentsOnly: true, paths: dirty);
         var refreshedIds = refreshed.Select(f => f.Id).ToHashSet();
         return cached.Where(f => !dirty.Contains(f.Path) && !refreshedIds.Contains(f.Id)).Concat(refreshed).OrderBy(f => f.Id).ToArray();
     }
@@ -840,7 +911,11 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 dirtyVectorPaths.Clear();
             }
         }
-        else files = ReadHeaders(db, tx, ct, ids: allHeaders ? null : matches.Select(w => w.FileId).ToArray());
+        else if (allHeaders && matchesSource == null && before == version && vectorCache is { } vCached && vCached.Version == version && dirtyVectorPaths.Count == 0)
+        {
+            files = vCached.Files;
+        }
+        else files = ReadHeaders(db, tx, ct, ids: allHeaders ? null : matches.Select(w => w.FileId).ToArray(), includeInfo: matchesSource != null);
         return new SearchSnapshot(files, matches, profile);
     }), ct);
 
@@ -873,6 +948,11 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         var inLiteral = new HashSet<long>();
         var inSegmented = new HashSet<long>();
         var sources = new Dictionary<long, IReadOnlyDictionary<long, SourceAnchor>>();
+        bool needInfo = matchesSource != null;
+        string infoCol = needInfo ? "f.info" : "NULL";
+        bool hasCovering = !needInfo && Scalar(db, tx, "SELECT 1 FROM sqlite_master WHERE type='index' AND name='ix_segments_meta'") != null;
+        string segJoinHint = hasCovering ? " INDEXED BY ix_segments_meta" : "";
+        string fileJoinHint = hasCovering ? " INDEXED BY ix_files_meta" : "";
         void Collect(SqliteDataReader rows, bool literal)
         {
             while (rows.Read())
@@ -881,9 +961,13 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 long file = rows.GetInt64(0), segment = rows.GetInt64(1), mask = rows.GetInt64(8);
                 var path = rows.GetString(3);
                 if (authorize != null && !authorize(path) || matchesSource != null && !matchesSource(path, Text(rows, 4), segment)) continue;
-                if (!sources.TryGetValue(file, out var anchors)) sources[file] = anchors = ReadAnchors(Text(rows, 4));
-                var source = anchors.GetValueOrDefault(segment);
-                var key = (file, SearchText.SourceUnit(new(rows.GetString(5), "none", Number(rows, 6), Number(rows, 7), null, Source: source)));
+                SourceAnchor? source = null;
+                if (needInfo)
+                {
+                    if (!sources.TryGetValue(file, out var anchors)) sources[file] = anchors = ReadAnchors(Text(rows, 4));
+                    source = anchors.GetValueOrDefault(segment);
+                }
+                var key = (file, SearchText.ComputeSourceUnit(new(rows.GetString(5), "none", Number(rows, 6), Number(rows, 7), null, Source: source)));
                 segmentInfo[segment] = (file, key, mask);
                 // BM25 contributions are additive per term, so a query split across two indexes sums their scores.
                 segmentRank[segment] = segmentRank.GetValueOrDefault(segment) + rows.GetDouble(2);
@@ -892,8 +976,8 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         }
         if (patterns.Length > 0)
         {
-            using var cmd = Command(db, tx, "SELECT s.file,s.id,bm25(fts,3.0,1.0),f.path,f.info,s.kind,s.loc,s.loc_end," + maskSql + " FROM fts " +
-                "JOIN segments s ON s.id=fts.rowid JOIN files f ON f.id=s.file WHERE fts MATCH $q" + scope,
+            using var cmd = Command(db, tx, "SELECT s.file,s.id,bm25(fts,3.0,1.0),f.path," + infoCol + ",s.kind,s.loc,s.loc_end," + maskSql + " FROM fts " +
+                "JOIN segments s" + segJoinHint + " ON s.id=fts.rowid JOIN files f" + fileJoinHint + " ON f.id=s.file WHERE fts MATCH $q" + scope,
                 ("$literals", literalJson), ("$q", string.Join(" OR ", patterns)), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
             using var rows = cmd.ExecuteReader(); Collect(rows, true);
         }
@@ -901,8 +985,8 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         {
             // fts_seg holds jieba index-mode tokens with real term frequency; the literal-mask column needs the fts row.
             string join = literals.Length == 0 ? "" : " JOIN fts ON fts.rowid=s.id";
-            using var cmd = Command(db, tx, "SELECT s.file,s.id,bm25(fts_seg),f.path,f.info,s.kind,s.loc,s.loc_end," + (literals.Length == 0 ? "0" : maskSql) + " FROM fts_seg " +
-                "JOIN segments s ON s.id=fts_seg.rowid" + join + " JOIN files f ON f.id=s.file WHERE fts_seg MATCH $q" + scope,
+            using var cmd = Command(db, tx, "SELECT s.file,s.id,bm25(fts_seg),f.path," + infoCol + ",s.kind,s.loc,s.loc_end," + (literals.Length == 0 ? "0" : maskSql) + " FROM fts_seg " +
+                "JOIN segments s" + segJoinHint + " ON s.id=fts_seg.rowid" + join + " JOIN files f" + fileJoinHint + " ON f.id=s.file WHERE fts_seg MATCH $q" + scope,
                 ("$literals", literalJson), ("$q", string.Join(" OR ", segPatterns)), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
             using var rows = cmd.ExecuteReader(); Collect(rows, false);
         }
@@ -922,8 +1006,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         {
             ct.ThrowIfCancellationRequested();
             var matched = new HashSet<(long File, string Unit)>();
-            using var cmd = Command(db, tx, $"SELECT DISTINCT s.id FROM {table} JOIN segments s ON s.id={table}.rowid JOIN files f ON f.id=s.file WHERE {table} MATCH $q" + scope,
-                ("$q", pattern), ("$kind", kind), ("$root", normalizedRoot), ("$prefix", normalizedRoot == null ? null : normalizedRoot + "/"));
+            using var cmd = Command(db, tx, $"SELECT rowid FROM {table} WHERE {table} MATCH $q", ("$q", pattern));
             using var rows = cmd.ExecuteReader();
             while (rows.Read()) { ct.ThrowIfCancellationRequested(); if (segmentInfo.TryGetValue(rows.GetInt64(0), out var info)) matched.Add(info.Key); }
             foreach (var key in matched) shares[key] = shares.GetValueOrDefault(key) + 1.0 / termCount;
@@ -934,22 +1017,17 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             .ThenBy(c => c.Value.Rank).ThenBy(c => c.Key.File).ThenBy(c => c.Key.Unit, StringComparer.Ordinal);
         var selected = (fileResults ? ordered.GroupBy(c => c.Key.File).Select(g => g.First()) : ordered).Take(limit).ToArray();
         if (selected.Length == 0) return [];
+        // Hydrate anchors only for the selected winning files and segments, rather than thousands of non-winning candidates.
+        var selectedIds = selected.Select(c => c.Value.Segment).ToHashSet();
+        foreach (var fileId in selected.Select(c => c.Key.File).Distinct())
+        {
+            if (!sources.ContainsKey(fileId))
+            {
+                var infoText = Scalar(db, tx, "SELECT info FROM files WHERE id=$id", ("$id", fileId)) as string;
+                sources[fileId] = ReadAnchors(infoText, selectedIds);
+            }
+        }
         var ids = JsonSerializer.Serialize(selected.Select(c => c.Value.Segment).ToArray());
-        var snippets = new Dictionary<long, string?>();
-        if (patterns.Length > 0)
-        {
-            using var cmd = Command(db, tx, "SELECT s.id,snippet(fts,1,'«','»','…',12) FROM fts JOIN segments s ON s.id=fts.rowid WHERE fts MATCH $q AND s.id IN (SELECT value FROM json_each($ids))",
-                ("$q", string.Join(" OR ", patterns)), ("$ids", ids));
-            using var rows = cmd.ExecuteReader();
-            while (rows.Read()) snippets[rows.GetInt64(0)] = Text(rows, 1);
-        }
-        if (segPatterns.Length > 0)
-        {
-            using var cmd = Command(db, tx, "SELECT s.id,snippet(fts_seg,0,'«','»','…',12) FROM fts_seg JOIN segments s ON s.id=fts_seg.rowid WHERE fts_seg MATCH $q AND s.id IN (SELECT value FROM json_each($ids))",
-                ("$q", string.Join(" OR ", segPatterns)), ("$ids", ids));
-            using var rows = cmd.ExecuteReader();
-            while (rows.Read()) if (!snippets.ContainsKey(rows.GetInt64(0))) snippets[rows.GetInt64(0)] = Text(rows, 1);
-        }
         var evidence = new Dictionary<long, WordEvidence>();
         using (var cmd = Command(db, tx, "SELECT id,file,kind,modality,loc,loc_end,excerpt FROM segments WHERE id IN (SELECT value FROM json_each($ids))", ("$ids", ids)))
         using (var rows = cmd.ExecuteReader())
@@ -961,7 +1039,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 long id = rows.GetInt64(0), file = rows.GetInt64(1);
                 var selectedRow = selectedBySegment[id];
                 var segment = Segment(rows, 2, false) with { Source = sources[file].GetValueOrDefault(id) };
-                evidence.Add(id, new(file, selectedRow.Value.Rank, shares.GetValueOrDefault(selectedRow.Key), segment, snippets.GetValueOrDefault(id),
+                evidence.Add(id, new(file, selectedRow.Value.Rank, shares.GetValueOrDefault(selectedRow.Key), segment, null,
                     ExactLiteralsVerified: inLiteral.Contains(id), Segmented: inSegmented.Contains(id)));
             }
         }
@@ -1001,7 +1079,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         }
     }
 
-    internal static IReadOnlyDictionary<long, SourceAnchor> ReadAnchors(string? info)
+    internal static IReadOnlyDictionary<long, SourceAnchor> ReadAnchors(string? info, IReadOnlySet<long>? onlyIds = null)
     {
         if (info is null) return new Dictionary<long, SourceAnchor>();
         using var document = JsonDocument.Parse(info);
@@ -1009,16 +1087,79 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         if (!document.RootElement.TryGetProperty("_sourceAnchorsV1", out var value)) return new Dictionary<long, SourceAnchor>();
         if (value.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Malformed source-anchor metadata.");
         var result = new Dictionary<long, SourceAnchor>();
+        int count = 0;
         foreach (var property in value.EnumerateObject())
         {
-            if (result.Count >= 5000 || !long.TryParse(property.Name, System.Globalization.NumberStyles.None,
+            if (++count > 5000 || !long.TryParse(property.Name, System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out var id) || id <= 0 || result.ContainsKey(id))
                 throw new InvalidDataException("Invalid source-anchor key/count.");
-            var source = property.Value.Deserialize<SourceAnchor>(MetadataJson) ?? throw new InvalidDataException("Missing source anchor.");
+            if (onlyIds is not null && !onlyIds.Contains(id)) continue;
+            var source = ParseAnchor(property.Value);
             ValidateAnchor(source);
             result.Add(id, source);
         }
         return result;
+    }
+
+    private static bool Prop(JsonElement el, string pascal, string camel, out JsonElement val) =>
+        el.TryGetProperty(pascal, out val) || el.TryGetProperty(camel, out val);
+
+    private static SourceAnchor ParseAnchor(JsonElement el)
+    {
+        if (el.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Missing source anchor.");
+        if (!Prop(el, "Location", "location", out var locEl) || locEl.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Missing source location.");
+        var type = Prop(locEl, "Type", "type", out var tEl) && tEl.ValueKind == JsonValueKind.String ? tEl.GetString()! : "";
+        int? page = Prop(locEl, "Page", "page", out var pEl) && pEl.ValueKind == JsonValueKind.Number && pEl.TryGetInt32(out var pv) ? pv : null;
+        int? para = Prop(locEl, "Paragraph", "paragraph", out var prEl) && prEl.ValueKind == JsonValueKind.Number && prEl.TryGetInt32(out var prv) ? prv : null;
+        string? sheet = Prop(locEl, "Sheet", "sheet", out var sEl) && sEl.ValueKind == JsonValueKind.String ? sEl.GetString() : null;
+        string? range = Prop(locEl, "Range", "range", out var rEl) && rEl.ValueKind == JsonValueKind.String ? rEl.GetString() : null;
+        string? part = Prop(locEl, "Part", "part", out var ptEl) && ptEl.ValueKind == JsonValueKind.String ? ptEl.GetString() : null;
+        var location = new SourceLocation(type, page, para, sheet, range, part);
+        var channel = Prop(el, "Channel", "channel", out var chEl) && chEl.ValueKind == JsonValueKind.String ? chEl.GetString()! : "body";
+        IReadOnlyList<SearchField>? fields = null;
+        if (Prop(el, "Fields", "fields", out var fEl) && fEl.ValueKind == JsonValueKind.Array)
+        {
+            var len = fEl.GetArrayLength();
+            if (len > 0)
+            {
+                var arr = new SearchField[len];
+                int idx = 0;
+                foreach (var item in fEl.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Invalid structured source fields.");
+                    var fn = Prop(item, "Name", "name", out var fnEl) && fnEl.ValueKind == JsonValueKind.String ? fnEl.GetString()! : "";
+                    var fv = Prop(item, "Value", "value", out var fvEl) && fvEl.ValueKind == JsonValueKind.String ? fvEl.GetString()! : null!;
+                    arr[idx++] = new SearchField(fn, fv);
+                }
+                fields = arr;
+            }
+            else fields = Array.Empty<SearchField>();
+        }
+        IReadOnlyList<OcrTextRegion>? regions = null;
+        if (Prop(el, "Regions", "regions", out var regEl) && regEl.ValueKind == JsonValueKind.Array)
+        {
+            var len = regEl.GetArrayLength();
+            if (len > 0)
+            {
+                var arr = new OcrTextRegion[len];
+                int idx = 0;
+                foreach (var item in regEl.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Invalid OCR source region.");
+                    int line = Prop(item, "Line", "line", out var lEl) && lEl.ValueKind == JsonValueKind.Number && lEl.TryGetInt32(out var lv) ? lv : -1;
+                    double left = Prop(item, "Left", "left", out var lfEl) && lfEl.ValueKind == JsonValueKind.Number && lfEl.TryGetDouble(out var lfv) ? lfv : double.NaN;
+                    double top = Prop(item, "Top", "top", out var tpEl) && tpEl.ValueKind == JsonValueKind.Number && tpEl.TryGetDouble(out var tpv) ? tpv : double.NaN;
+                    double width = Prop(item, "Width", "width", out var wEl) && wEl.ValueKind == JsonValueKind.Number && wEl.TryGetDouble(out var wv) ? wv : double.NaN;
+                    double height = Prop(item, "Height", "height", out var hEl) && hEl.ValueKind == JsonValueKind.Number && hEl.TryGetDouble(out var hv) ? hv : double.NaN;
+                    string? text = Prop(item, "Text", "text", out var txEl) && txEl.ValueKind == JsonValueKind.String ? txEl.GetString() : null;
+                    arr[idx++] = new OcrTextRegion(line, left, top, width, height, text);
+                }
+                regions = arr;
+            }
+            else regions = Array.Empty<OcrTextRegion>();
+        }
+        return new SourceAnchor(location, channel, fields, regions);
     }
 
     private static void ValidateAnchor(SourceAnchor source)
@@ -1051,7 +1192,15 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     {
         VectorContract.Validate(vector);
         var bytes = new byte[VectorContract.Dimension * 2];
-        for (int i = 0; i < vector.Length; i++) BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(i * 2), BitConverter.HalfToUInt16Bits((Half)vector[i]));
+        if (BitConverter.IsLittleEndian)
+        {
+            var dst = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, Half>(bytes.AsSpan());
+            for (int i = 0; i < vector.Length; i++) dst[i] = (Half)vector[i];
+        }
+        else
+        {
+            for (int i = 0; i < vector.Length; i++) BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(i * 2), BitConverter.HalfToUInt16Bits((Half)vector[i]));
+        }
         return bytes;
     }
 
@@ -1059,7 +1208,15 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     {
         if (bytes.Length != VectorContract.Dimension * 2) throw new InvalidDataException("Vector blob must contain 768 little-endian float16 values.");
         var vector = new float[VectorContract.Dimension];
-        for (int i = 0; i < vector.Length; i++) vector[i] = (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(i * 2)));
+        if (BitConverter.IsLittleEndian)
+        {
+            var src = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, Half>(bytes.AsSpan());
+            for (int i = 0; i < vector.Length; i++) vector[i] = (float)src[i];
+        }
+        else
+        {
+            for (int i = 0; i < vector.Length; i++) vector[i] = (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(i * 2)));
+        }
         VectorContract.Validate(vector);
         return vector;
     }

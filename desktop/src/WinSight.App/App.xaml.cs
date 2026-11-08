@@ -130,6 +130,8 @@ public partial class App : Application
                 await QuitAppAsync(exitCode: 1);
                 return;
             }
+            // Without this a failed start (including a login-item start) is invisible: no window and no tray icon.
+            FatalErrorDialog.Show("WinSight 无法启动 / WinSight could not start", ex.GetBaseException().Message);
             Environment.ExitCode = 1;
             Exit();
         }

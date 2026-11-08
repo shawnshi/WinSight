@@ -246,6 +246,107 @@ using(var zip=ZipFile.Open(duplicate,ZipArchiveMode.Create))
 await Reject("Duplicate ZIP parts rejected",duplicate,typeof(InvalidDataException));
 var traversal=Package("traversal.docx",new(){["../outside.xml"]="<x/>"});
 await Reject("Traversal parts rejected without extraction",traversal,typeof(InvalidDataException));
+// F4: non-UTF-8 and non-OOXML text that Chinese offices produce every day.
+{
+    Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    var gb = Encoding.GetEncoding(54936);
+    var formats = Path.Combine(root, "formats");
+    Directory.CreateDirectory(formats);
+    var gbkPath = Path.Combine(formats, "会议纪要.txt");
+    File.WriteAllBytes(gbkPath, gb.GetBytes("项目评审会议纪要\n本次会议讨论医院信息平台升级方案，并确认预算。"));
+    var gbk = await extractor.ExtractAsync(gbkPath, false);
+    Check("GBK text is decoded, not mojibake", gbk.State == "done" && gbk.Segments.Any(x => x.Excerpt?.Contains("医院信息平台升级方案") == true));
+    var latinPath = Path.Combine(formats, "latin1.txt");
+    File.WriteAllBytes(latinPath, Encoding.Latin1.GetBytes("Resume for Renee: caf\u00e9 and r\u00e9sum\u00e9 samples."));
+    var latin = await extractor.ExtractAsync(latinPath, false);
+    Check("Latin-1 text is not misread as GB18030", latin.Segments.Any(x => x.Excerpt?.Contains("r\u00e9sum\u00e9") == true));
+    var utf8Path = Path.Combine(formats, "utf8.txt");
+    File.WriteAllText(utf8Path, "已经是 UTF-8 的中文文本", new UTF8Encoding(false));
+    Check("UTF-8 text is unchanged", (await extractor.ExtractAsync(utf8Path, false)).Segments.Any(x => x.Excerpt?.Contains("UTF-8 的中文") == true));
+    var csvPath = Path.Combine(formats, "清单.csv");
+    File.WriteAllText(csvPath, "编号,名称\nA-1,心电图机\n", new UTF8Encoding(false));
+    Check("CSV is indexed as a document", extractor.CanExtract(csvPath, false) && (await extractor.ExtractAsync(csvPath, false)).Segments.Any(x => x.Excerpt?.Contains("心电图机") == true));
+
+    var rtfPath = Path.Combine(formats, "通知.rtf");
+    var rtfBody = string.Concat("医疗".Select(c => "\\u" + (int)c + "?")) + "\\'b2\\'e2\\'ca\\'d4";
+    File.WriteAllBytes(rtfPath, Encoding.ASCII.GetBytes("{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0 SimSun;}}{\\colortbl;\\red0\\green0\\blue0;}{\\*\\generator Hidden;}\\pard Hello \\b world\\b0\\par " + rtfBody + "\\par}"));
+    var rtf = await extractor.ExtractAsync(rtfPath, false);
+    var rtfText = string.Join(" ", rtf.Segments.Select(x => x.Excerpt));
+    Check("RTF text, unicode escapes and code-page bytes are extracted", rtf.State == "done" && rtfText.Contains("Hello world") && rtfText.Contains("医疗") && rtfText.Contains("测试"));
+    Check("RTF font tables and hidden destinations are not indexed", !rtfText.Contains("SimSun") && !rtfText.Contains("Hidden"));
+
+    var odtPath = Path.Combine(formats, "说明.odt");
+    using (var zip = ZipFile.Open(odtPath, ZipArchiveMode.Create))
+    {
+        void Entry(string name, string content) { using var stream = zip.CreateEntry(name).Open(); stream.Write(new UTF8Encoding(false).GetBytes(content)); }
+        Entry("mimetype", "application/vnd.oasis.opendocument.text");
+        Entry("content.xml", "<?xml version=\"1.0\" encoding=\"UTF-8\"?><office:document-content xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\"><office:body><office:text><text:h>总体方案</text:h><text:p>等级评审材料<text:s text:c=\"2\"/>已归档<office:annotation><text:p>隐藏批注</text:p></office:annotation></text:p></office:text></office:body></office:document-content>");
+    }
+    var odt = await extractor.ExtractAsync(odtPath, false);
+    var odtText = string.Join(" ", odt.Segments.Select(x => x.Excerpt));
+    Check("ODT paragraphs are extracted and annotations skipped", odt.State == "done" && odtText.Contains("总体方案") && odtText.Contains("等级评审材料") && !odtText.Contains("隐藏批注"));
+
+    var xlsPath = Path.Combine(formats, "旧表格.xls");
+    File.WriteAllBytes(xlsPath, [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0, 0, 0]);
+    var xls = await extractor.ExtractAsync(xlsPath, false);
+    Check("Legacy binary Office is reported with an actionable reason, not silently ignored",
+        extractor.CanExtract(xlsPath, false) && xls.State == "skipped" && xls.Detail?.Contains(".xlsx") == true);
+}
+// F4b: legacy binary Office parsers, against real Word/Excel/PowerPoint 97-2003 files (tests/Fixtures/LegacyOffice).
+{
+    string FixtureDirectory()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            var candidate = Path.Combine(directory.FullName, "Fixtures", "LegacyOffice");
+            if (Directory.Exists(candidate)) return candidate;
+            candidate = Path.Combine(directory.FullName, "desktop", "tests", "Fixtures", "LegacyOffice");
+            if (Directory.Exists(candidate)) return candidate;
+        }
+        throw new DirectoryNotFoundException("tests/Fixtures/LegacyOffice was not found.");
+    }
+    var fixtures = FixtureDirectory();
+    var legacyDoc = LegacyOffice.Extract(File.ReadAllBytes(Path.Combine(fixtures, "sample.doc")), "doc");
+    Check("DOC: Chinese and English body text", legacyDoc.State == "done" && legacyDoc.Text.Contains("项目评审会议纪要") && legacyDoc.Text.Contains("医院信息平台升级方案") && legacyDoc.Text.Contains("legacy-doc-marker-7391"));
+    Check("DOC: table cells and numbers survive, paragraphs are separated", legacyDoc.Text.Contains("心电图机") && legacyDoc.Text.Contains("12345") && legacyDoc.Text.Contains("\n"));
+    Check("DOC: no field codes or control characters leak", !legacyDoc.Text.Any(c => c < ' ' && c is not ('\n' or '\t')));
+    var legacyXls = LegacyOffice.Extract(File.ReadAllBytes(Path.Combine(fixtures, "sample.xls")), "xls");
+    Check("XLS: sheet names and cell strings", legacyXls.State == "done" && legacyXls.Text.Contains("[清单]") && legacyXls.Text.Contains("心电图机 legacy-xls-marker-5520") && legacyXls.Text.Contains("[Bulk]"));
+    Check("XLS: numbers keep their value", legacyXls.Text.Contains("1234.5") && legacyXls.Text.Contains("\t100"));
+    Check("XLS: shared strings that span CONTINUE records are complete", legacyXls.Text.Contains("bulk-row-0 批量条目 item 0") && legacyXls.Text.Contains("bulk-row-699 批量条目 item 699")
+        && Enumerable.Range(0, 700).All(i => legacyXls.Text.Contains($"bulk-row-{i} 批量条目 item {i}")));
+    var legacyPpt = LegacyOffice.Extract(File.ReadAllBytes(Path.Combine(fixtures, "sample.ppt")), "ppt");
+    Check("PPT: slide titles, body and notes", legacyPpt.State == "done" && legacyPpt.Text.Contains("医院数字化路线图") && legacyPpt.Text.Contains("legacy-ppt-marker-8842") && legacyPpt.Text.Contains("notes-marker-3310") && legacyPpt.Text.Contains("DRG/DIP 合规运营"));
+    Check("PPT: notes master placeholder text is not indexed", !legacyPpt.Text.Contains("Click to edit Master"));
+    Check("PPT: masters and the outline copy do not duplicate slide text", legacyPpt.Text.Split("legacy-ppt-marker-8842").Length == 2);
+    Check("A file with the wrong extension is reported, not mis-parsed", LegacyOffice.Extract(File.ReadAllBytes(Path.Combine(fixtures, "sample.doc")), "xls").State == "skipped");
+    Check("Non-OLE bytes are skipped with a reason", LegacyOffice.Extract(Encoding.ASCII.GetBytes("plain text, not an OLE file"), "doc") is { State: "skipped", Detail: not null });
+
+    // Hostile input: every truncation and a deterministic mutation sweep must finish quickly and report, never crash or hang.
+    var random = new Random(20261104);
+    var failures = new List<string>();
+    var clock = System.Diagnostics.Stopwatch.StartNew();
+    foreach (var (name, extension) in new[] { ("sample.doc", "doc"), ("sample.xls", "xls"), ("sample.ppt", "ppt") })
+    {
+        var original = File.ReadAllBytes(Path.Combine(fixtures, name));
+        for (var cut = 0; cut < original.Length; cut += Math.Max(1, original.Length / 150))
+        {
+            try { LegacyOffice.Extract(original.AsSpan(0, cut).ToArray(), extension); }
+            catch (Exception error) { failures.Add($"{name} truncated at {cut}: {error.GetType().Name}: {error.Message}"); }
+        }
+        for (var round = 0; round < 400; round++)
+        {
+            var mutated = (byte[])original.Clone();
+            // Concentrate damage on the structures that drive offsets: the header, FAT/directory sectors and stream starts.
+            for (var hits = 0; hits < 1 + round % 12; hits++)
+                mutated[round % 3 == 0 ? random.Next(0, Math.Min(1024, mutated.Length)) : random.Next(mutated.Length)] = (byte)random.Next(256);
+            try { LegacyOffice.Extract(mutated, extension); }
+            catch (Exception error) { failures.Add($"{name} mutation {round}: {error.GetType().Name}: {error.Message}"); }
+        }
+    }
+    Check("Corrupted and truncated legacy files never throw out of the parser (" + failures.Count + " failures: " + string.Join(" | ", failures.Take(3)) + ")", failures.Count == 0);
+    Check("The hostile-input sweep stays fast", clock.Elapsed < TimeSpan.FromSeconds(60));
+}
 var result = new { scope = "synthetic Office + real SQLite/index/search; fake vectors only; no OCR/model/Office process execution", passed = checks.Count, failed = 0, checks };
 await File.WriteAllTextAsync(Path.Combine(root, "results.json"), JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
 Console.WriteLine($"DocumentSearch: {checks.Count}/{checks.Count}");

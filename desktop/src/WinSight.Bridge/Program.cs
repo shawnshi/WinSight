@@ -44,22 +44,35 @@ public static class Program
 
         if (string.IsNullOrWhiteSpace(indexPath))
         {
-            var defaultPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Programs", "WinSight Native Preview", "data", "index", "index.sqlite"
-            );
-
-            if (File.Exists(defaultPath))
+            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var settingsFile = Path.Combine(localAppData, "WinSight", "NativePreview", "settings.json");
+            if (File.Exists(settingsFile))
             {
-                indexPath = defaultPath;
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(settingsFile));
+                    if (doc.RootElement.TryGetProperty("indexDirectory", out var dirProp) || doc.RootElement.TryGetProperty("IndexDirectory", out dirProp))
+                    {
+                        var dir = dirProp.GetString();
+                        if (!string.IsNullOrWhiteSpace(dir))
+                        {
+                            var candidate = Path.Combine(dir, "index.sqlite");
+                            if (File.Exists(candidate)) indexPath = candidate;
+                        }
+                    }
+                }
+                catch { }
             }
-            else
+            if (string.IsNullOrWhiteSpace(indexPath))
             {
-                var fallback = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "WinSight", "data", "index", "index.sqlite"
-                );
-                indexPath = File.Exists(fallback) ? fallback : defaultPath;
+                var candidates = new[]
+                {
+                    @"D:\WinSightIndex\index.sqlite",
+                    Path.Combine(localAppData, "WinSight", "NativePreview", "index", "index.sqlite"),
+                    Path.Combine(localAppData, "Programs", "WinSight Native Preview", "data", "index", "index.sqlite"),
+                    Path.Combine(localAppData, "WinSight", "data", "index", "index.sqlite")
+                };
+                indexPath = candidates.FirstOrDefault(File.Exists) ?? candidates[1];
             }
         }
 

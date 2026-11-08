@@ -149,6 +149,22 @@ await Test("OPS-AUTOSTART launch flag is parsed and an ordinary launch is not qu
     Check(CommandLineParser.DefaultDataDirectory.EndsWith(Path.Combine("WinSight", "NativePreview"), StringComparison.Ordinal), "Default data directory changed.");
     return Task.CompletedTask;
 });
+await Test("WS-SETTINGS save roundtrips accelerator, theme, trayClick and codeEditor", async () =>
+{
+    var backend = new SettingsBackend();
+    var vm = new SettingsViewModel(backend);
+    await vm.InitializeAsync();
+    vm.Theme = "Dark";
+    vm.Accelerator = "gpu";
+    vm.TrayClick = "window";
+    vm.CodeEditor = "vscode";
+    var saved = await vm.SaveAsync();
+    Check(saved, "SaveAsync failed: " + vm.StatusMessage);
+    Check(backend.Settings.Theme == "Dark", "Theme did not persist.");
+    Check(backend.Settings.Accelerator == "gpu", "Accelerator did not persist.");
+    Check(backend.Settings.TrayClick == "window", "TrayClick did not persist.");
+    Check(backend.Settings.CodeEditor == "vscode", "CodeEditor did not persist.");
+});
 Console.WriteLine($"RESULT passed={passed} failed={failed}; controlled registrar; no system hotkey registration performed");
 return failed == 0 ? 0 : 1;
 

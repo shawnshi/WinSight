@@ -202,13 +202,54 @@ await Test("cancel startup resets child then next request succeeds", async () =>
     var directory = Scenario("startup-cancel");
     await using var client = NewClient(directory, fake);
     using var cancel = new CancellationTokenSource();
-    var running = client.GetInfoAsync(cancel.Token);
+    var running = client.EmbedAsync(Items(), cancel.Token);
     await Until(() => Pids(directory).Length == 1);
     cancel.Cancel();
     await Throws<OperationCanceledException>(async () => await running);
     Check(!IsAlive(Pids(directory)[0]), "Cancelled startup survived.");
     await client.GetInfoAsync();
     Check(Pids(directory).Length == 2, "Startup cancellation did not restart.");
+});
+await Test("interactive cancel abandons the wait but keeps the host and its reply stream", async () =>
+{
+    var directory = Scenario("delay");
+    await using var client = NewClient(directory, fake);
+    await client.GetInfoAsync();
+    using var cancel = new CancellationTokenSource();
+    var running = client.EmbedInteractiveAsync(Items(), cancel.Token);
+    await Until(() => Audit(directory).Any(item => item.TryGetProperty("request", out var request) && request.GetProperty("op").GetString() == "text"));
+    var stopwatch = Stopwatch.StartNew();
+    cancel.Cancel();
+    await Throws<OperationCanceledException>(async () => await running);
+    Check(stopwatch.ElapsedMilliseconds < 200, "Interactive cancellation waited for the host.");
+    var pid = Pids(directory).Single();
+    var next = await client.EmbedInteractiveAsync(Items());
+    Check(next.Single().Vector is not null && IsAlive(pid) && Pids(directory).Length == 1, "Interactive cancellation killed or desynchronised the host.");
+});
+await Test("interactive cancel during startup keeps the cold start running", async () =>
+{
+    var directory = Scenario("delay");
+    await using var client = NewClient(directory, fake);
+    using var cancel = new CancellationTokenSource();
+    var running = client.EmbedInteractiveAsync(Items(), cancel.Token);
+    await Until(() => Pids(directory).Length == 1);
+    cancel.Cancel();
+    await Throws<OperationCanceledException>(async () => await running);
+    var pid = Pids(directory).Single();
+    Check((await client.EmbedInteractiveAsync(Items())).Single().Vector is not null && IsAlive(pid) && Pids(directory).Length == 1,
+        "Cancelling the waiter restarted the host that was already starting.");
+});
+await Test("interactive query overtakes queued bulk batches", async () =>
+{
+    var directory = Scenario("delay");
+    await using var client = NewClient(directory, fake, requestMs: 10000);
+    await client.GetInfoAsync();
+    var bulk = client.EmbedAsync(Items(96));
+    await Until(() => Audit(directory).Count(item => item.TryGetProperty("request", out var request) && request.GetProperty("op").GetString() == "text") >= 1);
+    var query = client.EmbedInteractiveAsync(Items());
+    var first = await Task.WhenAny(bulk, query);
+    Check(ReferenceEquals(first, query), "A user query waited for the whole bulk run.");
+    Check((await bulk).Count == 96, "Bulk result lost while a query overtook it.");
 });
 await Test("profile remains pinned across child restarts", async () =>
 {

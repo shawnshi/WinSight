@@ -381,7 +381,8 @@ internal static class EpQualificationChild
             Array.Sort(values);
             var epMedian = values[1];
 
-            if (epMedian >= request.CpuMedianMs * 0.95)
+            double maxAllowedMs = request.CpuMedianMs < 200.0 ? Math.Max(request.CpuMedianMs * 0.95, request.CpuMedianMs + 50.0) : request.CpuMedianMs * 0.95;
+            if (epMedian > maxAllowedMs)
             {
                 WriteResult(resultPath, new EpQualificationResult
                 {

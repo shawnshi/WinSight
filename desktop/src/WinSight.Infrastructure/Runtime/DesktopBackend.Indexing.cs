@@ -99,11 +99,11 @@ public Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress 
                 }
 
                 repository = allowRebuild && info is not null
-                    ? await EnsureGenerationAsync(repository, approved, info, mediaClient, defer, token).ConfigureAwait(false)
+                    ? await EnsureGenerationAsync(repository, approved, info, mediaClient, defer, progress, token).ConfigureAwait(false)
                     : repository;
-                // Page rasterisation is the expensive stage. It now also needs an explicit opt-in on top of a
-                // strict pass, because it is what made a corpus pass take days rather than minutes.
-                var pages = !defer && approved.GeneratePageImages && mediaClient is not null;
+                // Page rasterisation is the expensive stage. It now also needs an explicit opt-in,
+                // because it is what made a corpus pass take days rather than minutes.
+                var pages = approved.GeneratePageImages && mediaClient is not null;
                 var service = new IndexingService(repository, new ContentExtractor(mediaClient), info is null ? null : model,
                     defer || mediaClient is null ? null : new NativeMediaSamplingService(mediaClient),
                     pages ? new NativeDocumentPages(mediaClient!) : null,
@@ -115,15 +115,36 @@ public Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress 
                 }
                 else
                 {
+                    int totalCompleted = 0, totalFailed = 0, totalPartial = 0;
+                    IProgress<IndexProgress>? batchProgress = progress is null ? null : new Progress<IndexProgress>(p =>
+                    {
+                        if (p.Phase == "finished") return;
+                        if (p.Phase is "done" or "failed" or "partial" or "skipped" or "deleted")
+                        {
+                            Interlocked.Increment(ref totalCompleted);
+                            if (p.Phase == "failed") Interlocked.Increment(ref totalFailed);
+                            if (p.Phase == "partial") Interlocked.Increment(ref totalPartial);
+                        }
+                        progress.Report(new IndexProgress(p.Phase, p.Path, Volatile.Read(ref totalCompleted), Volatile.Read(ref totalFailed), Volatile.Read(ref totalPartial), p.Detail));
+                    });
+
                     // Manual and watcher passes share one durable queue so progress survives a restart.
                     var queue = new IncrementalIndexQueue(repository,
-                        indexPaths: (roots, paths, code, ct) => service.IndexPathsAsync(roots, paths, code, progress, ct),
+                        indexPaths: (roots, paths, code, ct) => service.IndexPathsAsync(roots, paths, code, batchProgress, ct),
                         onError: error => { backgroundError = "queue: " + error.Message; AppLog.Warn("index queue error", error); });
                     await queue.InitializeAsync(token);
-                    foreach (var root in approved.Roots)
+
+                    var initialCounts = await queue.GetTaskCountsAsync(token);
+                    bool reconciled = false;
+                    if (initialCounts.GetValueOrDefault("Ready") <= 500)
                     {
-                        await queue.ReconcileRootAsync(root, approved.Code, force: true, token, requireStabilization: false);
+                        foreach (var root in approved.Roots)
+                        {
+                            await queue.ReconcileRootAsync(root, approved.Code, force: true, token, requireStabilization: false, upgradePageImages: pages);
+                        }
+                        reconciled = true;
                     }
+
                     // A USN catch-up queues new files as Stabilizing with a due time a moment ahead. Ending the run when nothing is ready
                     // yet would leave them waiting for the next signal, so wait (bounded) for them to settle and process them too.
                     var settling = System.Diagnostics.Stopwatch.StartNew();
@@ -132,10 +153,20 @@ public Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress 
                         token.ThrowIfCancellationRequested();
                         var processed = await queue.ProcessReadyTasksAsync(400, token, batchSize: 16);
                         if (processed != 0) continue;
+                        if (!reconciled)
+                        {
+                            foreach (var root in approved.Roots)
+                            {
+                                await queue.ReconcileRootAsync(root, approved.Code, force: true, token, requireStabilization: false, upgradePageImages: pages);
+                            }
+                            reconciled = true;
+                            continue;
+                        }
                         var counts = await queue.GetTaskCountsAsync(token);
                         if (counts.GetValueOrDefault("Stabilizing") == 0 || settling.Elapsed > TimeSpan.FromSeconds(15)) break;
                         await Task.Delay(300, token);
                     }
+                    progress?.Report(new IndexProgress("finished", null, Volatile.Read(ref totalCompleted), Volatile.Read(ref totalFailed), Volatile.Read(ref totalPartial)));
                 }
             }
             catch (Exception error)
@@ -183,9 +214,32 @@ public async Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(CancellationT
     {
         cancellationToken.ThrowIfCancellationRequested();
         var coordinator = background;
-        return coordinator is null
-            ? new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, "background-disabled", Array.Empty<IndexBudgetState>())
-            : await coordinator.GetIndexingQueueStatusAsync(cancellationToken).ConfigureAwait(false);
+        if (coordinator != null)
+            return await coordinator.GetIndexingQueueStatusAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var stores = await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false);
+            if (stores.Count > 0)
+            {
+                var counts = await stores[0].GetTaskCountsAsync(cancellationToken).ConfigureAwait(false);
+                return new IndexingQueueStatus(
+                    Pending: counts.GetValueOrDefault("Pending"),
+                    Stabilizing: counts.GetValueOrDefault("Stabilizing"),
+                    Ready: counts.GetValueOrDefault("Ready"),
+                    Running: counts.GetValueOrDefault("Running"),
+                    Failed: counts.GetValueOrDefault("Failed"),
+                    Deferred: counts.GetValueOrDefault("Deferred"),
+                    Dropped: 0,
+                    WatcherOverflows: 0,
+                    LastReconcileUtc: null,
+                    UsnState: "manual-mode",
+                    Budgets: Array.Empty<IndexBudgetState>());
+            }
+        }
+        catch { }
+
+        return new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, "background-disabled", Array.Empty<IndexBudgetState>());
     }
 
 public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default)
@@ -199,24 +253,40 @@ public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationTok
                 statuses.Add(await store.GetStatusAsync(cancellationToken));
             return new EngineStatus(statuses.Sum(s => s.Files), statuses.Sum(s => s.Done),
                 statuses.Sum(s => s.Pending), statuses.Sum(s => s.Partial), statuses.Sum(s => s.Failed),
-                IndexDirectory, "Native migration preview; legacy indexes are not imported automatically."
-                    + (enableBackgroundIndexing ? "" : " Background coordination disabled for this host.")
-                    + (backgroundError is null && background?.Failure is null ? ""
-                        : " Background indexing failed: " + (backgroundError ?? background!.Failure!.Message))
-                    + (indexing.Failure is { } failure ? " " + failure : ""), indexing.State);
+                IndexDirectory, "索引数据库已就绪。"
+                    + (enableBackgroundIndexing ? "" : " 后台增量监听未启用。")
+                    + (background?.Failure is null ? "" : " 后台监听异常: " + background.Failure.Message)
+                    + (backgroundError is null ? "" : " " + backgroundError)
+                    + (indexing.Failure is { } failure ? " 索引异常: " + failure : ""), indexing.State);
         }
         finally { lifecycle.Release(); }
     }
 
+public async Task<int> ResetFailedFilesAsync(CancellationToken cancellationToken = default)
+{
+await lifecycle.WaitAsync(cancellationToken);
+try
+{
+ObjectDisposedException.ThrowIf(disposed, this);
+var stores = await GetRepositoriesAsync(cancellationToken);
+var reset = 0;
+foreach (var store in stores)
+{
+reset += await store.ResetFailedFilesAsync(cancellationToken);
+}
+return reset;
+}
+finally { lifecycle.Release(); }
+}
+
 /// <summary>
-    /// Reports the vector corpus size. The measured warm semantic latency grew from ~32 ms at 20k segments to
+/// Reports the vector corpus size. The measured warm semantic latency grew from ~32 ms at 20k segments to
     /// ~155 ms at 100k, so this warns before the path approaches the 500 ms budget.
     /// </summary>
     public async Task<string> DescribeVectorScaleAsync(CancellationToken cancellationToken = default)
     {
         var repository = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];
-        var files = await repository.ReadFilesAsync(cancellationToken).ConfigureAwait(false);
-        var vectors = files.Sum(file => file.Segments.Count(segment => segment.Vector is not null));
+        var vectors = await repository.CountVectorsAsync(cancellationToken).ConfigureAwait(false);
         var verdict = vectors switch
         {
             >= 80_000 => "approaching the measured ceiling: plan sqlite-vec/ANN",
@@ -231,7 +301,7 @@ public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationTok
     /// profile and the segmented FTS together, validated, then swapped in atomically; the old database is kept.
     /// </summary>
     private async Task<IIndexRepository> EnsureGenerationAsync(IIndexRepository repository, IndexRequest request,
-        EmbeddingInfo info, NativeMediaProcessClient? mediaClient, bool defer, CancellationToken cancellationToken)
+        EmbeddingInfo info, NativeMediaProcessClient? mediaClient, bool defer, IProgress<IndexProgress>? progress, CancellationToken cancellationToken)
     {
         var dictionary = NativeSegmenter.Fingerprint(Array.Empty<string>());
         if (!IndexRebuildCoordinator.NeedsRebuild(IndexDirectory, info.ProfileId, dictionary)) return repository;
@@ -242,7 +312,7 @@ public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationTok
             .ToArray();
         if (rebuildRoots.Length != 0) request = request with { Roots = rebuildRoots };
         var generation = info.ProfileId[..Math.Min(12, info.ProfileId.Length)] + "-" + dictionary[..8] + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
-        backgroundError = "Rebuilding the index for the current model and lexicon (one window, old database kept).";
+        backgroundError = "正在为新模型与分词词典重建索引（后台运行中，完成后将自动替换旧库）...";
         await repository.DisposeAsync().ConfigureAwait(false);
         repositories.Clear();
         var outcome = await IndexRebuildCoordinator.RebuildAsync(IndexDirectory, generation, async stagingRoot =>
@@ -258,14 +328,14 @@ public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationTok
                 defer ? null : new NativeDocumentPages(mediaClient),
                 defer ? null : new NativePresentationPages(mediaClient),
                 allowDeferredStages: defer);
-            await builder.IndexAsync(request, null, cancellationToken).ConfigureAwait(false);
+            await builder.IndexAsync(request, progress, cancellationToken).ConfigureAwait(false);
         }, async database =>
         {
             // The probe must come from the staged data itself: a hardcoded word would fail whenever the
             // corpus simply does not contain it, blocking a perfectly good rebuild.
             await using var probe = new SqliteIndexRepository(database);
             await probe.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            var files = await probe.ReadFilesAsync(cancellationToken).ConfigureAwait(false);
+            var files = await probe.ReadFileHeadersAsync(cancellationToken).ConfigureAwait(false);
             var sample = files.FirstOrDefault(file => file.State == "done");
             if (sample is null) return Array.Empty<string>();
             var term = Path.GetFileNameWithoutExtension(sample.Path);
@@ -276,8 +346,8 @@ public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationTok
         repositories.Clear();
         var reopened = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];
         backgroundError = outcome.Switched
-            ? "Index rebuilt for the current model and lexicon; previous database kept as " + Path.GetFileName(outcome.PreviousDirectory ?? "none") + "."
-            : "Index rebuild did not switch: " + (outcome.Detail ?? "unknown");
+            ? "索引已针对新模型重建完成并切换。"
+            : "索引重建未切换: " + (outcome.Detail ?? "未知原因");
         return reopened;
     }
 }

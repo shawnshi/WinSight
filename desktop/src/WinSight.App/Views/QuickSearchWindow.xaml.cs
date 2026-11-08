@@ -214,7 +214,21 @@ public sealed partial class QuickSearchWindow : Window
 
     private void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // Triggers UI rebind for preview pane
+        Bindings.Update();
+        SearchPage.ApplyQueryHighlights(QuickCanvasExcerptBlock, ViewModel.Query);
+        SearchPage.ApplyQueryHighlights(QuickCodeExcerptBlock, ViewModel.Query);
+    }
+
+    private async void OnQuickOpenHeroClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.OpenCurrentAsync();
+        HidePanel();
+    }
+
+    private async void OnQuickRevealClick(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.RevealCurrentAsync();
+        HidePanel();
     }
 
     public Visibility SelectedToEmptyVisibility(object? item) => item == null ? Visibility.Visible : Visibility.Collapsed;
