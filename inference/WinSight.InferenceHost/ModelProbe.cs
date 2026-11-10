@@ -34,18 +34,25 @@ internal static class ModelProbe
 
     internal static object Inspect(string modelRoot)
     {
-        var graphs = new[] { "model_q4.onnx", "vision_encoder_q4.onnx", "audio_encoder_q4.onnx" };
-        // Require all modalities before loading any session; a missing audio model is not partial success.
+        var ryzenDir = Path.Combine(modelRoot, "RyzenAI");
+        bool isRyzen = File.Exists(Path.Combine(ryzenDir, "model_text_s256.onnx")) || File.Exists(Path.Combine(modelRoot, "onnx", "model_text_s256.onnx"));
+
+        var graphs = isRyzen
+            ? new[] { "model_text_s256.onnx", "vision_encoder_static_140.onnx", "audio_encoder_10s.onnx", "model_image_s144.onnx", "model_audio_10s.onnx" }
+            : new[] { "model_q4.onnx", "vision_encoder_q4.onnx", "audio_encoder_q4.onnx" };
+
+        var graphDir = isRyzen && Directory.Exists(ryzenDir) ? ryzenDir : Path.Combine(Path.GetFullPath(modelRoot), "onnx");
+
         foreach (var graph in graphs)
         {
-            var path = Path.Combine(Path.GetFullPath(modelRoot), "onnx", graph);
-            if (!File.Exists(path) || !File.Exists(path + "_data"))
-                throw new FileNotFoundException($"Missing graph or external data pair: {graph}");
+            var path = Path.Combine(graphDir, graph);
+            if (!File.Exists(path))
+                throw new FileNotFoundException($"Missing graph file: {graph}");
         }
         var reports = new List<object>();
         foreach (var graph in graphs)
         {
-            var path = Path.Combine(Path.GetFullPath(modelRoot), "onnx", graph);
+            var path = Path.Combine(graphDir, graph);
             using var options = CpuOptions();
             var clock = Stopwatch.StartNew();
             using var session = new InferenceSession(path, options);
@@ -59,9 +66,12 @@ internal static class ModelProbe
         {
             phase = "P0", ok = true, mode = "session-inspection",
             ortVersion = OrtEnv.Instance().GetVersionString(),
-            requestedProvider = "CPUExecutionProvider", providerDownloadsAllowed = false,
+            requestedProvider = isRyzen ? "Heterogeneous (NPU+GPU+CPU)" : "CPUExecutionProvider",
+            providerDownloadsAllowed = false,
             modalities = new[] { "text", "vision", "audio" },
-            graphs = reports, note = "Session creation is not end-to-end multimodal inference."
+            graphs = reports,
+            variant = isRyzen ? "RyzenAI-Static-AIE" : "Legacy-Q4",
+            note = "Session creation is not end-to-end multimodal inference."
         };
     }
 

@@ -13,9 +13,9 @@ internal sealed class EmbeddingEngine : IDisposable
     private readonly ExecutionProviderManager providers;
     private bool disposed;
     internal string Profile { get; }
-    internal bool TextLoaded => providers.Loaded("model_q4.onnx");
-    internal bool VisionLoaded => providers.Loaded("vision_encoder_q4.onnx");
-    internal bool AudioLoaded => providers.Loaded("audio_encoder_q4.onnx");
+    internal bool TextLoaded => models.IsRyzenAI ? providers.Loaded("model_text_s256.onnx") : providers.Loaded("model_q4.onnx");
+    internal bool VisionLoaded => models.IsRyzenAI ? providers.Loaded("vision_encoder_static_140.onnx") : providers.Loaded("vision_encoder_q4.onnx");
+    internal bool AudioLoaded => models.IsRyzenAI ? providers.Loaded("audio_encoder_10s.onnx") : providers.Loaded("audio_encoder_q4.onnx");
     internal string Preference { get; }
     internal bool ProviderDownloadsAllowed { get; }
     internal string RequestedProvider => FormatRequestedProvider(Preference);
@@ -66,12 +66,66 @@ internal sealed class EmbeddingEngine : IDisposable
         var ids = tokenizer.Encode(input);
         if (ids.Any(id => id is 258880 or 258881 or 258884))
             throw new ArgumentException("Media placeholder tokens are not valid text-only input");
+
+        if (models.IsRyzenAI)
+        {
+            return EmbedTextRyzenAI(ids);
+        }
+
         return Embed(ids, [], "text");
+    }
+
+    private float[] EmbedTextRyzenAI(long[] ids)
+    {
+        const int seqLen = 256;
+        var paddedIds = new long[seqLen];
+        var mask = new long[seqLen];
+        int count = Math.Min(ids.Length, seqLen);
+        for (int i = 0; i < count; i++)
+        {
+            paddedIds[i] = ids[i];
+            mask[i] = 1;
+        }
+
+        var inputs = new[]
+        {
+            NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(paddedIds, new[] { 1, seqLen })),
+            NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(mask, new[] { 1, seqLen }))
+        };
+
+        var result = providers.Run("model_text_s256.onnx", inputs, "sentence_embedding");
+        return Normalize(result.Values);
+    }
+
+    private static float[] Normalize(float[] vec)
+    {
+        double sum = 0;
+        for (int i = 0; i < vec.Length; i++) sum += (double)vec[i] * vec[i];
+        float inv = (float)(1.0 / Math.Max(1e-12, Math.Sqrt(sum)));
+        var res = new float[vec.Length];
+        for (int i = 0; i < vec.Length; i++) res[i] = vec[i] * inv;
+        return res;
     }
 
     internal float[] EncodeVision(float[] pixels, long[] positions, int patchCount)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
+        if (models.IsRyzenAI)
+        {
+            var staticPixels = new float[1260 * 768];
+            Array.Copy(pixels, staticPixels, Math.Min(pixels.Length, staticPixels.Length));
+            var staticPos = new long[1260 * 2];
+            Array.Fill(staticPos, -1);
+            Array.Copy(positions, staticPos, Math.Min(positions.Length, staticPos.Length));
+
+            var npuInputs = new[] {
+                NamedOnnxValue.CreateFromTensor("pixel_values", new DenseTensor<float>(staticPixels, new[] { 1, 1260, 768 })),
+                NamedOnnxValue.CreateFromTensor("pixel_position_ids", new DenseTensor<long>(staticPos, new[] { 1, 1260, 2 }))
+            };
+            var res = providers.Run("vision_encoder_static_140.onnx", npuInputs, "image_features");
+            return res.Values;
+        }
+
         if (patchCount is <= 0 or > 10080 || patchCount % 9 != 0 || pixels.Length != patchCount * 768 || positions.Length != patchCount * 2)
             throw new ArgumentException("Vision requires 1..10080 patches, divisible by 9, with 768 pixels and 2 positions per patch");
         if (!pixels.All(float.IsFinite) || positions.Any(position => position is < -1 or >= 10240))
@@ -88,6 +142,22 @@ internal sealed class EmbeddingEngine : IDisposable
     internal float[] EncodeAudio(float[] features, bool[] mask, int frameCount)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
+        if (models.IsRyzenAI)
+        {
+            var staticFeats = new float[999 * 128];
+            Array.Copy(features, staticFeats, Math.Min(features.Length, staticFeats.Length));
+            var staticMask = new bool[999];
+            Array.Fill(staticMask, true);
+            Array.Copy(mask, staticMask, Math.Min(mask.Length, staticMask.Length));
+
+            var cpuInputs = new[] {
+                NamedOnnxValue.CreateFromTensor("input_features", new DenseTensor<float>(staticFeats, new[] { 1, 999, 128 })),
+                NamedOnnxValue.CreateFromTensor("input_features_mask", new DenseTensor<bool>(staticMask, new[] { 1, 999 }))
+            };
+            var res = providers.Run("audio_encoder_10s.onnx", cpuInputs, "audio_features");
+            return res.Values;
+        }
+
         if (frameCount is <= 0 or > 3000 || features.Length != frameCount * 128 || mask.Length != frameCount || !features.All(float.IsFinite))
             throw new ArgumentException("Audio requires 1..3000 frames with 128 features and one mask per frame");
         if (!mask.Any(value => value)) throw new ArgumentException("Audio mask is empty");
@@ -123,6 +193,54 @@ internal sealed class EmbeddingEngine : IDisposable
         if (kind is not ("image" or "video" or "audio")) throw new ArgumentException("kind must be image, video or audio");
         if (rows.Length == 0 || rows.Length % 512 != 0 || rows.Length / 512 > MaxTokens - 4 || !rows.All(float.IsFinite))
             throw new ArgumentException("Expected nonempty finite feature rows with 512 columns");
+
+        if (models.IsRyzenAI)
+        {
+            if (kind is "image" or "video")
+            {
+                const int seqLen = 144;
+                int nValid = Math.Clamp(rows.Length / 512, 1, 140);
+                var seqIds = new List<long> { 2, 255999 };
+                for (int i = 0; i < nValid; i++) seqIds.Add(258880);
+                seqIds.Add(258882); seqIds.Add(1);
+                while (seqIds.Count < seqLen) seqIds.Add(0);
+
+                var mask = new long[seqLen];
+                for (int i = 0; i < nValid + 4 && i < seqLen; i++) mask[i] = 1;
+
+                var staticFeats = new float[140 * 512];
+                Array.Copy(rows, staticFeats, Math.Min(rows.Length, staticFeats.Length));
+
+                var inputs = new[]
+                {
+                    NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(seqIds.ToArray(), new[] { 1, seqLen })),
+                    NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(mask, new[] { 1, seqLen })),
+                    NamedOnnxValue.CreateFromTensor("image_features", new DenseTensor<float>(staticFeats, new[] { 140, 512 }))
+                };
+
+                var result = providers.Run("model_image_s144.onnx", inputs, "sentence_embedding");
+                return Normalize(result.Values);
+            }
+            else
+            {
+                const int seqLen = 256;
+                var seqIds = new List<long> { 2, 258881 };
+                while (seqIds.Count < seqLen) seqIds.Add(0);
+                var mask = new long[seqLen];
+                for (int i = 0; i < 2; i++) mask[i] = 1;
+
+                var inputs = new[]
+                {
+                    NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(seqIds.ToArray(), new[] { 1, seqLen })),
+                    NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(mask, new[] { 1, seqLen })),
+                    NamedOnnxValue.CreateFromTensor("audio_features", new DenseTensor<float>(rows, new[] { rows.Length / 512, 512 }))
+                };
+
+                var result = providers.Run("model_audio_10s.onnx", inputs, "sentence_embedding");
+                return Normalize(result.Values);
+            }
+        }
+
         var marker = kind switch { "image" => "<|image|>", "video" => "<|video|>", _ => "<|audio|>" };
         // Pinned processor expands media-only input with begin/end markers, then applies tokenizer BOS/EOS.
         var prompt = (kind == "audio" ? "<|audio>" : "<|image>")

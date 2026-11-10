@@ -274,7 +274,7 @@ public async Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancell
         {
             AppLog.Warn("GetModelInventoryAsync failed", error);
             var detail = error.Message.Contains("未找到") || error.Message.Contains("Could not find a part of the path") || error.Message.Contains("FileNotFoundException")
-                ? "离线嵌入模型权重文件尚未下载或未完整就绪（需补齐 onnx/model_q4.onnx 等 768d 模型文件）。"
+                ? "离线嵌入模型未就绪: " + error.Message
                 : error.Message;
             return new ModelInventory("unavailable", "unavailable", "unavailable", detail,
                 WinSight.Shared.OcrIdentity.Engine, WinSight.Shared.OcrIdentity.EngineVersion, WinSight.Shared.OcrIdentity.ModelProfile, "CPU (isolated OCR host process)",

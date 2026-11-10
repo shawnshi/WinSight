@@ -366,7 +366,9 @@ try {
         }
     }
     Copy-Item (Join-Path $desktop 'THIRD-PARTY-NOTICES.txt') (Join-Path $stage 'app/THIRD-PARTY-NOTICES.txt')
-    Copy-Item (Join-Path $desktop 'licenses') (Join-Path $stage 'app/licenses') -Recurse
+    if (Test-Path -LiteralPath (Join-Path $desktop 'licenses')) {
+        Copy-Item (Join-Path $desktop 'licenses') (Join-Path $stage 'app/licenses') -Recurse
+    }
     $tokenizerNotices = Join-Path $stage 'app/licenses/tokenizer'
     New-Item -ItemType Directory -Path $tokenizerNotices -Force | Out-Null
     Copy-Item (Join-Path $root 'native/winsight-tokenizer/licenses') (Join-Path $tokenizerNotices 'texts') -Recurse
