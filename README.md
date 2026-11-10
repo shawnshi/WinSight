@@ -144,7 +144,7 @@ WinSight/
 ### 1\. 终端用户安装使用
 
 * **现成安装包直接安装**：
-可以直接运行仓库中已编译打包好的完整安装包：[**`releases/WinSight-0.9.0-x64-setup.exe`**](releases/WinSight-0.9.0-x64-setup.exe)（体积约 230.4 MiB，SHA-256 校验和：`786b82e0fbace63f8e19921b608bec37d802188060aa387337a7f9c71ead463f`）。
+可以直接运行仓库中已编译打包好的完整安装包：[**`releases/WinSight-0.9.0-x64-setup.exe`**](releases/WinSight-0.9.0-x64-setup.exe)（体积约 194.0 MiB，SHA-256 校验和：`e97bb6ee063e09426d195b29a87dc8f9638ffdc7f332c55d53e1c3432f712347`）。自动感知 AMD / Intel 芯片平台，按需条件安装并建立无冗余硬件加速拓扑。
 * **标准安装路径**：双击运行安装向导，默认安装至 **`C:\Program Files\WinSight`**。
 * **安装包特性与可选任务**：
 

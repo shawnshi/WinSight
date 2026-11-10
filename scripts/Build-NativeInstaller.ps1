@@ -31,8 +31,7 @@ $allRequired = @(
     'bridge\winsight-mcp.exe',
     'inference\WinSight.InferenceHost.exe',
     'inference\ocr\WinSight.OcrHost.exe',
-    'inference\winml\WinSight.WinMlHost.exe',
-    'foundry\WinSight.FoundryHost.exe'
+    'inference\winml\WinSight.WinMlHost.exe'
 )
 foreach ($required in $allRequired) {
     if (-not (Test-Path -LiteralPath (Join-Path $payload $required) -PathType Leaf)) {

@@ -150,10 +150,11 @@ public partial class App : Application
     /// <summary>Runs the network-using provisioning only when the user allowed it; failures back off and never block the UI.</summary>
     private async Task ProvisionExecutionProvidersAsync(bool allowed)
     {
-        if (isSmokeTest) return;
+        if (isSmokeTest || !allowed) return;
         try
         {
             var host = Path.Combine(AppContext.BaseDirectory, "foundry", "WinSight.FoundryHost.exe");
+            if (!File.Exists(host)) return;
             var outcome = await new ExecutionProviderProvisioner(customDataDir, host).RunAsync(allowed);
             AppLog.Info($"execution-provider provisioning: {outcome.Status} - {outcome.Detail}");
         }

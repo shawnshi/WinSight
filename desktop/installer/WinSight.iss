@@ -42,9 +42,9 @@ SolidCompression=yes
 WizardStyle=modern
 SetupLogging=yes
 
-; Graceful process termination across all 7 WinSight execution roles
+; Graceful process termination across active WinSight execution roles
 CloseApplications=yes
-CloseApplicationsFilter=WinSight.App.exe,winsight-native.exe,winsight-mcp.exe,WinSight.InferenceHost.exe,WinSight.OcrHost.exe,WinSight.WinMlHost.exe,WinSight.FoundryHost.exe
+CloseApplicationsFilter=WinSight.App.exe,winsight-native.exe,winsight-mcp.exe,WinSight.InferenceHost.exe,WinSight.OcrHost.exe,WinSight.WinMlHost.exe
 RestartApplications=no
 
 #ifdef ExtraDiskSpace
@@ -62,7 +62,12 @@ Name: "addtopath"; Description: "将 WinSight 工具添加至系统 PATH 环境�
 
 [Files]
 Source: "{#PayloadDir}\*"; Excludes: "models\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#PayloadDir}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 通用模型配置与基础数据文件 (全平台安装)
+Source: "{#PayloadDir}\models\*"; Excludes: "RyzenAI\*,IntelOpenVINO\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
+; AMD 平台专用模型、配置与 AIE 硬件微码 (仅在 AMD 处理器上安装)
+Source: "{#PayloadDir}\models\RyzenAI\*"; DestDir: "{app}\models\RyzenAI"; Check: IsAmdCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; Intel 平台专用模型与配置 (仅在 Intel 处理器上安装)
+Source: "{#PayloadDir}\models\IntelOpenVINO\*"; DestDir: "{app}\models\IntelOpenVINO"; Check: IsIntelCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{autoprograms}\WinSight"; Filename: "{app}\WinSight.App.exe"
@@ -77,6 +82,26 @@ const
   RunValue = 'WinSight';
   UserEnvKey = 'Environment';
   SystemEnvKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+
+function GetCpuVendor(): String;
+var
+  Vendor: String;
+begin
+  if RegQueryStringValue(HKEY_LOCAL_MACHINE, 'HARDWARE\DESCRIPTION\System\CentralProcessor\0', 'VendorIdentifier', Vendor) then
+    Result := Uppercase(Vendor)
+  else
+    Result := '';
+end;
+
+function IsAmdCpu(): Boolean;
+begin
+  Result := Pos('AMD', GetCpuVendor()) > 0;
+end;
+
+function IsIntelCpu(): Boolean;
+begin
+  Result := Pos('INTEL', GetCpuVendor()) > 0;
+end;
 
 procedure AddToPath();
 var
@@ -142,11 +167,23 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  AppDir: String;
+  ResultCode: Integer;
 begin
   if CurStep = ssPostInstall then
   begin
     if WizardIsTaskSelected('addtopath') then
       AddToPath();
+
+    AppDir := ExpandConstant('{app}');
+    if IsAmdCpu() then
+    begin
+      { 为 RyzenAI 目录自动补齐对 onnx/*.onnx_data 的硬链接，避免磁盘冗余并满足 ONNX Runtime 相对路径约束 }
+      Exec('cmd.exe', '/c mklink /H "' + AppDir + '\models\RyzenAI\model.onnx_data" "' + AppDir + '\models\onnx\model.onnx_data"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec('cmd.exe', '/c mklink /H "' + AppDir + '\models\RyzenAI\audio_encoder.onnx_data" "' + AppDir + '\models\onnx\audio_encoder.onnx_data"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec('cmd.exe', '/c mklink /H "' + AppDir + '\models\RyzenAI\vision_encoder.onnx_data" "' + AppDir + '\models\onnx\vision_encoder.onnx_data"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
   end;
 end;
 

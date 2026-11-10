@@ -17,6 +17,7 @@ param(
     #  - Foundry host: never embeds; it only lists and registers execution providers (app\foundry\WinSight.FoundryHost.exe).
     [switch]$IncludeWindowsMlHost,
     [switch]$IncludeFoundryHost,
+    [switch]$IncludePlatformModels,
     [string]$ModelDirectory,
     [string]$OcrModelDirectory,
     [string]$Configuration = 'Release',
@@ -334,11 +335,13 @@ try {
         --configuration $Configuration --runtime win-x64 --self-contained true --output $winmlOut *> (Join-Path $logs 'winml.publish.log')
     if ($LASTEXITCODE -ne 0) { throw 'WinML host publish failed; stage is incomplete.' }
 
-    # Foundry Local host (for Foundry provider probing and management)
-    $foundryOut = Join-Path $stage 'app/foundry'
-    & dotnet publish (Join-Path $root 'inference/WinSight.FoundryHost/WinSight.FoundryHost.csproj') `
-        --configuration $Configuration --runtime win-x64 --self-contained true --output $foundryOut *> (Join-Path $logs 'foundry.publish.log')
-    if ($LASTEXITCODE -ne 0) { throw 'Foundry host publish failed; stage is incomplete.' }
+    # Optional Foundry Local host (retired from default release payload to save 126MB)
+    if ($IncludeFoundryHost) {
+        $foundryOut = Join-Path $stage 'app/foundry'
+        & dotnet publish (Join-Path $root 'inference/WinSight.FoundryHost/WinSight.FoundryHost.csproj') `
+            --configuration $Configuration --runtime win-x64 --self-contained true --output $foundryOut *> (Join-Path $logs 'foundry.publish.log')
+        if ($LASTEXITCODE -ne 0) { throw 'Foundry host publish failed; stage is incomplete.' }
+    }
 
     if ($OcrModelDirectory -and $ocrModelManifest) {
         foreach ($pin in $ocrModelManifest.files) {
@@ -363,6 +366,34 @@ try {
         $sourceCfg = Join-Path $configSources $cfg
         if (Test-Path -LiteralPath $sourceCfg) {
             Copy-Item $sourceCfg (Join-Path $modelsOut $cfg) -Force
+        }
+    }
+
+    if ($IncludePlatformModels) {
+        $sourceModels = Join-Path $root 'models'
+        if (Test-Path $sourceModels) {
+            foreach ($item in @('config.json', 'processor_config.json', 'preprocessor_config.json', 'tokenizer.json', 'tokenizer_config.json')) {
+                $p = Join-Path $sourceModels $item
+                if (Test-Path -LiteralPath $p) { Copy-Item $p (Join-Path $modelsOut $item) -Force }
+            }
+            $srcOnnx = Join-Path $sourceModels 'onnx'
+            if (Test-Path $srcOnnx) {
+                $dstOnnx = Join-Path $modelsOut 'onnx'
+                New-Item -ItemType Directory -Path $dstOnnx -Force | Out-Null
+                Copy-Item (Join-Path $srcOnnx '*') $dstOnnx -Recurse -Force
+            }
+            $srcRyzen = Join-Path $sourceModels 'RyzenAI'
+            if (Test-Path $srcRyzen) {
+                $dstRyzen = Join-Path $modelsOut 'RyzenAI'
+                New-Item -ItemType Directory -Path $dstRyzen -Force | Out-Null
+                Copy-Item (Join-Path $srcRyzen '*') $dstRyzen -Recurse -Force -Exclude "*.onnx_data"
+            }
+            $srcIntel = Join-Path $sourceModels 'IntelOpenVINO'
+            if (Test-Path $srcIntel) {
+                $dstIntel = Join-Path $modelsOut 'IntelOpenVINO'
+                New-Item -ItemType Directory -Path $dstIntel -Force | Out-Null
+                Copy-Item (Join-Path $srcIntel '*') $dstIntel -Recurse -Force -Exclude "*.onnx_data"
+            }
         }
     }
     Copy-Item (Join-Path $desktop 'THIRD-PARTY-NOTICES.txt') (Join-Path $stage 'app/THIRD-PARTY-NOTICES.txt')
