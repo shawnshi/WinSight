@@ -133,6 +133,8 @@ internal sealed class ExecutionProviderManager : IDisposable
 
         var graphList = models.IsRyzenAI
             ? new[] { "model_text_s256.onnx", "vision_encoder_static_140.onnx", "audio_encoder_10s.onnx", "model_image_s144.onnx", "model_audio_10s.onnx" }
+            : models.IsIntelOpenVINO
+            ? new[] { "model_text_d256.onnx", "model_text_q32.onnx", "vision_encoder_static_140.onnx", "audio_encoder_10s.onnx", "model_image_140.onnx", "model_audio_10s.onnx" }.Where(g => File.Exists(models.Graph(g))).ToArray()
             : new[] { "model_q4.onnx", "vision_encoder_q4.onnx", "audio_encoder_q4.onnx" };
 
         slots = graphList
@@ -145,6 +147,11 @@ internal sealed class ExecutionProviderManager : IDisposable
         if (models.IsRyzenAI && preference != "cpu")
         {
             InitializeRyzenAiAcceleration();
+            background = Task.CompletedTask;
+        }
+        else if (models.IsIntelOpenVINO && preference != "cpu")
+        {
+            InitializeIntelOpenVinoAcceleration();
             background = Task.CompletedTask;
         }
         else if (preference != "cpu")
@@ -221,6 +228,48 @@ internal sealed class ExecutionProviderManager : IDisposable
         if (slots.TryGetValue("audio_encoder_10s.onnx", out _))
         {
             states["audio_encoder_10s.onnx"] = "eligible CPUExecutionProvider (4-thread Conformer) [Strategy B]";
+        }
+    }
+
+    private void InitializeIntelOpenVinoAcceleration()
+    {
+        if (!models.IsIntelOpenVINO) return;
+        var ort = OrtEnv.Instance();
+        var devices = ort.GetEpDevices();
+        var dmlDevice = devices.FirstOrDefault(d => d.EpName.Contains("Dml", StringComparison.OrdinalIgnoreCase));
+        var ovDevice = devices.FirstOrDefault(d => d.EpName.Contains("OpenVINO", StringComparison.OrdinalIgnoreCase));
+
+        // 1. GPU (DirectML or OpenVINO GPU) 承接: 文本主干、图像融合、音频融合
+        var gpuDevice = dmlDevice ?? ovDevice;
+        if (gpuDevice != null)
+        {
+            foreach (var graph in new[] { "model_text_d256.onnx", "model_text_q32.onnx", "model_image_140.onnx", "model_audio_10s.onnx" })
+            {
+                if (!slots.TryGetValue(graph, out var slot)) continue;
+                try
+                {
+                    using var gpuOpts = ModelProbe.CpuOptions();
+                    gpuOpts.AppendExecutionProvider(ort, new[] { gpuDevice }, new Dictionary<string, string>());
+                    var session = new InferenceSession(models.Graph(graph), gpuOpts);
+                    slot.Active = session;
+                    slot.ActiveName = gpuDevice.EpName + " (GPU: " + gpuDevice.HardwareDevice.DeviceId + ")";
+                    slot.LastRunName = slot.ActiveName;
+                    states[graph] = "eligible " + slot.ActiveName + " [Intel Platform]";
+                }
+                catch (Exception ex)
+                {
+                    states[graph] = "GPU init fallback to CPU: " + ex.Message;
+                }
+            }
+        }
+
+        // 2. CPU 承接: 视觉与音频前置编码器
+        foreach (var graph in new[] { "vision_encoder_static_140.onnx", "audio_encoder_10s.onnx" })
+        {
+            if (slots.TryGetValue(graph, out _))
+            {
+                states[graph] = "eligible CPUExecutionProvider [Intel Platform]";
+            }
         }
     }
 
@@ -863,7 +912,7 @@ internal sealed class ExecutionProviderManager : IDisposable
     private static bool ValidResult(string graph, GraphResult result, int? expectedRows)
     {
         if (!result.Values.All(float.IsFinite)) return false;
-        if (graph is "model_q4.onnx" or "model_text_s256.onnx" or "model_image_s144.onnx" or "model_audio_10s.onnx")
+        if (graph is "model_q4.onnx" or "model_text_s256.onnx" or "model_text_d256.onnx" or "model_text_q32.onnx" or "model_image_s144.onnx" or "model_image_140.onnx" or "model_audio_10s.onnx")
             return result.Shape.SequenceEqual(new[] { 1, 768 })
                 && Math.Abs(Math.Sqrt(result.Values.Sum(value => (double)value * value)) - 1) <= .05;
         return result.Shape.Length == 2 && result.Shape[0] > 0 && result.Shape[1] == 512

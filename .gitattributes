@@ -7,3 +7,4 @@
 # Its SHA-256 is checked against the upstream source during publication validation.
 licenses/DigUp-Acknowledgements.txt -whitespace
 releases/*.exe filter=lfs diff=lfs merge=lfs -text
+releases/*.bin filter=lfs diff=lfs merge=lfs -text

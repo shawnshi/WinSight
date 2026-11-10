@@ -34,25 +34,41 @@ internal static class ModelProbe
 
     internal static object Inspect(string modelRoot)
     {
-        var ryzenDir = Path.Combine(modelRoot, "RyzenAI");
-        bool isRyzen = File.Exists(Path.Combine(ryzenDir, "model_text_s256.onnx")) || File.Exists(Path.Combine(modelRoot, "onnx", "model_text_s256.onnx"));
+        var manifest = new ModelManifest(modelRoot);
+        string[] graphs;
+        string requestedProvider;
+        string variant;
 
-        var graphs = isRyzen
-            ? new[] { "model_text_s256.onnx", "vision_encoder_static_140.onnx", "audio_encoder_10s.onnx", "model_image_s144.onnx", "model_audio_10s.onnx" }
-            : new[] { "model_q4.onnx", "vision_encoder_q4.onnx", "audio_encoder_q4.onnx" };
-
-        var graphDir = isRyzen && Directory.Exists(ryzenDir) ? ryzenDir : Path.Combine(Path.GetFullPath(modelRoot), "onnx");
+        if (manifest.IsRyzenAI)
+        {
+            graphs = new[] { "model_text_s256.onnx", "vision_encoder_static_140.onnx", "audio_encoder_10s.onnx", "model_image_s144.onnx", "model_audio_10s.onnx" };
+            requestedProvider = "Heterogeneous (NPU+GPU+CPU)";
+            variant = "RyzenAI-Static-AIE";
+        }
+        else if (manifest.IsIntelOpenVINO)
+        {
+            graphs = new[] { "model_text_d256.onnx", "model_text_q32.onnx", "vision_encoder_static_140.onnx", "audio_encoder_10s.onnx", "model_image_140.onnx", "model_audio_10s.onnx" }
+                .Where(g => File.Exists(manifest.Graph(g))).ToArray();
+            requestedProvider = "Heterogeneous (Intel OpenVINO/DirectML+CPU)";
+            variant = "Intel-OpenVINO-Static";
+        }
+        else
+        {
+            graphs = new[] { "model_q4.onnx", "vision_encoder_q4.onnx", "audio_encoder_q4.onnx" };
+            requestedProvider = "CPUExecutionProvider";
+            variant = "Legacy-Q4";
+        }
 
         foreach (var graph in graphs)
         {
-            var path = Path.Combine(graphDir, graph);
+            var path = manifest.Graph(graph);
             if (!File.Exists(path))
-                throw new FileNotFoundException($"Missing graph file: {graph}");
+                throw new FileNotFoundException($"Missing graph file: {graph} (resolved: {path})");
         }
         var reports = new List<object>();
         foreach (var graph in graphs)
         {
-            var path = Path.Combine(graphDir, graph);
+            var path = manifest.Graph(graph);
             using var options = CpuOptions();
             var clock = Stopwatch.StartNew();
             using var session = new InferenceSession(path, options);
@@ -66,11 +82,13 @@ internal static class ModelProbe
         {
             phase = "P0", ok = true, mode = "session-inspection",
             ortVersion = OrtEnv.Instance().GetVersionString(),
-            requestedProvider = isRyzen ? "Heterogeneous (NPU+GPU+CPU)" : "CPUExecutionProvider",
+            requestedProvider = requestedProvider,
             providerDownloadsAllowed = false,
             modalities = new[] { "text", "vision", "audio" },
             graphs = reports,
-            variant = isRyzen ? "RyzenAI-Static-AIE" : "Legacy-Q4",
+            variant = variant,
+            platform = manifest.Platform.ToString(),
+            platform_dir = manifest.PlatformDir,
             note = "Session creation is not end-to-end multimodal inference."
         };
     }

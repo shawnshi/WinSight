@@ -101,5 +101,10 @@ if ($LASTEXITCODE -ne 0) { throw "ISCC compilation failed (exit $LASTEXITCODE)."
 $installer = Get-ChildItem -LiteralPath $OutputDirectory -Filter "WinSight-$version-x64-setup.exe" | Select-Object -First 1
 if (-not $installer) { throw 'The installer was not produced.' }
 $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-Set-Content -LiteralPath ($installer.FullName + '.sha256') -Value "$hash  $($installer.Name)" -Encoding ascii
+$hashContent = "$hash  $($installer.Name)`r`n"
+Get-ChildItem -LiteralPath $OutputDirectory -Filter "WinSight-$version-x64-setup*.bin" | ForEach-Object {
+    $binHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hashContent += "$binHash  $($_.Name)`r`n"
+}
+Set-Content -LiteralPath ($installer.FullName + '.sha256') -Value $hashContent.TrimEnd() -Encoding ascii
 Write-Output "Built $($installer.FullName) ($([math]::Round($installer.Length / 1MB, 1)) MiB, sha256 $hash, uncompressed $estimatedKb KB)$(if (-not $signing) { '; UNSIGNED' })"

@@ -13,9 +13,13 @@ internal sealed class EmbeddingEngine : IDisposable
     private readonly ExecutionProviderManager providers;
     private bool disposed;
     internal string Profile { get; }
-    internal bool TextLoaded => models.IsRyzenAI ? providers.Loaded("model_text_s256.onnx") : providers.Loaded("model_q4.onnx");
-    internal bool VisionLoaded => models.IsRyzenAI ? providers.Loaded("vision_encoder_static_140.onnx") : providers.Loaded("vision_encoder_q4.onnx");
-    internal bool AudioLoaded => models.IsRyzenAI ? providers.Loaded("audio_encoder_10s.onnx") : providers.Loaded("audio_encoder_q4.onnx");
+    internal bool TextLoaded => models.IsRyzenAI
+        ? providers.Loaded("model_text_s256.onnx")
+        : models.IsIntelOpenVINO
+        ? (providers.Loaded("model_text_d256.onnx") || providers.Loaded("model_text_q32.onnx"))
+        : providers.Loaded("model_q4.onnx");
+    internal bool VisionLoaded => models.IsModernPlatform ? providers.Loaded("vision_encoder_static_140.onnx") : providers.Loaded("vision_encoder_q4.onnx");
+    internal bool AudioLoaded => models.IsModernPlatform ? providers.Loaded("audio_encoder_10s.onnx") : providers.Loaded("audio_encoder_q4.onnx");
     internal string Preference { get; }
     internal bool ProviderDownloadsAllowed { get; }
     internal string RequestedProvider => FormatRequestedProvider(Preference);
@@ -71,6 +75,10 @@ internal sealed class EmbeddingEngine : IDisposable
         {
             return EmbedTextRyzenAI(ids);
         }
+        if (models.IsIntelOpenVINO)
+        {
+            return EmbedTextIntelOpenVINO(ids);
+        }
 
         return Embed(ids, [], "text");
     }
@@ -97,6 +105,31 @@ internal sealed class EmbeddingEngine : IDisposable
         return Normalize(result.Values);
     }
 
+    private float[] EmbedTextIntelOpenVINO(long[] ids)
+    {
+        bool useQ32 = ids.Length <= 32 && File.Exists(models.Graph("model_text_q32.onnx"));
+        int seqLen = useQ32 ? 32 : 256;
+        string graphName = useQ32 ? "model_text_q32.onnx" : "model_text_d256.onnx";
+
+        var paddedIds = new long[seqLen];
+        var mask = new long[seqLen];
+        int count = Math.Min(ids.Length, seqLen);
+        for (int i = 0; i < count; i++)
+        {
+            paddedIds[i] = ids[i];
+            mask[i] = 1;
+        }
+
+        var inputs = new[]
+        {
+            NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(paddedIds, new[] { 1, seqLen })),
+            NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(mask, new[] { 1, seqLen }))
+        };
+
+        var result = providers.Run(graphName, inputs, "sentence_embedding");
+        return Normalize(result.Values);
+    }
+
     private static float[] Normalize(float[] vec)
     {
         double sum = 0;
@@ -110,7 +143,7 @@ internal sealed class EmbeddingEngine : IDisposable
     internal float[] EncodeVision(float[] pixels, long[] positions, int patchCount)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        if (models.IsRyzenAI)
+        if (models.IsModernPlatform)
         {
             var staticPixels = new float[1260 * 768];
             Array.Copy(pixels, staticPixels, Math.Min(pixels.Length, staticPixels.Length));
@@ -142,7 +175,7 @@ internal sealed class EmbeddingEngine : IDisposable
     internal float[] EncodeAudio(float[] features, bool[] mask, int frameCount)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        if (models.IsRyzenAI)
+        if (models.IsModernPlatform)
         {
             var staticFeats = new float[999 * 128];
             Array.Copy(features, staticFeats, Math.Min(features.Length, staticFeats.Length));
@@ -194,7 +227,7 @@ internal sealed class EmbeddingEngine : IDisposable
         if (rows.Length == 0 || rows.Length % 512 != 0 || rows.Length / 512 > MaxTokens - 4 || !rows.All(float.IsFinite))
             throw new ArgumentException("Expected nonempty finite feature rows with 512 columns");
 
-        if (models.IsRyzenAI)
+        if (models.IsModernPlatform)
         {
             if (kind is "image" or "video")
             {
@@ -218,7 +251,8 @@ internal sealed class EmbeddingEngine : IDisposable
                     NamedOnnxValue.CreateFromTensor("image_features", new DenseTensor<float>(staticFeats, new[] { 140, 512 }))
                 };
 
-                var result = providers.Run("model_image_s144.onnx", inputs, "sentence_embedding");
+                string graphName = models.IsRyzenAI ? "model_image_s144.onnx" : "model_image_140.onnx";
+                var result = providers.Run(graphName, inputs, "sentence_embedding");
                 return Normalize(result.Values);
             }
             else

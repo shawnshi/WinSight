@@ -372,27 +372,17 @@ try {
     if ($IncludePlatformModels) {
         $sourceModels = Join-Path $root 'models'
         if (Test-Path $sourceModels) {
-            foreach ($item in @('config.json', 'processor_config.json', 'preprocessor_config.json', 'tokenizer.json', 'tokenizer_config.json')) {
-                $p = Join-Path $sourceModels $item
-                if (Test-Path -LiteralPath $p) { Copy-Item $p (Join-Path $modelsOut $item) -Force }
-            }
-            $srcOnnx = Join-Path $sourceModels 'onnx'
-            if (Test-Path $srcOnnx) {
-                $dstOnnx = Join-Path $modelsOut 'onnx'
-                New-Item -ItemType Directory -Path $dstOnnx -Force | Out-Null
-                Copy-Item (Join-Path $srcOnnx '*') $dstOnnx -Recurse -Force
-            }
             $srcRyzen = Join-Path $sourceModels 'RyzenAI'
             if (Test-Path $srcRyzen) {
                 $dstRyzen = Join-Path $modelsOut 'RyzenAI'
                 New-Item -ItemType Directory -Path $dstRyzen -Force | Out-Null
-                Copy-Item (Join-Path $srcRyzen '*') $dstRyzen -Recurse -Force -Exclude "*.onnx_data"
+                Copy-Item (Join-Path $srcRyzen '*') $dstRyzen -Recurse -Force
             }
             $srcIntel = Join-Path $sourceModels 'IntelOpenVINO'
             if (Test-Path $srcIntel) {
                 $dstIntel = Join-Path $modelsOut 'IntelOpenVINO'
                 New-Item -ItemType Directory -Path $dstIntel -Force | Out-Null
-                Copy-Item (Join-Path $srcIntel '*') $dstIntel -Recurse -Force -Exclude "*.onnx_data"
+                Copy-Item (Join-Path $srcIntel '*') $dstIntel -Recurse -Force
             }
         }
     }

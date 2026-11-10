@@ -8,10 +8,10 @@
   #error Pass /DPayloadDir=<staged app folder>; use scripts/Build-NativeInstaller.ps1.
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.9.0"
+  #define AppVersion "1.0.0"
 #endif
 #ifndef NumericVersion
-  #define NumericVersion "0.9.0.0"
+  #define NumericVersion "1.0.0.0"
 #endif
 #ifndef OutputDir
   #define OutputDir "."
@@ -35,10 +35,12 @@ UninstallDisplayName=WinSight
 UninstallDisplayIcon={app}\WinSight.App.exe
 OutputDir={#OutputDir}
 OutputBaseFilename=WinSight-{#AppVersion}-x64-setup
-Compression=lzma2/max
+Compression=lzma2/normal
 LZMAUseSeparateProcess=yes
-LZMADictionarySize=65536
+LZMADictionarySize=32768
 SolidCompression=yes
+DiskSpanning=yes
+DiskSliceSize=2100000000
 WizardStyle=modern
 SetupLogging=yes
 
@@ -64,10 +66,13 @@ Name: "addtopath"; Description: "将 WinSight 工具添加至系统 PATH 环境�
 Source: "{#PayloadDir}\*"; Excludes: "models\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 通用模型配置与基础数据文件 (全平台安装)
 Source: "{#PayloadDir}\models\*"; Excludes: "RyzenAI\*,IntelOpenVINO\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
-; AMD 平台专用模型、配置与 AIE 硬件微码 (仅在 AMD 处理器上安装)
-Source: "{#PayloadDir}\models\RyzenAI\*"; DestDir: "{app}\models\RyzenAI"; Check: IsAmdCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
-; Intel 平台专用模型与配置 (仅在 Intel 处理器上安装)
-Source: "{#PayloadDir}\models\IntelOpenVINO\*"; DestDir: "{app}\models\IntelOpenVINO"; Check: IsIntelCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; AMD 平台专用高熵大权重与微码 (流式归档不耗时压缩)
+Source: "{#PayloadDir}\models\RyzenAI\*.onnx_data"; DestDir: "{app}\models\RyzenAI"; Check: IsAmdCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist nocompression
+Source: "{#PayloadDir}\models\RyzenAI\*.rai"; DestDir: "{app}\models\RyzenAI"; Check: IsAmdCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist nocompression
+Source: "{#PayloadDir}\models\RyzenAI\*"; Excludes: "*.onnx_data,*.rai"; DestDir: "{app}\models\RyzenAI"; Check: IsAmdCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; Intel 平台专用高熵大权重 (流式归档不耗时压缩)
+Source: "{#PayloadDir}\models\IntelOpenVINO\*.onnx_data"; DestDir: "{app}\models\IntelOpenVINO"; Check: IsIntelCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist nocompression
+Source: "{#PayloadDir}\models\IntelOpenVINO\*"; Excludes: "*.onnx_data"; DestDir: "{app}\models\IntelOpenVINO"; Check: IsIntelCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{autoprograms}\WinSight"; Filename: "{app}\WinSight.App.exe"
@@ -167,23 +172,11 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
-var
-  AppDir: String;
-  ResultCode: Integer;
 begin
   if CurStep = ssPostInstall then
   begin
     if WizardIsTaskSelected('addtopath') then
       AddToPath();
-
-    AppDir := ExpandConstant('{app}');
-    if IsAmdCpu() then
-    begin
-      { 为 RyzenAI 目录自动补齐对 onnx/*.onnx_data 的硬链接，避免磁盘冗余并满足 ONNX Runtime 相对路径约束 }
-      Exec('cmd.exe', '/c mklink /H "' + AppDir + '\models\RyzenAI\model.onnx_data" "' + AppDir + '\models\onnx\model.onnx_data"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-      Exec('cmd.exe', '/c mklink /H "' + AppDir + '\models\RyzenAI\audio_encoder.onnx_data" "' + AppDir + '\models\onnx\audio_encoder.onnx_data"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-      Exec('cmd.exe', '/c mklink /H "' + AppDir + '\models\RyzenAI\vision_encoder.onnx_data" "' + AppDir + '\models\onnx\vision_encoder.onnx_data"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    end;
   end;
 end;
 
