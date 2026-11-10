@@ -869,6 +869,23 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             .Select(w => new KeywordMatch(w.FileId, w.Rank)).ToArray()), cancellationToken);
     }
 
+    /// <summary>Releases in-memory decoded vectors and returns unneeded SQLite cache pages under system memory pressure.</summary>
+    public void TrimMemory()
+    {
+        vectorCache = null;
+        dirtyVectorPaths.Clear();
+        try
+        {
+            if (connection != null && !disposed)
+            {
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = "PRAGMA shrink_memory;";
+                cmd.ExecuteNonQuery();
+            }
+        }
+        catch { }
+    }
+
     /// <summary>
     /// Re-reads only the files touched since the cache was built and splices them into the cached list, so a background
     /// commit costs one file's vectors instead of the whole index. Runs inside the caller's read snapshot.

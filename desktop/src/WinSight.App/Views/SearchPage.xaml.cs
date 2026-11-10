@@ -1,10 +1,14 @@
+using System.IO;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Storage.Streams;
 using Windows.System;
 using WinSight.App.Services;
 using WinSight.App.ViewModels;
 using WinSight.Core;
+using WinSight.Core.Diagnostics;
 
 namespace WinSight.App.Views;
 
@@ -14,6 +18,7 @@ public sealed partial class SearchPage : Page
     private WeakReference<Control>? previewReturnFocus;
     private bool previewSessionOpen;
     private bool closingPreview;
+    private CancellationTokenSource? heroPreviewCts;
 
     public SearchPage(IDesktopBackend backend, AppSettings? settings = null)
     {
@@ -40,25 +45,84 @@ public sealed partial class SearchPage : Page
         UpdateHeroStage(ViewModel.SelectedItem);
     }
 
-    private void UpdateHeroStage(SearchItemViewModel? selected)
+    private async void UpdateHeroStage(SearchItemViewModel? selected)
     {
+        heroPreviewCts?.Cancel();
+        heroPreviewCts?.Dispose();
+        heroPreviewCts = new CancellationTokenSource();
+        var ct = heroPreviewCts.Token;
+
         ApplyQueryHighlights(CanvasExcerptBlock, ViewModel.Query);
         ApplyQueryHighlights(CodeExcerptBlock, ViewModel.Query);
         ApplyQueryHighlights(MatchCalloutExcerptBlock, ViewModel.Query);
 
-        if (HeroPreviewImage is null) return;
-        if (selected is not null && selected.IsImageVisibility == Visibility.Visible && System.IO.File.Exists(selected.Path))
+        if (DocumentRasterImage != null)
+        {
+            DocumentRasterImage.Source = null;
+            DocumentRasterImage.Visibility = Visibility.Collapsed;
+        }
+        if (DocumentExcerptScroll != null)
+        {
+            DocumentExcerptScroll.Visibility = Visibility.Visible;
+        }
+
+        if (selected is null)
+        {
+            if (HeroPreviewImage != null) HeroPreviewImage.Source = null;
+            return;
+        }
+
+        if (selected.IsImageVisibility == Visibility.Visible && File.Exists(selected.Path))
         {
             try
             {
-                var bmp = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage { DecodePixelWidth = 800 };
+                var bmp = new BitmapImage { DecodePixelWidth = 800 };
                 bmp.UriSource = new Uri(selected.Path);
-                HeroPreviewImage.Source = bmp;
+                if (HeroPreviewImage != null) HeroPreviewImage.Source = bmp;
                 return;
             }
             catch { }
         }
-        HeroPreviewImage.Source = null;
+        if (HeroPreviewImage != null) HeroPreviewImage.Source = null;
+
+        // Auto-load high-resolution page raster preview for documents (PPTX slides, PDF pages)
+        if (selected.IsDocumentVisibility == Visibility.Visible && DocumentRasterImage != null)
+        {
+            try
+            {
+                var preview = await ViewModel.PreviewAsync(selected, ct);
+                if (ct.IsCancellationRequested) return;
+
+                if (preview.SourceCurrent && preview.RasterPath is { } rasterPath && File.Exists(rasterPath))
+                {
+                    var bitmap = new BitmapImage();
+                    await using (var file = new FileStream(rasterPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        using IRandomAccessStream stream = file.AsRandomAccessStream();
+                        await bitmap.SetSourceAsync(stream);
+                    }
+
+                    if (ct.IsCancellationRequested) return;
+
+                    DocumentRasterImage.Source = bitmap;
+                    DocumentRasterImage.Visibility = Visibility.Visible;
+                    if (DocumentExcerptScroll != null) DocumentExcerptScroll.Visibility = Visibility.Collapsed;
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Auto hero preview load failed", ex);
+            }
+        }
+    }
+
+    private async void OnDocumentRasterImageTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (ViewModel.SelectedItem is { } selected)
+        {
+            await ShowPreviewAsync(selected, keyboard: false);
+        }
     }
 
     internal static void ApplyQueryHighlights(TextBlock? block, string? rawQuery)

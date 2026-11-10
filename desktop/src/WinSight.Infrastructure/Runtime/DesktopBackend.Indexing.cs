@@ -131,7 +131,13 @@ public Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress 
                     // Manual and watcher passes share one durable queue so progress survives a restart.
                     var queue = new IncrementalIndexQueue(repository,
                         indexPaths: (roots, paths, code, ct) => service.IndexPathsAsync(roots, paths, code, batchProgress, ct),
-                        onError: error => { backgroundError = "queue: " + error.Message; AppLog.Warn("index queue error", error); });
+                        onError: error => {
+                            if (error is not ObjectDisposedException)
+                            {
+                                backgroundError = "queue: " + error.Message;
+                            }
+                            AppLog.Warn("index queue error", error);
+                        });
                     await queue.InitializeAsync(token);
 
                     var initialCounts = await queue.GetTaskCountsAsync(token);
@@ -152,7 +158,11 @@ public Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress 
                     {
                         token.ThrowIfCancellationRequested();
                         var processed = await queue.ProcessReadyTasksAsync(400, token, batchSize: 16);
-                        if (processed != 0) continue;
+                        if (processed != 0)
+                        {
+                            backgroundError = null;
+                            continue;
+                        }
                         if (!reconciled)
                         {
                             foreach (var root in approved.Roots)
@@ -256,7 +266,7 @@ public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationTok
                 IndexDirectory, "索引数据库已就绪。"
                     + (enableBackgroundIndexing ? "" : " 后台增量监听未启用。")
                     + (background?.Failure is null ? "" : " 后台监听异常: " + background.Failure.Message)
-                    + (backgroundError is null ? "" : " " + backgroundError)
+                    + (backgroundError is null || (backgroundError.Contains("ObjectDisposedException") && indexing.State == IndexingControlState.Running) ? "" : " " + backgroundError)
                     + (indexing.Failure is { } failure ? " 索引异常: " + failure : ""), indexing.State);
         }
         finally { lifecycle.Release(); }

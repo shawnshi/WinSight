@@ -252,15 +252,24 @@
                                                     </StackPanel>
                                                 </Grid>
                                             </Border>
-                                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                                                <TextBlock x:Name="CanvasExcerptBlock"
-                                                           Text="{x:Bind ViewModel.SelectedItem.CanvasExcerptText, Mode=OneWay, FallbackValue=''}"
-                                                           TextWrapping="Wrap"
-                                                           IsTextSelectionEnabled="True"
-                                                           FontSize="13.5" LineHeight="23"
-                                                           Foreground="{ThemeResource TextFillColorPrimaryBrush}"
-                                                           Margin="0,0,0,28"/>
-                                            </ScrollViewer>
+                                            <Grid Grid.Row="1">
+                                                <ScrollViewer x:Name="DocumentExcerptScroll" VerticalScrollBarVisibility="Auto">
+                                                    <TextBlock x:Name="CanvasExcerptBlock"
+                                                               Text="{x:Bind ViewModel.SelectedItem.CanvasExcerptText, Mode=OneWay, FallbackValue=''}"
+                                                               TextWrapping="Wrap"
+                                                               IsTextSelectionEnabled="True"
+                                                               FontSize="13.5" LineHeight="23"
+                                                               Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                                               Margin="0,0,0,28"/>
+                                                </ScrollViewer>
+                                                <Image x:Name="DocumentRasterImage"
+                                                       Stretch="Uniform"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       Visibility="Collapsed"
+                                                       Tapped="OnDocumentRasterImageTapped"
+                                                       ToolTipService.ToolTip="点击打开大图与 OCR 标定 (Space)"/>
+                                            </Grid>
                                             <!-- Floating Bottom-Left Page Pill (p. 4) -->
                                             <Border Grid.Row="1" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
                                                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"

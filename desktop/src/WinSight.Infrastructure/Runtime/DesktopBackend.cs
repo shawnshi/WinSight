@@ -135,7 +135,14 @@ public async Task SaveSettingsAsync(AppSettings updated, CancellationToken cance
         try
         {
             if (stopping != 0 || disposed) return;
-            await ReleaseResourcesAsync().ConfigureAwait(false);
+            try { await StopSourceOperationsAsync(); } catch { }
+            foreach (var store in repositories)
+            {
+                if (store is SqliteIndexRepository sqlite)
+                {
+                    sqlite.TrimMemory();
+                }
+            }
         }
         finally { lifecycle.Release(); }
     }

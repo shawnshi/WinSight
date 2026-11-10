@@ -146,10 +146,10 @@ WinSight/
 * **现成安装包直接安装**：
 可以直接运行仓库中已编译打包好的完整安装包：[**`releases/WinSight-1.0.0-x64-setup.exe`**](releases/WinSight-1.0.0-x64-setup.exe)（全模态完整安装包形态 B，主安装程序 `WinSight-1.0.0-x64-setup.exe` 配合 `setup-*.bin` 数据分卷）。自动探测底层 CPU 芯片平台（AMD Ryzen AI vs Intel Core Ultra / OpenVINO），根据硬件环境**仅解压安装目标平台所需的最优模型与微码**，非目标平台文件完全跳过，实现真正的开箱即用且零磁盘冗余。
 * **分卷校验和**：
-  * 主程序：`80a9dc4378884bad6af626c591730799b7c27186cfb88afc649e177c85fef7de  WinSight-1.0.0-x64-setup.exe`
-  * 数据卷 1：`59a889d2a10e5f7d14cd7d86a64397c1063bc6f838f9193246c372d25553192a  WinSight-1.0.0-x64-setup-1.bin`
-  * 数据卷 2：`61cca2af7a54cc341a0d4f7d0f7712d3cdf1ad1307fe3096c296dfa488ba589a  WinSight-1.0.0-x64-setup-2.bin`
-  * 数据卷 3：`52f8f69a098ba5afc4a0c3e92ff67c4145a115bade56778b0702d5f02aa37b59  WinSight-1.0.0-x64-setup-3.bin`
+  * 主程序：`254a05747d7df77611185db866c6b2a35aa6a27ae3a68de7eb257edbe214cc8f  WinSight-1.0.0-x64-setup.exe`
+  * 数据卷 1：`cb70fe2af81a22abc1584629b4a5a3490772bec6a574324c2c9e47135c38928d  WinSight-1.0.0-x64-setup-1.bin`
+  * 数据卷 2：`089652730bad081930f0bf4bc3d20bc6a63f7e5764b9ee2f2cffbfc84b09a698  WinSight-1.0.0-x64-setup-2.bin`
+  * 数据卷 3：`e2eed85dcbbcff8f7603e44ce5f283a76bbad848f666d07efae765dd30e4f8cb  WinSight-1.0.0-x64-setup-3.bin`
 * **标准安装路径**：双击运行安装向导，默认安装至 **`C:\Program Files\WinSight`**。
 * **安装包特性与可选任务**：
 
