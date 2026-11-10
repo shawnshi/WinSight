@@ -33,8 +33,10 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
         {
             if (IsMonitoringActive)
                 return "运行中：已授权目录受保护监听，文件保存后自动增量更新。";
-            if (backgroundIndexingEnabled && !settings.SetUp)
-                return "等待激活：增量开关已打开，请点击下方‘确认目录并启用监听’按钮生效。";
+            if (backgroundIndexingEnabled)
+                return (Folders.Count > 0 || settings.CodeFolders.Count > 0)
+                    ? "运行中：后台监听已启用，文件变动自动增量更新。"
+                    : "等待配置：请至少添加一个搜索目录以启动实时监听。";
             return "未启用：后台监听处于关闭状态。可随时手动点击‘全部重新索引’。";
         }
     }
@@ -138,6 +140,11 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
             await ReloadAfterSaveFailureAsync($"Revision conflict: {ex.Message}");
             return false;
         }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("Stop indexing before changing settings", StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "正在全量索引中，已为您保持监听就绪。";
+            return false;
+        }
         catch (Exception ex)
         {
             await ReloadAfterSaveFailureAsync($"Confirmation error: {ex.Message}");
@@ -205,6 +212,10 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
             latest.Skipped = [.. Skipped];
             latest.SkipTypes = [.. SkipTypes];
             latest.BackgroundIndexingEnabled = backgroundIndexingEnabled;
+            if (backgroundIndexingEnabled && (Folders.Count > 0 || latest.CodeFolders.Count > 0))
+            {
+                latest.SetUp = true;
+            }
 
             await backend.SaveSettingsAsync(latest);
             settings = latest;
@@ -218,6 +229,11 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
         catch (InvalidOperationException ex) when (ex.Message.Contains("revision conflict", StringComparison.OrdinalIgnoreCase))
         {
             await ReloadAfterSaveFailureAsync($"Revision conflict: {ex.Message}");
+            return false;
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("Stop indexing before changing settings", StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "正在全量索引中，请先暂停索引或稍后再变更目录。";
             return false;
         }
         catch (Exception ex)

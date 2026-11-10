@@ -102,10 +102,19 @@ public async Task SaveSettingsAsync(AppSettings updated, CancellationToken cance
             try
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
-                if (indexing.HasWork) throw new InvalidOperationException("Stop indexing before changing settings.");
+                bool structuralChange = !string.Equals(settings.IndexDirectory, updated.IndexDirectory, StringComparison.OrdinalIgnoreCase)
+                    || !settings.Folders.SequenceEqual(updated.Folders, StringComparer.OrdinalIgnoreCase)
+                    || !settings.CodeFolders.SequenceEqual(updated.CodeFolders, StringComparer.OrdinalIgnoreCase);
+
+                if (structuralChange && indexing.HasWork)
+                    throw new InvalidOperationException("Stop indexing before changing settings.");
+
                 await settingsStore.SaveAsync(updated, cancellationToken);
                 settings = await settingsStore.LoadAsync(cancellationToken);
-                await ReleaseResourcesAsync();
+                if (structuralChange)
+                {
+                    await ReleaseResourcesAsync();
+                }
                 AppLog.Info("settings saved");
                 try { SettingsSaved?.Invoke(settings); }
                 catch (Exception error) when (error is InvalidOperationException or IOException or UnauthorizedAccessException) { AppLog.Warn("settings side effect failed", error); }
