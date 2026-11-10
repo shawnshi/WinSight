@@ -5,6 +5,19 @@ namespace WinSight.InferenceHost;
 
 internal static class ModelProbe
 {
+    internal static int ResolveThreadCount()
+    {
+        var threadEnv = Environment.GetEnvironmentVariable("WINSIGHT_INFERENCE_THREADS");
+        if (int.TryParse(threadEnv, out var customThreads) && customThreads > 0)
+            return Math.Clamp(customThreads, 1, Environment.ProcessorCount);
+
+        // Cap background embedding threads to avoid thermal throttling and saturating all host cores.
+        // INT4 quantized models see diminishing returns beyond 4 threads.
+        return Environment.ProcessorCount <= 4
+            ? Math.Max(1, Environment.ProcessorCount / 2)
+            : Math.Clamp(Environment.ProcessorCount / 4, 2, 4);
+    }
+
     internal static SessionOptions CpuOptions()
     {
         var options = new SessionOptions
@@ -12,10 +25,10 @@ internal static class ModelProbe
             ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
             GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
             InterOpNumThreads = 1,
-            IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount / 2, 1, 10),
+            IntraOpNumThreads = ResolveThreadCount(),
             LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING
         };
-        options.AddSessionConfigEntry("session.intra_op.allow_spinning", "1");
+        options.AddSessionConfigEntry("session.intra_op.allow_spinning", "0");
         return options;
     }
 

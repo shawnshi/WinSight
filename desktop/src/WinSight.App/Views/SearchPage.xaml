@@ -233,11 +233,23 @@
                                                     <TextBlock Text="{x:Bind ViewModel.SelectedItem.FileName, Mode=OneWay, FallbackValue=''}"
                                                                FontSize="11.5" FontWeight="SemiBold"
                                                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                                               MaxLines="1" TextTrimming="CharacterEllipsis"/>
-                                                    <TextBlock HorizontalAlignment="Right"
-                                                               Text="{x:Bind ViewModel.SelectedItem.LocationDisplay, Mode=OneWay, FallbackValue=''}"
-                                                               FontSize="11.5" FontWeight="SemiBold"
-                                                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+                                                               MaxLines="1" TextTrimming="CharacterEllipsis"
+                                                               Margin="0,0,130,0"/>
+                                                    <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Spacing="8">
+                                                        <TextBlock Text="{x:Bind ViewModel.SelectedItem.LocationDisplay, Mode=OneWay, FallbackValue=''}"
+                                                                   FontSize="11.5" FontWeight="SemiBold"
+                                                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                                                   VerticalAlignment="Center"/>
+                                                        <Button Click="OnPreviewSelectedClick"
+                                                                Background="Transparent" BorderThickness="0"
+                                                                Padding="4,2" MinWidth="0" MinHeight="0"
+                                                                ToolTipService.ToolTip="页图与 OCR 详情 (Space)">
+                                                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                                                <FontIcon Glyph="&#xE8A5;" FontSize="11"/>
+                                                                <TextBlock Text="页图预览" FontSize="11" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+                                                            </StackPanel>
+                                                        </Button>
+                                                    </StackPanel>
                                                 </Grid>
                                             </Border>
                                             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">

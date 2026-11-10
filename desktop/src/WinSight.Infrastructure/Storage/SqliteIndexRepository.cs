@@ -894,20 +894,20 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         if (vectors)
         {
             // The profile read pins the WAL snapshot. Never label an older snapshot with a concurrent writer's newer version.
-            if (before == version && vectorCache is { } cached && cached.Version == version)
+            if (vectorCache is { } cached && (cached.Version == version || dirtyVectorPaths.Count != 0))
             {
                 files = cached.Files;
                 if (dirtyVectorPaths.Count != 0)
                 {
                     files = PatchVectorCache(db, tx, cached.Files, ct);
-                    vectorCache = Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version")) == version ? (version, files) : null;
                     dirtyVectorPaths.Clear();
                 }
+                vectorCache = (version, files);
             }
             else
             {
                 files = ReadFiles(db, tx, true, ct, vectorSegmentsOnly: true);
-                vectorCache = before == version && Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version")) == version ? (version, files) : null;
+                vectorCache = (version, files);
                 dirtyVectorPaths.Clear();
             }
         }

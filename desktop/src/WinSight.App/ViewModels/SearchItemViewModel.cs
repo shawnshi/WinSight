@@ -166,10 +166,22 @@ public sealed class SearchItemViewModel
         }
     }
 
-    public string CanvasExcerptText =>
-        !string.IsNullOrWhiteSpace(Excerpt)
-            ? Excerpt.Trim()
-            : $"[{FileName}]\n\n• 匹配位置: {MatchRationale}\n• 文件属性: {ListItemMetadataLine}\n• 所在目录: {DirectoryPath}";
+    public string CanvasExcerptText
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(Excerpt)) return Excerpt.Trim();
+
+            var previewHint = string.Equals(Kind, "pdf", StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(Kind, "doc", StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(Kind, "presentation", StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(Kind, "sheet", StringComparison.OrdinalIgnoreCase)
+                ? "\n\n💡 提示: 匹配文件名/元数据。按 [Space] 空格键或点击【页图校准】可调出独立高清光栅页图与 OCR 识别层。"
+                : "";
+
+            return $"[{FileName}]\n\n• 匹配依据: {MatchRationale}\n• 文件属性: {ListItemMetadataLine}\n• 所在目录: {DirectoryPath}{previewHint}";
+        }
+    }
 
     public Visibility IsImageVisibility =>
         (string.Equals(Kind, "image", StringComparison.OrdinalIgnoreCase) ||

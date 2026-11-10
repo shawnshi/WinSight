@@ -14,7 +14,7 @@ WinSight 是面向 Windows 11 的本地多模态文件检索项目，用关键�
 
 
 
-> **当前状态（2026-11）：v0.9.0，运行在 .NET 11 预览运行时上。** 全链路多模态文档检索、PDF/PPT 逐页视觉渲染、RapidOCR 几何定位、旧版 Office 格式（.doc/.xls/.ppt）隔离抽取与只读来源跳转均已稳定合入主线。桌面主控制台采用 Windows 11 原生 Mica Alt 沉浸式标题栏，快捷搜索 HUD 浮窗采用 DesktopAcrylic 亚克力材质与 800×520 双栏即时预览；全界面已完成规范简体中文本地化。主线安装通过 Inno Setup 脚本 `desktop/installer/WinSight.iss` 与 `scripts/Build-NativeInstaller.ps1` 交付标准安装包，默认安装至 `C:\Program Files\WinSight`，带有官方高保真 Logo 图标与可选系统 PATH 自动注入。GitHub CI 自动化工作流已全量覆盖 10 大核心套件（270+ 个断言用例验证通过）。
+> **当前状态（2026-11）：v0.9.0，运行在 .NET 11 预览运行时上。** 全链路多模态文档检索、PDF/PPT 逐页视觉渲染、RapidOCR 几何定位、旧版 Office 格式（.doc/.xls/.ppt）隔离抽取与只读来源跳转均已稳定合入主线。桌面主控制台采用 Windows 11 原生 Mica Alt 沉浸式标题栏，快捷搜索 HUD 浮窗采用 DesktopAcrylic 亚克力材质与 800×520 双栏即时预览；全界面已完成规范简体中文本地化。近期完成核心架构演进：修复 SQLite 向量缓存增量补丁（查询延迟降至 2ms~4ms）、关闭 ORT 线程自旋与优化 CPU 线程配额（消除后台发热）、文档卡片新增一键页图预览直达；并原生跑通 AMD Ryzen AI NPU AIE 硬件微码（.rai）与 DirectML GPU 的纯 C# 异构多模态协同管线。主线安装通过 Inno Setup 7 标准脚本交付，带有官方高保真 Logo 图标与可选系统 PATH 自动注入。GitHub CI 自动化工作流已全量覆盖核心测试套件。
 
 > **预览运行时与已知限制。** 本版本构建于 .NET 11 RC（精确 SDK `11.0.100-rc.2`，`RollForward=Disable`）：在 .NET 11 正式版发布并完成升级验证之前，请按预览版使用；`docs/native-migration/status.json` 的 `releaseApproved` 仍为 `false`。
 > - **规模**：检索是内存向量暴力扫描，实测约 2 万段 32 ms、10 万段 155 ms（含全部通道）；设置页会在接近 8 万向量段时提示。更大语料需要 ANN/分片。
@@ -144,7 +144,7 @@ WinSight/
 ### 1\. 终端用户安装使用
 
 * **现成安装包直接安装**：
-可以直接运行仓库中已编译打包好的完整安装包：[**`releases/WinSight-0.9.0-x64-setup.exe`**](releases/WinSight-0.9.0-x64-setup.exe)（体积约 452 MiB，SHA-256 校验和：`1feabac767da5c26b5a332b8b4833b3c81ed39bf324b776bc218aad91d9f40d4`）。
+可以直接运行仓库中已编译打包好的完整安装包：[**`releases/WinSight-0.9.0-x64-setup.exe`**](releases/WinSight-0.9.0-x64-setup.exe)（体积约 147.2 MiB，SHA-256 校验和：`f081f4a1d96fb31449f0975d9afa7a1bcf9229b3344e7c951fbac09faa595934`）。
 * **标准安装路径**：双击运行安装向导，默认安装至 **`C:\Program Files\WinSight`**。
 * **安装包特性与可选任务**：
 

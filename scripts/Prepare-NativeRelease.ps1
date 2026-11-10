@@ -262,7 +262,7 @@ if (-not $OcrModelDirectory) {
 }
 if (-not $ModelDirectory) {
     $defaultModels = Join-Path $root 'models'
-    if (Test-Path (Join-Path $defaultModels 'tokenizer.json')) { $ModelDirectory = [IO.Path]::GetFullPath($defaultModels) }
+    if (Test-Path (Join-Path $defaultModels 'onnx/model_q4.onnx')) { $ModelDirectory = [IO.Path]::GetFullPath($defaultModels) }
 }
 if ($OcrModelDirectory) {
     if (-not [IO.Path]::IsPathFullyQualified($OcrModelDirectory)) { throw '-OcrModelDirectory must be an absolute path.' }

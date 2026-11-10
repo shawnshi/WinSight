@@ -456,7 +456,8 @@ public sealed class InferenceHostClient : IEmbeddingService
         {
             Process = process;
             output = process.StandardOutput.BaseStream;
-            if (OperatingSystem.IsWindows()) job = WindowsChildJob.Attach(process, lowPriority: false);
+            var lowPriority = Environment.GetEnvironmentVariable("WINSIGHT_INFERENCE_LOW_PRIORITY") is "1" or "true";
+            if (OperatingSystem.IsWindows()) job = WindowsChildJob.Attach(process, lowPriority: lowPriority);
             stderr = DrainAsync(process.StandardError.BaseStream);
             onExit = (_, _) => Kill();
             AppDomain.CurrentDomain.ProcessExit += onExit;
