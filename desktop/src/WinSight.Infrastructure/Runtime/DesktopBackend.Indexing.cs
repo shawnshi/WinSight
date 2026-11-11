@@ -211,6 +211,16 @@ public async Task SetIndexingPausedAsync(bool paused, CancellationToken cancella
         if (changed && !paused && stopping == 0) background?.RequestReconciliation();
     }
 
+    private async Task IndexPathsBackgroundAsync(IReadOnlyList<string> roots, IReadOnlyList<string> paths, bool code, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var stores = await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false);
+        var repository = stores[code ? 1 : 0];
+        var model = GetEmbeddings();
+        var service = new IndexingService(repository, new ContentExtractor(), model);
+        await service.IndexPathsAsync(roots, paths, code, null, cancellationToken).ConfigureAwait(false);
+    }
+
 public async Task<IReadOnlyList<string>> GetFailureSummaryAsync(int limit = 5, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -243,13 +253,13 @@ public async Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(CancellationT
                     Dropped: 0,
                     WatcherOverflows: 0,
                     LastReconcileUtc: null,
-                    UsnState: "manual-mode",
+                    UsnState: settings.BackgroundIndexingEnabled ? "starting" : "background-disabled",
                     Budgets: Array.Empty<IndexBudgetState>());
             }
         }
         catch { }
 
-        return new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, "background-disabled", Array.Empty<IndexBudgetState>());
+        return new IndexingQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, null, settings.BackgroundIndexingEnabled ? "starting" : "background-disabled", Array.Empty<IndexBudgetState>());
     }
 
 public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default)

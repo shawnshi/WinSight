@@ -198,7 +198,7 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
             Dropped: 0,
             WatcherOverflows: 0,
             LastReconcileUtc: null,
-            UsnState: "not-implemented",
+            UsnState: "starting",
             Budgets: budgets);
     }
 

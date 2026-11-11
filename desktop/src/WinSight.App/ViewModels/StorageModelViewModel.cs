@@ -26,7 +26,9 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
     {
         "manual-mode" => "手动全速索引模式",
         "background-disabled" => "后台监听未开启 (按需手动索引)",
+        "starting" or "initializing" or "not-attempted" => "正在初始化同步引擎…",
         "active" => "NTFS USN 极速变更日志已激活",
+        _ when state.StartsWith("usn_caught_up", StringComparison.Ordinal) => "NTFS USN 极速变更日志已同步 (" + state + ")",
         _ when state.Contains("access-denied", StringComparison.Ordinal) => state + " - 读取 NTFS 变更日志需要管理员权限；文件监听与定时对账机制正持续同步文件变动",
         _ => state
     };

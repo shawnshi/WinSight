@@ -529,6 +529,10 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                         queryInfo.NextUsn.ToString(),
                         DateTimeOffset.UtcNow,
                         cancellationToken).ConfigureAwait(false);
+                    if (UsnState is "not-attempted" or "starting" or "manual-mode")
+                    {
+                        UsnState = "active";
+                    }
                 }
             }
         }

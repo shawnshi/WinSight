@@ -33,6 +33,7 @@ private readonly SemaphoreSlim reconfiguration = new(1, 1);
 
 private readonly CancellationTokenSource lifetimeStop = new();
 
+private readonly SemaphoreSlim watchingLock = new(1, 1);
 private BackgroundIndexCoordinator? background;
 
 private string? backgroundError;
@@ -166,30 +167,69 @@ private async Task ReleaseResourcesAsync()
 
 private void ConfigureWatching()
     {
-        if (!enableBackgroundIndexing || background is not null || !settings.BackgroundIndexingEnabled || !settings.SetUp) return;
-        background = new BackgroundIndexCoordinator(settings,
-            async (request, token) =>
-            {
-                await IndexAsync(request, cancellationToken: token);
-                backgroundError = null;
-            },
-            error => backgroundError = error.GetType().Name + ": " + error.Message,
-            ignoredRoots: [dataDirectory, IndexDirectory],
-            indexingAllowed: () => indexing.State == IndexingControlState.Running && stopping == 0,
-            isOnAcPower: isOnAcPower,
-            releaseCaches: ReleaseCachesForMemoryPressureAsync);
+        if (!enableBackgroundIndexing || !settings.BackgroundIndexingEnabled || !settings.SetUp || stopping != 0) return;
+        _ = StartWatchingAsync();
+    }
+
+private async Task StartWatchingAsync()
+    {
+        if (!enableBackgroundIndexing || !settings.BackgroundIndexingEnabled || !settings.SetUp || stopping != 0) return;
+        await watchingLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (background != null || stopping != 0 || !settings.BackgroundIndexingEnabled || !settings.SetUp) return;
+            var stores = await GetRepositoriesAsync(lifetimeStop.Token).ConfigureAwait(false);
+            var repository = stores[0];
+
+            background = new BackgroundIndexCoordinator(
+                settings,
+                async (request, token) =>
+                {
+                    await IndexAsync(request, cancellationToken: token);
+                    backgroundError = null;
+                },
+                error => {
+                    if (error is not ObjectDisposedException)
+                    {
+                        backgroundError = error.GetType().Name + ": " + error.Message;
+                    }
+                },
+                ignoredRoots: [dataDirectory, IndexDirectory],
+                indexingAllowed: () => indexing.State == IndexingControlState.Running && stopping == 0,
+                isOnAcPower: isOnAcPower,
+                repository: repository,
+                indexPaths: IndexPathsBackgroundAsync,
+                releaseCaches: ReleaseCachesForMemoryPressureAsync);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            backgroundError = error.GetType().Name + ": " + error.Message;
+            AppLog.Warn("Failed to start background index watching", error);
+        }
+        finally
+        {
+            watchingLock.Release();
+        }
     }
 
 private async Task StopWatchingAsync()
     {
-        var previous = background;
-        background = null;
-        if (previous is null) return;
-        try { await previous.DisposeAsync(); }
-        catch (Exception error)
+        await watchingLock.WaitAsync().ConfigureAwait(false);
+        try
         {
-            backgroundError = error.GetType().Name + ": " + error.Message;
-            throw;
+            var previous = background;
+            background = null;
+            if (previous is null) return;
+            try { await previous.DisposeAsync(); }
+            catch (Exception error)
+            {
+                backgroundError = error.GetType().Name + ": " + error.Message;
+                throw;
+            }
+        }
+        finally
+        {
+            watchingLock.Release();
         }
     }
 

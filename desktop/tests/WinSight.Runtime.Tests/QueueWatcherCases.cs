@@ -72,6 +72,39 @@ internal static class QueueWatcherCases
             await Task.Delay(200);
             Require(await repo.GetTaskAsync(FilePolicy.Normalize(missed)) is not null, "Overflow must reconcile the missed file.");
         });
+
+        await test("S1-QUEUE-BACKEND-LIVE-STATUS live DesktopBackend reports real queue status and non-null LastReconcileUtc", async () =>
+        {
+            var dataDir = Path.Combine(root, "backend-queue-status-data");
+            var watchDir = Path.Combine(root, "backend-queue-status-watch");
+            Directory.CreateDirectory(dataDir);
+            Directory.CreateDirectory(watchDir);
+            await File.WriteAllTextAsync(Path.Combine(watchDir, "test.txt"), "hello world");
+
+            var backend = await DesktopBackend.CreateAsync(new DesktopOptions(dataDir) { IsOnAcPower = () => true });
+            var settings = await backend.LoadSettingsAsync();
+            settings.Folders = [watchDir];
+            settings.BackgroundIndexingEnabled = true;
+            settings.SetUp = true;
+            settings.ProcessorOnly = false;
+            await backend.SaveSettingsAsync(settings);
+
+            // Wait up to 5 seconds for background coordinator and initial reconcile
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            IndexingQueueStatus? st = null;
+            while (DateTime.UtcNow < deadline)
+            {
+                st = await backend.GetIndexingQueueStatusAsync();
+                if (st.LastReconcileUtc is not null) break;
+                await Task.Delay(100);
+            }
+
+            Require(st != null && st.UsnState != null, "GetIndexingQueueStatusAsync returned null or null UsnState");
+            Require(st!.UsnState != "not-implemented", "UsnState must not be not-implemented");
+            var eng = await backend.GetStatusAsync();
+            Require(st.LastReconcileUtc is not null, $"LastReconcileUtc must be populated after initial reconcile. Got: UsnState={st.UsnState}, Pending={st.Pending}, Detail={eng.Detail}");
+            await backend.DisposeAsync();
+        });
     }
 
     private static void Require(bool condition, string message)
