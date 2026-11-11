@@ -49,6 +49,7 @@ public sealed class SyntheticDesktopBackend : IDesktopBackend
 
     public bool WasEmbeddingInfoCalled { get; private set; }
     public int SearchCallCount { get; private set; }
+    public List<SearchMode> SearchModes { get; } = [];
     public int IndexCallCount { get; private set; }
     public int SaveSettingsCount { get; private set; }
     public List<IndexRequest> RecordedIndexRequests { get; } = [];
@@ -139,6 +140,7 @@ public sealed class SyntheticDesktopBackend : IDesktopBackend
     public Task<SearchResponse> SearchAsync(SearchRequest request, CancellationToken cancellationToken = default)
     {
         SearchCallCount++;
+        SearchModes.Add(request.Mode);
         if (SearchHandler is not null) return SearchHandler(request, cancellationToken);
 
         var hits = new List<SearchHit>();

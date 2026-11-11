@@ -23,7 +23,7 @@ public sealed partial class SourcePreviewPane : UserControl
     {
         request?.Cancel();request?.Dispose();request=new();var token=request.Token;long epoch=++generation;
         viewModel=model;item=selected;var old=preview;preview=null;
-        SourceTitle.Text=selected.FileName;SourceLocation.Text=selected.LocationDisplay;Excerpt.Text="";Notice.Text="Loading current source...";
+        SourceTitle.Text=selected.FileName;SourceLocation.Text=selected.LocationDisplay;Excerpt.Text="";Notice.Text=UiText.PreviewLoading;
         ResetRaster();
         LoadingRing.Visibility=Visibility.Visible;LoadingRing.IsActive=true;
         ISourcePreview? loaded=null;
@@ -47,8 +47,8 @@ public sealed partial class SourcePreviewPane : UserControl
             preview=loaded;loaded=null;
             UpdateLayout();FitRasterToViewport();ShowRasterInViewport();
         }
-        catch(OperationCanceledException){if(epoch==generation){ResetRaster();Notice.Text="Preview canceled.";}}
-        catch(Exception e){if(epoch==generation){ResetRaster();Notice.Text="Preview unavailable: "+e.Message;}}
+        catch(OperationCanceledException){if(epoch==generation){ResetRaster();Notice.Text=UiText.PreviewCanceled;}}
+        catch(Exception e){if(epoch==generation){ResetRaster();Notice.Text=UiText.PreviewUnavailable(e.Message);}}
         finally
         {
             try{if(loaded is not null)await loaded.DisposeAsync();}
@@ -64,10 +64,10 @@ public sealed partial class SourcePreviewPane : UserControl
             var box=PreviewGeometry.Project(region,value.PixelWidth,value.PixelHeight);
             var rect=new Rectangle{Width=box.Width,Height=box.Height,Stroke=new SolidColorBrush(Microsoft.UI.Colors.DodgerBlue),StrokeThickness=4,Fill=new SolidColorBrush(Windows.UI.Color.FromArgb(24,0,100,220))};
             Canvas.SetLeft(rect,box.X);Canvas.SetTop(rect,box.Y);Overlay.Children.Add(rect);rectangles.Add(rect);
-            OcrLines.Items.Add(new ListBoxItem{Content=$"{region.Line+1}. {region.Text??"Indexed OCR line"}",Tag=region.Line});
+            OcrLines.Items.Add(new ListBoxItem{Content=$"{region.Line+1}. {region.Text??UiText.OcrLineFallback}",Tag=region.Line});
         }
         OcrLines.Visibility=regions.Count==0?Visibility.Collapsed:Visibility.Visible;
-        BoxStatus.Text=regions.Count==0?"No indexed OCR line boxes for this source unit.":$"{regions.Count} indexed text-line boxes. Select a line to highlight its rectangle.";
+        BoxStatus.Text=regions.Count==0?UiText.NoOcrBoxes:$"已索引 {regions.Count} 个文字行位置，选择一行可高亮对应区域。";
         Overlay.Visibility=ShowBoxes.IsChecked==true?Visibility.Visible:Visibility.Collapsed;
     }
     private void OnLineSelected(object sender,SelectionChangedEventArgs e)
@@ -77,14 +77,14 @@ public sealed partial class SourcePreviewPane : UserControl
     {
         if(viewModel is null||item is null||preview?.SourceCurrent!=true||preview.CanNavigate!=true)return;ExactOpen.IsEnabled=false;long epoch=generation;
         try{var result=await viewModel.NavigateAsync(item,request?.Token??default);if(epoch==generation)Notice.Text=result.Message;}
-        catch(Exception error){if(epoch==generation)Notice.Text="Precise open failed: "+error.Message;}
+        catch(Exception error){if(epoch==generation)Notice.Text=UiText.PreciseOpenFailed(error.Message);}
         finally{if(epoch==generation)ExactOpen.IsEnabled=preview?.SourceCurrent==true&&preview.CanNavigate;}
     }
     private async void OnOpenFile(object sender,RoutedEventArgs e){if(viewModel is not null&&item is not null)await viewModel.OpenHitAsync(item);}
     private async void OnClose(object sender,RoutedEventArgs e)
     {
         try{await ClearAsync();CloseRequested?.Invoke(this,EventArgs.Empty);}
-        catch(Exception error){Notice.Text="Preview cleanup failed: "+error.Message;}
+        catch(Exception error){Notice.Text=UiText.PreviewCleanupFailed(error.Message);}
     }
     public async Task ClearAsync()
     {

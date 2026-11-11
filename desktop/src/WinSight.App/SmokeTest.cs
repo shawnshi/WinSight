@@ -20,14 +20,14 @@ internal static class SmokeTest
             await mainWindow.ViewModel.ToggleIndexingPauseAsync();
             var paused = await backend.GetStatusAsync();
             if (paused.IndexingState != IndexingControlState.Paused || mainWindow.ViewModel.CanIndexNow
-                || tray.PauseMenuText != "Resume indexing" || !tray.IsPauseMenuEnabled)
+                || tray.PauseMenuText != "恢复索引" || !tray.IsPauseMenuEnabled)
                 throw new InvalidOperationException("Main-window/tray pause state did not converge to the real backend.");
             var searchRes = await backend.SearchAsync(new SearchRequest("smoke-test", Limit: 10, Mode: SearchMode.Keyword));
             await tray.ToggleIndexingPauseAsync();
             var status = await backend.GetStatusAsync();
             if (status.IndexingState != IndexingControlState.Running
                 || mainWindow.ViewModel.IndexingState != IndexingControlState.Running
-                || tray.PauseMenuText != "Pause indexing")
+                || tray.PauseMenuText != "暂停索引")
                 throw new InvalidOperationException("Tray resume did not converge to the real main-window/backend state.");
             Console.WriteLine("[SMOKE-PAUSE] Main-window pause, keyword search while paused, and shared tray resume passed.");
             using var process = System.Diagnostics.Process.GetCurrentProcess();

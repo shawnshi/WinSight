@@ -254,7 +254,7 @@ public static class GuiRepairHarness
             var vm = new MainWindowViewModel(backend, settings, tempDir);
             await vm.RefreshStatusAsync();
 
-            if (!vm.StatusMessage.Contains("No index folders configured", StringComparison.OrdinalIgnoreCase))
+            if (!vm.StatusMessage.Contains("尚未配置索引文件夹", StringComparison.OrdinalIgnoreCase))
                 throw new Exception($"Initial StatusMessage did not indicate missing folders: '{vm.StatusMessage}'");
 
             int indexCallsBefore = backend.IndexCallCount;
@@ -272,15 +272,15 @@ public static class GuiRepairHarness
                 throw new Exception($"StatusMessage misleadingly indicated success for no-roots: '{vm.StatusMessage}'");
             }
 
-            if (!vm.StatusMessage.Contains("No index folders configured", StringComparison.OrdinalIgnoreCase))
+            if (!vm.StatusMessage.Contains("尚未配置索引文件夹", StringComparison.OrdinalIgnoreCase))
                 throw new Exception($"StatusMessage did not indicate missing folders after IndexNow: '{vm.StatusMessage}'");
 
             // Also verify RefreshStatusCore behavior
             await vm.RefreshStatusAsync();
-            if (!vm.StatusMessage.Contains("No index folders configured", StringComparison.OrdinalIgnoreCase))
-                throw new Exception($"RefreshStatusAsync did not preserve 'No index folders configured': '{vm.StatusMessage}'");
+            if (!vm.StatusMessage.Contains("尚未配置索引文件夹", StringComparison.OrdinalIgnoreCase))
+                throw new Exception($"RefreshStatusAsync did not preserve '尚未配置索引文件夹': '{vm.StatusMessage}'");
 
-            return "MainWindowViewModel with no roots does not call IndexAsync and shows 'No index folders configured. Add a folder to begin.'";
+            return "MainWindowViewModel with no roots does not call IndexAsync and shows '尚未配置索引文件夹. Add a folder to begin.'";
         }, logger));
 
         // ====================================================================

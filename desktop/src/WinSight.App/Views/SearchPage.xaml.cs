@@ -29,6 +29,8 @@ public sealed partial class SearchPage : Page
 
     private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(QuickSearchViewModel.IsLoading) && !ViewModel.IsLoading)
+            DispatcherQueue?.TryEnqueue(AnnounceStatus);
         if (e.PropertyName is nameof(QuickSearchViewModel.SelectedItem) or nameof(QuickSearchViewModel.SelectedIndex))
         {
             DispatcherQueue?.TryEnqueue(() =>
@@ -37,6 +39,49 @@ public sealed partial class SearchPage : Page
                 UpdateHeroStage(ViewModel.SelectedItem);
             });
         }
+    }
+
+    /// <summary>Tells Narrator how a finished search ended; without it a screen-reader user hears nothing after typing.</summary>
+    private void AnnounceStatus()
+    {
+        if (StatusLine is null || string.IsNullOrEmpty(ViewModel.StatusText)) return;
+        var peer = Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.FromElement(StatusLine)
+            ?? Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.CreatePeerForElement(StatusLine);
+        peer?.RaiseNotificationEvent(
+            Microsoft.UI.Xaml.Automation.Peers.AutomationNotificationKind.ActionCompleted,
+            Microsoft.UI.Xaml.Automation.Peers.AutomationNotificationProcessing.ImportantMostRecent,
+            ViewModel.StatusText, "WinSightSearchStatus");
+    }
+
+    private void OnResultsContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+    {
+        if (args.Item is not SearchItemViewModel item) return;
+        if (args.InRecycleQueue) { item.CancelThumbnail(); return; }
+        _ = item.EnsureThumbnailAsync();
+    }
+
+    private void OnFocusSearchAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        FocusSearchBox();
+    }
+
+    internal void FocusSearchBox()
+    {
+        SearchBox.Focus(FocusState.Keyboard);
+        SearchBox.SelectAll();
+    }
+
+    private async void OnCopyAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        if (ViewModel.SelectedItem is { } item) await ViewModel.CopyHitAsync(item);
+    }
+
+    private void OnRevealAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        if (ViewModel.SelectedItem is { } item) _ = ViewModel.RevealHitAsync(item);
     }
 
     private void OnResultsSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -54,7 +99,6 @@ public sealed partial class SearchPage : Page
 
         ApplyQueryHighlights(CanvasExcerptBlock, ViewModel.Query);
         ApplyQueryHighlights(CodeExcerptBlock, ViewModel.Query);
-        ApplyQueryHighlights(MatchCalloutExcerptBlock, ViewModel.Query);
 
         if (DocumentRasterImage != null)
         {
@@ -71,6 +115,7 @@ public sealed partial class SearchPage : Page
             if (HeroPreviewImage != null) HeroPreviewImage.Source = null;
             return;
         }
+        if (previewSessionOpen) return; // stage is hidden behind the drawer; reload happens on close
 
         if (selected.IsImageVisibility == Visibility.Visible && File.Exists(selected.Path))
         {
@@ -154,6 +199,14 @@ public sealed partial class SearchPage : Page
         {
             Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(100, 242, 169, 0))
         };
+        // High-contrast themes replace the brand amber with the system selection pair.
+        if (new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast
+            && Application.Current.Resources.TryGetValue("SystemColorHighlightColorBrush", out var hcBack) && hcBack is Microsoft.UI.Xaml.Media.Brush hcBackBrush
+            && Application.Current.Resources.TryGetValue("SystemColorHighlightTextColorBrush", out var hcFore) && hcFore is Microsoft.UI.Xaml.Media.Brush hcForeBrush)
+        {
+            highlighter.Background = hcBackBrush;
+            highlighter.Foreground = hcForeBrush;
+        }
 
         foreach (var term in terms.OrderByDescending(t => t.Length))
         {
@@ -267,11 +320,16 @@ public sealed partial class SearchPage : Page
             e.Handled = true;
             ViewModel.SelectedIndex = 0;
             try { await FocusSelectedResultAsync(); }
-            catch (Exception error) { ShowPreviewError("Result focus failed: " + error.Message); }
+            catch (Exception error) { ShowPreviewError(UiText.FocusFailed(error.Message)); }
         }
         else if (e.Key == VirtualKey.Enter)
         {
             _ = ViewModel.OpenCurrentAsync();
+            e.Handled = true;
+        }
+        else if (e.Key == VirtualKey.Escape && !string.IsNullOrEmpty(SearchBox.Text) && !previewSessionOpen)
+        {
+            ViewModel.Query = string.Empty;
             e.Handled = true;
         }
     }
@@ -397,10 +455,11 @@ public sealed partial class SearchPage : Page
         previewSessionOpen = true;
         UpdatePreviewLayout();
         PreviewHost.IsPaneOpen = true;
+        HeroStage.Visibility = Visibility.Collapsed; // the drawer shows the same page, so the stage steps aside instead of repeating it
         UpdateLayout();
         if (keyboard) SourcePreview.FocusCloseButton();
         try { await SourcePreview.ShowAsync(ViewModel, selected); }
-        catch (Exception error) { ShowPreviewError("Preview failed: " + error.Message); }
+        catch (Exception error) { ShowPreviewError(UiText.PreviewFailed(error.Message)); }
     }
 
     private async Task ClosePreviewAsync(bool restoreFocus)
@@ -412,10 +471,12 @@ public sealed partial class SearchPage : Page
         {
             await SourcePreview.ClearAsync();
         }
-        catch (Exception error) { ShowPreviewError("Preview cleanup failed: " + error.Message); }
+        catch (Exception error) { ShowPreviewError(UiText.PreviewCleanupFailed(error.Message)); }
         finally
         {
             PreviewHost.IsPaneOpen = false;
+            HeroStage.Visibility = Visibility.Visible;
+            UpdateHeroStage(ViewModel.SelectedItem);
             closingPreview = false;
             var returnFocus = previewReturnFocus;
             previewReturnFocus = null;
@@ -480,8 +541,25 @@ public sealed partial class SearchPage : Page
     internal bool IsPreviewOpen => PreviewHost.IsPaneOpen;
     internal SourcePreviewPane PreviewControl => SourcePreview;
 
-    public Visibility GetEmptyStateVisibility(int hitCount, bool isLoading) =>
-        hitCount == 0 && !isLoading ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility VisibleIf(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
+
+    public string NoResultsTitle(string query) =>
+        string.IsNullOrWhiteSpace(query) ? "没有结果" : $"没有找到与“{query.Trim()}”相关的结果";
+
+    private void OnExampleChipClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is string text) SetInitialQuery(text);
+        SearchBox.Focus(FocusState.Programmatic);
+    }
+
+    private void OnClearFilterClick(object sender, RoutedEventArgs e)
+    {
+        KindFilterCombo.SelectedIndex = 0;
+        ViewModel.SelectedKind = null;
+        ViewModel.TriggerSearch();
+    }
+
+    private void OnRetrySearchClick(object sender, RoutedEventArgs e) => ViewModel.TriggerSearch();
 
     public Visibility GetResultsVisibility(int hitCount) =>
         hitCount > 0 ? Visibility.Visible : Visibility.Collapsed;

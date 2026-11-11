@@ -48,8 +48,8 @@ public static class PauseHarnessRunner
             var pause = vm.ToggleIndexingPauseAsync();
             Require(backend.RecordedPauseRequests.SequenceEqual(new bool[]{true}), "Missing actual pause API call");
             Require(backend.IndexingState == IndexingControlState.Pausing, "Synthetic state must be Pausing while draining");
-            Require(vm.PauseActionText == "Pausing…" && !vm.CanToggleIndexingPause && !vm.CanIndexNow, "Busy controls");
-            Require(vm.IndexingState != IndexingControlState.Paused && vm.IndexingStateText != "Indexing paused", "Premature paused state");
+            Require(vm.PauseActionText == "正在暂停…" && !vm.CanToggleIndexingPause && !vm.CanIndexNow, "Busy controls");
+            Require(vm.IndexingState != IndexingControlState.Paused && vm.IndexingStateText != "索引已暂停", "Premature paused state");
             await vm.ToggleIndexingPauseAsync();
             await vm.TriggerIndexNowAsync();
             Require(backend.RecordedPauseRequests.Count == 1 && backend.IndexCallCount == 0, "Duplicate control/index dispatch");
@@ -58,7 +58,7 @@ public static class PauseHarnessRunner
             Require(vm.IsPauseControlBusy && vm.IndexingState != IndexingControlState.Paused, "Must wait for actual status completion");
             statusGate.SetResult();
             await pause.WaitAsync(TimeSpan.FromSeconds(5));
-            Require(vm.IndexingState == IndexingControlState.Paused && vm.PauseActionText == "Resume indexing", "Paused state not confirmed");
+            Require(vm.IndexingState == IndexingControlState.Paused && vm.PauseActionText == "恢复索引", "Paused state not confirmed");
             var search = new QuickSearchViewModel(backend);
             search.Query = "synthetic paused query";
             await Until(() => !search.IsLoading && search.Hits.Count > 0);
@@ -81,7 +81,7 @@ public static class PauseHarnessRunner
             var reads = backend.StatusCallCount;
             await vm.ToggleIndexingPauseAsync();
             Require(backend.StatusCallCount > reads && vm.IndexingState == IndexingControlState.Pausing, "Failure must refresh real Pausing");
-            Require(vm.StatusMessage.Contains("synthetic drain timeout") && vm.IndexingStateText != "Indexing paused", "Failure hidden or false success");
+            Require(vm.StatusMessage.Contains("synthetic drain timeout") && vm.IndexingStateText != "索引已暂停", "Failure hidden or false success");
             Require(vm.CanToggleIndexingPause && !vm.CanIndexNow, "Failure must permit recovery, not indexing");
             backend.PauseControlHandler = null;
             await vm.ToggleIndexingPauseAsync(); // Resume from Pausing.
@@ -108,7 +108,7 @@ public static class PauseHarnessRunner
             var pause = vm.ToggleIndexingPauseAsync(active.Token);
             active.Cancel();
             await pause.WaitAsync(TimeSpan.FromSeconds(5));
-            Require(vm.IndexingState == IndexingControlState.Pausing && vm.StatusMessage.Contains("cancelled") && vm.CanToggleIndexingPause,
+            Require(vm.IndexingState == IndexingControlState.Pausing && vm.StatusMessage.Contains("已取消") && vm.CanToggleIndexingPause,
                 "Cancellation must refresh actual state and release busy gate");
             backend.PauseControlHandler = null;
             await vm.ToggleIndexingPauseAsync();
@@ -136,7 +136,7 @@ public static class PauseHarnessRunner
             Require(vm.IndexingState == IndexingControlState.Paused, "Stale Running status overwrote confirmed Paused");
             backend.StatusHandler = _ => throw new IOException("synthetic status unavailable");
             await vm.ToggleIndexingPauseAsync();
-            Require(vm.IndexingState is null && vm.PauseActionText == "Retry indexing status" && !vm.CanIndexNow
+            Require(vm.IndexingState is null && vm.PauseActionText == "重试读取索引状态" && !vm.CanIndexNow
                 && vm.StatusMessage.Contains("synthetic status unavailable"), "Status failure must not claim confirmed state");
             var count = backend.RecordedPauseRequests.Count;
             backend.StatusHandler = null;
@@ -177,7 +177,7 @@ public static class PauseHarnessRunner
             var control = Gate();
             backend.PauseControlHandler = (_, ct) => control.Task.WaitAsync(ct);
             var resume = tray.ToggleIndexingPauseAsync();
-            Require(vm.PauseActionText == "Resuming…" && tray.PauseMenuText == vm.PauseActionText
+            Require(vm.PauseActionText == "正在恢复…" && tray.PauseMenuText == vm.PauseActionText
                 && !tray.IsPauseMenuEnabled && !tray.IsIndexNowMenuEnabled, "Tray/main pending state diverged");
             await tray.ToggleIndexingPauseAsync();
             await vm.ToggleIndexingPauseAsync();
@@ -188,7 +188,7 @@ public static class PauseHarnessRunner
             backend.PauseControlHandler = (_, _) => throw new IOException("synthetic tray pause failure");
             await tray.ToggleIndexingPauseAsync();
             Require(vm.IndexingState == IndexingControlState.Pausing && vm.StatusMessage.Contains("synthetic tray pause failure")
-                && tray.PauseMenuText == "Resume indexing" && !tray.IsIndexNowMenuEnabled && tray.IsPauseMenuEnabled, "Tray failure not synchronized");
+                && tray.PauseMenuText == "恢复索引" && !tray.IsIndexNowMenuEnabled && tray.IsPauseMenuEnabled, "Tray failure not synchronized");
             Require(backend.SaveSettingsCount == 0, "Tray pause mutated settings");
             vm.StopOperations();
             Require(!tray.IsPauseMenuEnabled && !tray.IsIndexNowMenuEnabled, "Tray enabled after shutdown");
@@ -211,17 +211,17 @@ public static class PauseHarnessRunner
                     await Until(() => button.IsLoaded && button.IsEnabled);
                     Require(button.Focus(FocusState.Keyboard), "Pause button keyboard focus unavailable");
                     var peer = new ButtonAutomationPeer(button);
-                    Require(peer.GetName() == "Pause indexing", "Accessible action name missing");
+                    Require(peer.GetName() == "暂停索引", "Accessible action name missing");
                     var control = Gate();
                     backend.PauseControlHandler = (_, ct) => control.Task.WaitAsync(ct);
                     ((IInvokeProvider)peer.GetPattern(PatternInterface.Invoke)).Invoke();
                     await Until(() => window.ViewModel.IsPauseControlBusy);
-                    Require((string)button.Content == "Pausing…" && !button.IsEnabled && !index.IsEnabled
-                        && tray.PauseMenuText == "Pausing…" && !tray.IsPauseMenuEnabled, "Main/tray pending mismatch");
-                    Require(state.Text != "Indexing paused", "Rendered premature Paused");
+                    Require((string)button.Content == "正在暂停…" && !button.IsEnabled && !index.IsEnabled
+                        && tray.PauseMenuText == "正在暂停…" && !tray.IsPauseMenuEnabled, "Main/tray pending mismatch");
+                    Require(state.Text != "索引已暂停", "Rendered premature Paused");
                     control.SetResult();
                     await Until(() => !window.ViewModel.IsPauseControlBusy);
-                    Require(state.Text == "Indexing paused" && (string)button.Content == tray.PauseMenuText && !tray.IsIndexNowMenuEnabled, "Main/tray Paused mismatch");
+                    Require(state.Text == "索引已暂停" && (string)button.Content == tray.PauseMenuText && !tray.IsIndexNowMenuEnabled, "Main/tray Paused mismatch");
                     foreach (var (width, height, theme) in new[] { (1100, 760, "Light"), (800, 600, "Dark") })
                     {
                         window.ApplyTheme(theme);
@@ -232,11 +232,11 @@ public static class PauseHarnessRunner
                         var point = button.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point());
                         Require(button.ActualWidth > 0 && point.X >= 0 && point.X + button.ActualWidth <= root.ActualWidth + 1,
                             $"Pause control clipped at {width}x{height} {theme}");
-                        Require(state.ActualWidth > 0 && state.Text == "Indexing paused", "State label missing");
+                        Require(state.ActualWidth > 0 && state.Text == "索引已暂停", "State label missing");
                     }
                     backend.PauseControlHandler = null;
                     await tray.ToggleIndexingPauseAsync();
-                    Require(state.Text == "Indexing allowed" && (string)button.Content == "Pause indexing" && index.IsEnabled
+                    Require(state.Text == "索引已开启" && (string)button.Content == "暂停索引" && index.IsEnabled
                         && tray.IsIndexNowMenuEnabled && backend.RecordedPauseRequests.SequenceEqual(new bool[]{true, false}), "Tray resume did not update actual main button");
                     Require(backend.SaveSettingsCount == 0, "Rendered pause saved settings");
                 }

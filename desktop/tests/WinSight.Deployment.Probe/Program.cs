@@ -31,15 +31,15 @@ try
     checks.Add(new { name = "visible-owned-window", passed = true, width = originalBounds.Width, height = originalBounds.Height });
     phase = "find-pause-button";
     AutomationElement? button = null;
-    Wait(() => { button = root.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "PauseIndexingButton")); return button is not null && button.Current.IsEnabled && button.Current.Name == "Pause indexing"; });
+    Wait(() => { button = root.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "PauseIndexingButton")); return button is not null && button.Current.IsEnabled && button.Current.Name == "暂停索引"; });
     if (button!.Current.ProcessId != pid) throw new UnauthorizedAccessException("Button provider belongs to another process.");
     phase = "invoke-visible-pause-button";
     Invoke(button);
-    Wait(() => button.Current.IsEnabled && button.Current.Name == "Resume indexing" && VisibleText(root, "Indexing paused"));
+    Wait(() => button.Current.IsEnabled && button.Current.Name == "恢复索引" && VisibleText(root, "索引已暂停"));
     checks.Add(new { name = "actual-pause-button-and-visible-state", passed = true });
     phase = "invoke-visible-resume-button";
     Invoke(button);
-    Wait(() => button.Current.IsEnabled && button.Current.Name == "Pause indexing" && VisibleText(root, "Indexing allowed"));
+    Wait(() => button.Current.IsEnabled && button.Current.Name == "暂停索引" && VisibleText(root, "索引已开启"));
     checks.Add(new { name = "actual-resume-button-and-visible-state", passed = true });
     foreach (var size in new[] { (Width: 800, Height: 600), (Width: 1100, Height: 760) })
     {

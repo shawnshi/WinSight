@@ -1,10 +1,25 @@
+using System.ComponentModel;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Storage;
+using Windows.Storage.FileProperties;
+using Windows.Storage.Streams;
 using WinSight.Core;
 
 namespace WinSight.App.ViewModels;
 
-public sealed class SearchItemViewModel
+public sealed class SearchItemViewModel : INotifyPropertyChanged
 {
+    private static readonly Windows.UI.ViewManagement.AccessibilitySettings Accessibility = new();
+    private static readonly SemaphoreSlim ThumbnailGate = new(3);
+    private ImageSource? thumbnail;
+    private bool thumbnailRequested;
+    private CancellationTokenSource? thumbnailCts;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+
     public SearchHit Hit { get; }
     public string Path => Hit.Path;
     public string FileName { get; }
@@ -60,6 +75,110 @@ public sealed class SearchItemViewModel
 
     public Visibility HasLocationBadge =>
         string.IsNullOrWhiteSpace(CompactBadgeText) ? Visibility.Collapsed : Visibility.Visible;
+
+    /// <summary>Last two folder names, so same-named files from different projects stay distinguishable in a narrow row.</summary>
+    public string ParentFolderLabel
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(DirectoryPath)) return string.Empty;
+            var parts = DirectoryPath.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length switch
+            {
+                0 => DirectoryPath,
+                1 => parts[0],
+                _ => parts[^2] + " › " + parts[^1]
+            };
+        }
+    }
+
+    /// <summary>Type, modified date and size on one short line (date only, so it is not clipped in the list).</summary>
+    public string ListMetaCompact
+    {
+        get
+        {
+            var ext = System.IO.Path.GetExtension(Path).TrimStart('.').ToUpperInvariant();
+            if (string.IsNullOrEmpty(ext)) ext = Kind.ToUpperInvariant();
+            var parts = new List<string> { ext };
+            if (Hit.ModifiedTime is > 0)
+                parts.Add(DateTimeOffset.FromUnixTimeMilliseconds((long)(Hit.ModifiedTime.Value * 1000)).LocalDateTime.ToString("yyyy-MM-dd"));
+            if (Hit.FileSize is { } bytes)
+                parts.Add(bytes switch
+                {
+                    >= 1024 * 1024 => $"{bytes / (1024.0 * 1024.0):F1} MB",
+                    >= 1024 => $"{bytes / 1024.0:F0} KB",
+                    _ => $"{bytes} B"
+                });
+            return string.Join(" · ", parts);
+        }
+    }
+
+    public string ListAutomationName =>
+        $"{FileName}，{ParentFolderLabel}，{MatchRationale}" + (ScorePercentage.Length > 0 ? $"，相关度 {ScorePercentage}" : "");
+
+    public ImageSource? ThumbnailSource
+    {
+        get => thumbnail;
+        private set
+        {
+            thumbnail = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ThumbnailSource)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ThumbnailVisibility)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BadgeVisibility)));
+        }
+    }
+
+    public Visibility ThumbnailVisibility => thumbnail is null ? Visibility.Collapsed : Visibility.Visible;
+    public Visibility BadgeVisibility => thumbnail is null ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>
+    /// Loads the shell thumbnail for a realized row. It is skipped for cloud placeholders (reading one would download the file)
+    /// and for formats that only have a generic icon, where the colored type badge is the better signal.
+    /// </summary>
+    public async Task EnsureThumbnailAsync()
+    {
+        if (thumbnailRequested) return;
+        thumbnailRequested = true;
+        var cts = thumbnailCts = new CancellationTokenSource();
+        var token = cts.Token;
+        try
+        {
+            await ThumbnailGate.WaitAsync(token);
+            InMemoryRandomAccessStream? data;
+            try
+            {
+                data = await Task.Run(async () =>
+                {
+                    var attributes = System.IO.File.GetAttributes(Path);
+                    const int cloud = 0x1000 | 0x40000 | 0x400000; // FILE_ATTRIBUTE_OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS
+                    if (((int)attributes & cloud) != 0) return null;
+                    var file = await StorageFile.GetFileFromPathAsync(Path);
+                    using var shell = await file.GetThumbnailAsync(ThumbnailMode.SingleItem, 96, ThumbnailOptions.UseCurrentScale);
+                    if (shell is null || shell.Type != ThumbnailType.Image || shell.Size == 0) return null;
+                    var copy = new InMemoryRandomAccessStream();
+                    await RandomAccessStream.CopyAsync(shell, copy);
+                    copy.Seek(0);
+                    return copy;
+                }, token);
+            }
+            finally { ThumbnailGate.Release(); }
+
+            if (data is null || token.IsCancellationRequested) { data?.Dispose(); return; }
+            var bitmap = new BitmapImage { DecodePixelWidth = 96 };
+            using (data) await bitmap.SetSourceAsync(data);
+            if (!token.IsCancellationRequested) ThumbnailSource = bitmap;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception) { /* a missing or unreadable file simply keeps the type badge */ }
+    }
+
+    /// <summary>Called when the row container is recycled so scrolled-past rows stop queuing shell work.</summary>
+    public void CancelThumbnail()
+    {
+        if (thumbnail is not null) return;
+        thumbnailCts?.Cancel();
+        thumbnailRequested = false;
+    }
 
     public string FriendlyDirectoryPath
     {
@@ -176,7 +295,7 @@ public sealed class SearchItemViewModel
                               string.Equals(Kind, "doc", StringComparison.OrdinalIgnoreCase) ||
                               string.Equals(Kind, "presentation", StringComparison.OrdinalIgnoreCase) ||
                               string.Equals(Kind, "sheet", StringComparison.OrdinalIgnoreCase)
-                ? "\n\n💡 提示: 匹配文件名/元数据。按 [Space] 空格键或点击【页图校准】可调出独立高清光栅页图与 OCR 识别层。"
+                ? "\n\n提示：本次命中来自文件名或元数据。按空格键可打开页面大图与 OCR 文字行。"
                 : "";
 
             return $"[{FileName}]\n\n• 匹配依据: {MatchRationale}\n• 文件属性: {ListItemMetadataLine}\n• 所在目录: {DirectoryPath}{previewHint}";
@@ -313,11 +432,11 @@ public sealed class SearchItemViewModel
             if (string.Equals(Kind, "pdf", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(Kind, "document", StringComparison.OrdinalIgnoreCase))
             {
-                return $"Page {(int)Location.Value}";
+                return $"第 {(int)Location.Value} 页";
             }
             if (string.Equals(Kind, "code", StringComparison.OrdinalIgnoreCase))
             {
-                return $"Line {(int)Location.Value}";
+                return $"第 {(int)Location.Value} 行";
             }
             return $"{Location.Value:F0}";
         }
@@ -367,6 +486,9 @@ public sealed class SearchItemViewModel
                     _ => Windows.UI.Color.FromArgb(255, 26, 115, 232)
                 }
             };
+            // High-contrast themes own every color: use the system foreground instead of the brand palette.
+            if (Accessibility.HighContrast)
+                color = new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Foreground);
             return new Microsoft.UI.Xaml.Media.SolidColorBrush(color);
         }
     }
@@ -375,6 +497,7 @@ public sealed class SearchItemViewModel
     {
         get
         {
+            if (Accessibility.HighContrast) return new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0));
             var fg = IconForegroundBrush.Color;
             return new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(28, fg.R, fg.G, fg.B));
         }

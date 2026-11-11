@@ -43,18 +43,18 @@ internal static class StatusRefreshCases
             folders.SettingsChanged += (_, _) => pending = main.InitializeAsync();
             await folders.InitializeAsync();
             await pending;
-            Require(main.StatusMessage.StartsWith("No index folders configured.", StringComparison.Ordinal), "Initial no-root state is inaccurate.");
+            Require(main.StatusMessage.StartsWith("尚未配置索引文件夹", StringComparison.Ordinal), "Initial no-root state is inaccurate.");
             passed.Add("loaded-settings-notification");
             var owned = Path.Combine(root, "status-owned-empty");
             Directory.CreateDirectory(owned);
             Require(await folders.AddFolderAsync(owned), "Owned folder save failed.");
             await pending;
-            Require(main.Settings.Folders.Contains(owned) && main.StatusMessage.StartsWith("No files indexed yet.", StringComparison.Ordinal), "Saved settings did not refresh the global empty-index status.");
+            Require(main.Settings.Folders.Contains(owned) && main.StatusMessage.StartsWith("尚未建立索引。", StringComparison.Ordinal), "Saved settings did not refresh the global empty-index status.");
             Require(backend.IndexCallCount == 0, "Status refresh unexpectedly indexed a folder.");
             passed.Add("save-notification-refreshes-global-status");
             Require(await folders.RemoveFolderAsync(owned), "Owned folder removal failed.");
             await pending;
-            Require(main.Settings.Folders.Count == 0 && main.StatusMessage.StartsWith("No index folders configured.", StringComparison.Ordinal), "Root removal left stale global status.");
+            Require(main.Settings.Folders.Count == 0 && main.StatusMessage.StartsWith("尚未配置索引文件夹", StringComparison.Ordinal), "Root removal left stale global status.");
             passed.Add("remove-notification-refreshes-global-status");
             main.StopOperations();
         }
@@ -118,12 +118,12 @@ internal static class StatusRefreshCases
             var navigation = ((Grid)window.Content).Children.OfType<NavigationView>().Single();
             var page = (FoldersPage)((Frame)navigation.Content).Content;
             await WaitAsync(() => page.IsLoaded && page.ViewModel.IsInitialized
-                && window.ViewModel.StatusMessage.StartsWith("No index folders configured.", StringComparison.Ordinal));
+                && window.ViewModel.StatusMessage.StartsWith("尚未配置索引文件夹", StringComparison.Ordinal));
             var owned = Path.Combine(root, "status-ui-owned-empty");
             Directory.CreateDirectory(owned);
             Require(await page.ViewModel.AddFolderAsync(owned), "Production page ViewModel save failed.");
             await WaitAsync(() => window.ViewModel.Settings.Folders.Contains(owned)
-                && window.ViewModel.StatusMessage.StartsWith("No files indexed yet.", StringComparison.Ordinal));
+                && window.ViewModel.StatusMessage.StartsWith("尚未建立索引。", StringComparison.Ordinal));
             Require(backend.IndexCallCount == 0, "Notification started indexing implicitly.");
             var result = new { status = "PassedProductionPageToMainWindowNotification", pid = Environment.ProcessId,
                 ownerHwnd = window.WindowHandle.ToInt64(), saved = true, globalSettingsRefreshed = true,

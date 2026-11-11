@@ -123,7 +123,9 @@ public static class HarnessRunner
 
             await Task.Delay(500);
 
-            if (backend.SearchCallCount > 1) throw new Exception($"Debounce should collapse rapid typing into one search, saw {backend.SearchCallCount}");
+            if (backend.SearchCallCount > 2) throw new Exception($"Debounce should collapse rapid typing into one two-phase search (keyword then hybrid), saw {backend.SearchCallCount} calls");
+            if (backend.SearchModes.Count == 0 || backend.SearchModes[0] != SearchMode.Keyword) throw new Exception("First search phase must be the fast keyword pass");
+            if (backend.SearchModes.Count == 2 && backend.SearchModes[1] != SearchMode.Hybrid) throw new Exception("Second search phase must be the hybrid pass");
             if (vm.Hits.Count == 0) throw new Exception("Expected search hits for 'patient'");
             var top = vm.Hits[0];
             if (string.IsNullOrEmpty(top.FileName)) throw new Exception("Search hit missing filename");
@@ -377,6 +379,66 @@ public static class HarnessRunner
                 throw new Exception($"Media locator notice missing or invalid: {planMedia.NoticeMessage}");
 
             return "Editor dispatch with explicit ArgumentList and honest locator notices verified";
+        }, log));
+
+        // 4b. Two-phase search: keyword rows first, hybrid refines in place, selection survives, every state is distinct
+        results.Add(await RunTestAsync("QuickSearch_TwoPhase_And_States", async () =>
+        {
+            var backend = new SyntheticDesktopBackend(tempDir);
+            var gate = new TaskCompletionSource();
+            SearchHit Hit(string name, double score, string type) => new(
+                FileId: name.GetHashCode(), Path: Path.Combine(tempDir, name), Kind: "doc", Score: score, MatchType: type,
+                Excerpt: "excerpt " + name, Location: 1, FileSize: 10, ModifiedTime: 1);
+            var a = Hit("a.docx", .9, "keyword"); var b = Hit("b.docx", .8, "keyword"); var c = Hit("c.docx", .7, "semantic");
+            backend.SearchHandler = async (req, ct) =>
+            {
+                switch (req.Query)
+                {
+                    case "none": return new SearchResponse(Array.Empty<SearchHit>(), TimeSpan.FromMilliseconds(1), true);
+                    case "boom": throw new InvalidOperationException("boom");
+                    case "partial":
+                        if (req.Mode == SearchMode.Keyword) return new SearchResponse(new[] { a }, TimeSpan.FromMilliseconds(1), false);
+                        throw new InvalidOperationException("embedding host down");
+                }
+                if (req.Mode == SearchMode.Keyword) return new SearchResponse(new[] { a, b }, TimeSpan.FromMilliseconds(1), false);
+                await gate.Task.WaitAsync(ct);
+                return new SearchResponse(new[] { b, a, c }, TimeSpan.FromMilliseconds(5), true);
+            };
+            var vm = new QuickSearchViewModel(backend, searchDebounce: TimeSpan.Zero);
+
+            async Task WaitFor(Func<bool> condition, string what)
+            {
+                for (var i = 0; i < 150 && !condition(); i++) await Task.Delay(20);
+                if (!condition()) throw new Exception("Timed out waiting for: " + what);
+            }
+
+            if (vm.ViewState != SearchViewState.Idle) throw new Exception("Fresh view model must be Idle");
+
+            vm.Query = "plan";
+            await WaitFor(() => vm.Hits.Count == 2, "keyword rows");
+            if (!vm.IsLoading || !vm.IsRefining) throw new Exception("Keyword rows must show while the semantic pass is still running");
+            if (vm.ViewState != SearchViewState.Results) throw new Exception("Keyword rows must be in Results state");
+            vm.SelectedIndex = 1;
+            gate.SetResult();
+            await WaitFor(() => vm.Hits.Count == 3 && !vm.IsLoading, "hybrid refinement");
+            if (vm.SelectedItem is null || !vm.SelectedItem.Path.EndsWith("b.docx")) throw new Exception("Selection must follow the same hit after refinement");
+            if (vm.SelectedIndex != 0) throw new Exception($"Selected hit moved to index 0 in the refined list, got {vm.SelectedIndex}");
+
+            vm.Query = "none";
+            await WaitFor(() => vm.ViewState == SearchViewState.NoResults && !vm.IsLoading, "no-results state");
+            if (vm.Hits.Count != 0) throw new Exception("No-results state must clear previous rows");
+
+            vm.Query = "boom";
+            await WaitFor(() => vm.ViewState == SearchViewState.Error && !vm.IsLoading, "error state");
+            if (!vm.HasNotice) throw new Exception("Error state must carry a notice");
+
+            vm.Query = "partial";
+            await WaitFor(() => vm.Hits.Count == 1 && !vm.IsLoading, "keyword fallback");
+            if (vm.ViewState != SearchViewState.Results || !vm.HasNotice) throw new Exception("Hybrid failure must keep keyword rows and explain why");
+
+            vm.Query = "";
+            await WaitFor(() => vm.ViewState == SearchViewState.Idle, "idle state");
+            return "Keyword rows first, hybrid refinement keeps selection; idle/no-results/error/keyword-fallback states are distinct";
         }, log));
 
         // 13. Search Kind Contracts & Mapping

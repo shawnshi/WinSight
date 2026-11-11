@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using WinSight.App.Services;
 using WinSight.Core;
 
 namespace WinSight.App.ViewModels;
@@ -27,18 +28,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         && !IsIndexingActive && CanToggleIndexingPause;
     public string IndexingStateText => IndexingState switch
     {
-        IndexingControlState.Running => "Indexing allowed",
-        IndexingControlState.Pausing => "Pausing indexing…",
-        IndexingControlState.Paused => "Indexing paused",
-        _ => "Indexing status unknown"
+        IndexingControlState.Running => UiText.IndexingAllowed,
+        IndexingControlState.Pausing => UiText.IndexingPausing,
+        IndexingControlState.Paused => UiText.IndexingPaused,
+        _ => UiText.IndexingUnknown
     };
     public string PauseActionText => isPauseControlBusy
-        ? (pauseRequested ? "Pausing…" : "Resuming…")
+        ? (pauseRequested ? "正在暂停…" : "正在恢复…")
         : IndexingState switch
         {
-            IndexingControlState.Running => "Pause indexing",
-            IndexingControlState.Pausing or IndexingControlState.Paused => "Resume indexing",
-            _ => "Retry indexing status"
+            IndexingControlState.Running => UiText.PauseIndexing,
+            IndexingControlState.Pausing or IndexingControlState.Paused => UiText.ResumeIndexing,
+            _ => UiText.RetryIndexingStatus
         };
 
     private void NotifyIndexingControl()
@@ -65,7 +66,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         // Ignore reads that began before this control operation.
         ++statusReadVersion;
         NotifyIndexingControl();
-        StatusMessage = pauseRequested ? "Pause requested; waiting for indexing to stop…" : "Resuming indexing…";
+        StatusMessage = pauseRequested ? "已请求暂停，正在等待索引停止…" : "正在恢复索引…";
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
         string? error = null;
         try
@@ -74,7 +75,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         }
         catch (OperationCanceledException)
         {
-            error = "Indexing control cancelled.";
+            error = "索引控制操作已取消。";
         }
         catch (Exception ex)
         {
@@ -111,7 +112,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public int PendingCount => status?.Pending ?? 0;
     public int PartialCount => status?.Partial ?? 0;
     public int FailedCount => status?.Failed ?? 0;
-    public string IndexPath => status?.IndexPath ?? "Default";
+    public string IndexPath => status?.IndexPath ?? "默认位置";
     public string? StatusDetail => status?.Detail;
 
     public string StatsSummary
@@ -188,8 +189,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             ? IndexingStateText
             : FilesCount == 0
                 ? (settings.Folders.Count == 0 && settings.CodeFolders.Count == 0
-                    ? "No index folders configured. Add a folder to begin."
-                    : "No files indexed yet. Select Index Now to index configured folders.")
+                    ? "尚未配置索引文件夹，请先添加一个文件夹。"
+                    : "尚未建立索引。请点击“立即索引”处理已配置的文件夹。")
                     + (string.IsNullOrWhiteSpace(status?.Detail) ? string.Empty : " " + status.Detail)
                 : status?.Detail ?? (PendingCount > 0
                 ? $"Indexing in progress: {DoneCount} / {FilesCount} files completed..."
@@ -230,7 +231,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         if (!CanIndexNow || cancellationToken.IsCancellationRequested) return;
 
         IsIndexingActive = true;
-        StatusMessage = "Reading latest settings for indexing...";
+        StatusMessage = "正在读取最新的索引设置…";
 
         activeIndexCts?.Dispose();
         activeIndexCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
@@ -243,7 +244,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(Settings));
             if (settings.Folders.Count == 0 && settings.CodeFolders.Count == 0)
             {
-                StatusMessage = "No index folders configured. Add a folder to begin.";
+                StatusMessage = "尚未配置索引文件夹，请先添加一个文件夹。";
                 return;
             }
 
@@ -291,7 +292,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
             if (settings.CodeFolders.Count > 0)
             {
-                StatusMessage = "Indexing code roots...";
+                StatusMessage = "正在索引代码目录…";
                 var codeRequest = new IndexRequest(
                     Roots: settings.CodeFolders,
                     Excluded: settings.CodeSkipped,
@@ -330,7 +331,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         {
             await RefreshStatusAsync();
             if (!lifetime.IsCancellationRequested && !isPauseControlBusy && IndexingState == IndexingControlState.Running)
-                StatusMessage = "Indexing was cancelled.";
+                StatusMessage = "索引已取消。";
         }
         catch (Exception ex)
         {

@@ -27,7 +27,7 @@ public sealed class TrayIconService : IDisposable
     private readonly uint taskbarCreatedMessage = NativeMethods.RegisterWindowMessage("TaskbarCreated");
     private readonly MainWindowViewModel? indexing;
 
-    public string PauseMenuText => indexing?.PauseActionText ?? "Indexing status unavailable";
+    public string PauseMenuText => indexing?.PauseActionText ?? "索引状态不可用";
     public bool IsPauseMenuEnabled => !disposed && indexing?.CanToggleIndexingPause == true;
     public bool IsIndexNowMenuEnabled => !disposed && indexing?.CanIndexNow == true;
 

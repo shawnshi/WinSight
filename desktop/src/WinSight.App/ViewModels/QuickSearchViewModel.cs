@@ -3,8 +3,11 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using WinSight.App.Services;
 using WinSight.Core;
+using WinSight.Core.Diagnostics;
 
 namespace WinSight.App.ViewModels;
+
+public enum SearchViewState { Idle, Searching, Results, NoResults, Error }
 
 public sealed class QuickSearchViewModel : INotifyPropertyChanged
 {
@@ -16,7 +19,8 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     private bool isLoading;
     private bool hasNotice;
     private string? noticeText;
-    private string statusText = "Ready";
+    private string statusText = UiText.Ready;
+    private SearchViewState viewState = SearchViewState.Idle;
     private CancellationTokenSource? activeCts;
     private long querySequence;
     private readonly TimeSpan searchDebounce;
@@ -73,7 +77,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     public bool IsLoading
     {
         get => isLoading;
-        private set => SetProperty(ref isLoading, value);
+        private set { if (SetProperty(ref isLoading, value)) OnPropertyChanged(nameof(IsRefining)); }
     }
 
     public bool HasNotice
@@ -93,6 +97,25 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         get => statusText;
         internal set => SetProperty(ref statusText, value);
     }
+
+    public SearchViewState ViewState
+    {
+        get => viewState;
+        private set
+        {
+            if (!SetProperty(ref viewState, value)) return;
+            OnPropertyChanged(nameof(IsIdle));
+            OnPropertyChanged(nameof(IsNoResults));
+            OnPropertyChanged(nameof(IsError));
+        }
+    }
+
+    public bool IsIdle => viewState == SearchViewState.Idle;
+    public bool IsNoResults => viewState == SearchViewState.NoResults;
+    public bool IsError => viewState == SearchViewState.Error;
+
+    /// <summary>True while results are already on screen and the slower semantic pass is still merging in.</summary>
+    public bool IsRefining => isLoading && Hits.Count > 0;
 
     public SearchItemViewModel? SelectedItem =>
         selectedIndex >= 0 && selectedIndex < Hits.Count ? Hits[selectedIndex] : null;
@@ -119,51 +142,80 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     {
         if (string.IsNullOrWhiteSpace(q))
         {
+            selectedIndex = -1;
             Hits.Clear();
-            SelectedIndex = -1;
+            OnPropertyChanged(nameof(SelectedIndex));
+            OnPropertyChanged(nameof(SelectedItem));
             IsLoading = false;
             HasNotice = false;
             NoticeText = null;
-            StatusText = "Ready";
+            StatusText = UiText.Ready;
+            ViewState = SearchViewState.Idle;
             return;
         }
 
         IsLoading = true;
-        StatusText = "Searching...";
+        StatusText = UiText.Searching;
+        if (Hits.Count == 0) ViewState = SearchViewState.Searching;
 
+        var keywordShown = false;
+        var firstMs = 0.0;
         try
         {
             if (searchDebounce > TimeSpan.Zero) await Task.Delay(searchDebounce, ct);
-            var req = new SearchRequest(
-                Query: q,
-                Limit: 60,
-                Mode: SearchMode.Hybrid,
-                Kind: kind,
-                MinScore: 0.25);
 
-            var response = await backend.SearchAsync(req, ct);
-
-            // Stale result guard: check token and sequence
-            if (ct.IsCancellationRequested || Interlocked.Read(ref querySequence) != seq)
+            // Phase 1: lexical index only. It never touches the embedding host, so the first rows appear in tens of milliseconds
+            // even while the semantic pass is queued behind indexing or a cold model start.
+            SearchResponse? fast = null;
+            try
             {
+                fast = await backend.SearchAsync(new SearchRequest(q, Limit: 60, Mode: SearchMode.Keyword, Kind: kind, MinScore: 0.25), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The hybrid pass below reports the real failure; a keyword fault alone must not blank the page.
+            }
+            if (IsStale(seq, ct)) return;
+
+            if (fast is { Hits.Count: > 0 })
+            {
+                firstMs = fast.Elapsed.TotalMilliseconds;
+                ApplyHits(fast.Hits, preserveSelection: false);
+                keywordShown = true;
+                SetNotice(fast.Notice);
+                StatusText = UiText.KeywordPhase(fast.Hits.Count);
+            }
+            else
+            {
+                if (fast is not null) firstMs = fast.Elapsed.TotalMilliseconds;
+                // Never leave the previous query's rows on screen while a different query is still being resolved.
+                if (Hits.Count > 0) ApplyHits(Array.Empty<SearchHit>(), preserveSelection: false);
+                ViewState = SearchViewState.Searching;
+                StatusText = UiText.KeywordPhase(0);
+            }
+
+            // Phase 2: full hybrid ranking replaces the provisional list; the user's selection survives when the row is still present.
+            SearchResponse full;
+            try
+            {
+                full = await backend.SearchAsync(new SearchRequest(q, Limit: 60, Mode: SearchMode.Hybrid, Kind: kind, MinScore: 0.25), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && keywordShown)
+            {
+                if (IsStale(seq, ct)) return;
+                SetNotice(UiText.SemanticUnavailable);
+                StatusText = UiText.Completed(Hits.Count, firstMs, firstMs, keywordOnly: true);
+                AppLog.Warn("hybrid search failed; keeping keyword results", ex);
                 return;
             }
+            if (IsStale(seq, ct)) return;
 
-            selectedIndex = -1;
-            Hits.Clear();
-            foreach (var hit in response.Hits)
-            {
-                Hits.Add(new SearchItemViewModel(hit));
-            }
-
-            SelectedIndex = Hits.Count > 0 ? 0 : -1;
-            OnPropertyChanged(nameof(SelectedIndex));
-            OnPropertyChanged(nameof(SelectedItem));
-            HasNotice = !string.IsNullOrEmpty(response.Notice);
-            NoticeText = response.Notice;
-            StatusText = response.Hits.Count == 0
-                ? "未找到高相关度结果"
-                : $"共检索到 {response.Hits.Count} 条高相关结果 (按相关度排列，耗时 {response.Elapsed.TotalMilliseconds:F0} ms)";
+            ApplyHits(full.Hits, preserveSelection: keywordShown);
+            SetNotice(full.Notice);
+            StatusText = full.Hits.Count == 0
+                ? UiText.NoResult
+                : UiText.Completed(full.Hits.Count, firstMs, full.Elapsed.TotalMilliseconds, keywordOnly: !full.SemanticAvailable && full.Hits.All(h => h.MatchType == "keyword"));
+            ViewState = Hits.Count == 0 ? SearchViewState.NoResults : SearchViewState.Results;
         }
         catch (OperationCanceledException)
         {
@@ -171,13 +223,16 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            if (Interlocked.Read(ref querySequence) == seq)
+            if (!IsStale(seq, ct))
             {
+                selectedIndex = -1;
                 Hits.Clear();
-                SelectedIndex = -1;
+                OnPropertyChanged(nameof(SelectedIndex));
+                OnPropertyChanged(nameof(SelectedItem));
                 HasNotice = true;
-                NoticeText = $"Search error: {ex.Message}";
-                StatusText = "Error during search";
+                NoticeText = UiText.SearchError(ex.Message);
+                StatusText = UiText.SearchFailed;
+                ViewState = SearchViewState.Error;
             }
         }
         finally
@@ -185,8 +240,46 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
             if (Interlocked.Read(ref querySequence) == seq)
             {
                 IsLoading = false;
+                if (ViewState == SearchViewState.Searching)
+                    ViewState = Hits.Count == 0 ? SearchViewState.NoResults : SearchViewState.Results;
             }
         }
+    }
+
+    private bool IsStale(long seq, CancellationToken ct) => ct.IsCancellationRequested || Interlocked.Read(ref querySequence) != seq;
+
+    private void SetNotice(string? notice)
+    {
+        var text = UiText.LocalizeNotice(notice);
+        HasNotice = !string.IsNullOrEmpty(text);
+        NoticeText = text;
+    }
+
+    internal static string HitKey(SearchHit hit) =>
+        $"{hit.Path}|{hit.Source?.Location.Page}|{hit.Source?.Location.Paragraph}|{hit.Source?.Location.Sheet}|{hit.Source?.Location.Range}|{hit.Location}|{hit.SegmentKind}";
+
+    /// <summary>Swaps in a new hit list without churn: an identical list keeps its row objects, a changed one keeps the selection by identity.</summary>
+    private void ApplyHits(IReadOnlyList<SearchHit> hits, bool preserveSelection)
+    {
+        var incoming = hits.Select(HitKey).ToArray();
+        if (incoming.Length == Hits.Count && incoming.SequenceEqual(Hits.Select(h => HitKey(h.Hit)), StringComparer.Ordinal))
+        {
+            if (Hits.Count > 0 && selectedIndex < 0) SelectedIndex = 0;
+            OnPropertyChanged(nameof(IsRefining));
+            return;
+        }
+
+        var keep = preserveSelection && SelectedItem is { } current ? HitKey(current.Hit) : null;
+        selectedIndex = -1;
+        Hits.Clear();
+        foreach (var hit in hits) Hits.Add(new SearchItemViewModel(hit));
+
+        var index = keep is null ? -1 : Array.IndexOf(incoming, keep);
+        SelectedIndex = index >= 0 ? index : Hits.Count > 0 ? 0 : -1;
+        OnPropertyChanged(nameof(SelectedIndex));
+        OnPropertyChanged(nameof(SelectedItem));
+        OnPropertyChanged(nameof(IsRefining));
+        ViewState = Hits.Count == 0 ? SearchViewState.Searching : SearchViewState.Results;
     }
 
     public async Task<bool> OpenHitAsync(SearchItemViewModel? item)
@@ -202,8 +295,8 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
             // Revoked scope: remove outdated hit from results list
             Hits.Remove(item);
             HasNotice = true;
-            NoticeText = $"File no longer authorized: {plan.DenialReason}";
-            StatusText = "Action blocked by authorization rules";
+            NoticeText = UiText.NotAuthorized(plan.DenialReason);
+            StatusText = UiText.ActionBlocked;
             return false;
         }
 
@@ -212,7 +305,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         {
             HasNotice = true;
             NoticeText = result.Message;
-            StatusText = "Action failed";
+            StatusText = UiText.ActionFailed;
             return false;
         }
 
@@ -236,8 +329,8 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         {
             Hits.Remove(item);
             HasNotice = true;
-            NoticeText = $"File no longer authorized: {plan.DenialReason}";
-            StatusText = "Action blocked by authorization rules";
+            NoticeText = UiText.NotAuthorized(plan.DenialReason);
+            StatusText = UiText.ActionBlocked;
             return false;
         }
 
@@ -256,8 +349,8 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         {
             Hits.Remove(item);
             HasNotice = true;
-            NoticeText = $"File no longer authorized: {plan.DenialReason}";
-            StatusText = "Action blocked by authorization rules";
+            NoticeText = UiText.NotAuthorized(plan.DenialReason);
+            StatusText = UiText.ActionBlocked;
             return false;
         }
 
