@@ -390,8 +390,10 @@ public static class HarnessRunner
                 FileId: name.GetHashCode(), Path: Path.Combine(tempDir, name), Kind: "doc", Score: score, MatchType: type,
                 Excerpt: "excerpt " + name, Location: 1, FileSize: 10, ModifiedTime: 1);
             var a = Hit("a.docx", .9, "keyword"); var b = Hit("b.docx", .8, "keyword"); var c = Hit("c.docx", .7, "semantic");
+            string? lastKind = null, lastQuery = null;
             backend.SearchHandler = async (req, ct) =>
             {
+                lastKind = req.Kind; lastQuery = req.Query;
                 switch (req.Query)
                 {
                     case "none": return new SearchResponse(Array.Empty<SearchHit>(), TimeSpan.FromMilliseconds(1), true);
@@ -436,9 +438,104 @@ public static class HarnessRunner
             await WaitFor(() => vm.Hits.Count == 1 && !vm.IsLoading, "keyword fallback");
             if (vm.ViewState != SearchViewState.Results || !vm.HasNotice) throw new Exception("Hybrid failure must keep keyword rows and explain why");
 
+            vm.Query = "none type:pdf";
+            await WaitFor(() => vm.ViewState == SearchViewState.NoResults && !vm.IsLoading, "operator query");
+            if (lastKind != "pdf" || lastQuery != "none") throw new Exception($"type: operator must reach the backend as Kind=pdf with a clean query, got kind={lastKind} query={lastQuery}");
+            if (vm.SelectedKind is not null) throw new Exception("An inline operator must not change the type bar");
+
             vm.Query = "";
             await WaitFor(() => vm.ViewState == SearchViewState.Idle, "idle state");
             return "Keyword rows first, hybrid refinement keeps selection; idle/no-results/error/keyword-fallback states are distinct";
+        }, log));
+
+        // 4d. Hits of one file collapse onto one row; expansion is in place, keeps selection and survives a refresh
+        results.Add(await RunTestAsync("QuickSearch_GroupsHitsByFile", async () =>
+        {
+            var backend = new SyntheticDesktopBackend(tempDir);
+            SearchHit Hit(string name, double location, double score) => new(
+                FileId: 7, Path: Path.Combine(tempDir, name), Kind: "pdf", Score: score, MatchType: "keyword",
+                Excerpt: "page " + location, Location: location, FileSize: 10, ModifiedTime: 1);
+            var hits = new[] { Hit("deck.pdf", 2, .9), Hit("other.pdf", 1, .8), Hit("deck.pdf", 5, .7), Hit("deck.pdf", 9, .6) };
+            backend.SearchHandler = (_, _) => Task.FromResult(new SearchResponse(hits, TimeSpan.FromMilliseconds(1), true));
+            var vm = new QuickSearchViewModel(backend, searchDebounce: TimeSpan.Zero);
+            async Task WaitFor(Func<bool> condition, string what)
+            {
+                for (var i = 0; i < 150 && !condition(); i++) await Task.Delay(20);
+                if (!condition()) throw new Exception("Timed out waiting for: " + what);
+            }
+
+            vm.Query = "deck";
+            await WaitFor(() => vm.Hits.Count == 2 && !vm.IsLoading, "collapsed rows");
+            var deck = vm.Hits[0];
+            if (deck.MoreCount != 2 || deck.IsSecondary || deck.GroupExpanded) throw new Exception("First row must be the best hit with 2 more hits folded under it");
+            if (!vm.StatusText.Contains("4 条命中") || !vm.StatusText.Contains("2 个文件")) throw new Exception("Status must report hits and files: " + vm.StatusText);
+
+            vm.SelectedIndex = 1; // other.pdf
+            vm.ToggleGroup(deck);
+            if (vm.Hits.Count != 4 || !vm.Hits[1].IsSecondary || !vm.Hits[2].IsSecondary || vm.Hits[3].Path.EndsWith("other.pdf") == false)
+                throw new Exception("Expanding must insert the other hits directly under their file row");
+            if (vm.SelectedItem is null || !vm.SelectedItem.Path.EndsWith("other.pdf")) throw new Exception("Expanding a group above the selection must not move the selection");
+
+            vm.Query = "deck2";
+            await WaitFor(() => vm.Hits.Count == 4 && !vm.IsLoading, "expansion survives refresh");
+            if (!vm.Hits[0].GroupExpanded) throw new Exception("A refresh must not fold a group the user opened");
+
+            vm.SelectedIndex = 2; // a secondary row
+            vm.CollapseGroupOf(vm.SelectedItem);
+            if (vm.Hits.Count != 2 || vm.SelectedItem is null || vm.SelectedItem.IsSecondary || !vm.SelectedItem.Path.EndsWith("deck.pdf"))
+                throw new Exception("Folding while a child is selected must move the selection to its file row");
+            return "One row per file, in-place expansion keeps selection, survives refresh, folds back to the file row";
+        }, log));
+
+        // 4c. Query operators and history (pure logic; the in-memory store never touches user data)
+        results.Add(await RunTestAsync("Search_Operators_And_History", () =>
+        {
+            var (q1, k1) = WinSight.App.Services.SearchOperators.Parse("预算 type:pdf");
+            if (q1 != "预算" || k1 != "pdf") throw new Exception($"type:pdf not extracted: [{q1}] [{k1}]");
+            var (q2, k2) = WinSight.App.Services.SearchOperators.Parse("type:图片 海边 日落");
+            if (q2 != "海边 日落" || k2 != "image") throw new Exception($"type:图片 not extracted: [{q2}] [{k2}]");
+            var (q3, k3) = WinSight.App.Services.SearchOperators.Parse("type:unknown 预算");
+            if (q3 != "type:unknown 预算" || k3 is not null) throw new Exception("Unknown operator values must stay part of the text");
+            var (q4, k4) = WinSight.App.Services.SearchOperators.Parse("code: type:pdf");
+            if (q4 != "code: type:pdf" || k4 is not null) throw new Exception("code: queries must not be rewritten");
+            var (q5, k5) = WinSight.App.Services.SearchOperators.Parse("notype:pdf x");
+            if (k5 is not null) throw new Exception("An operator must start at a word boundary");
+
+            var store = new WinSight.App.Services.SearchHistoryStore(null, capacity: 3);
+            store.Add("alpha"); store.Add("beta"); store.Add("Alpha"); store.Add("gamma"); store.Add("delta"); store.Add("x");
+            if (store.Items.Count != 3 || store.Items[0] != "delta" || store.Items[1] != "gamma" || store.Items[2] != "Alpha")
+                throw new Exception("History must be most-recent-first, deduplicated case-insensitively, capped and ignore 1-char queries: " + string.Join("|", store.Items));
+            if (store.Suggest("al").Single() != "Alpha") throw new Exception("Suggest must filter by substring");
+            var file = Path.Combine(tempDir, "history", "search-history.json");
+            var persistent = new WinSight.App.Services.SearchHistoryStore(file);
+            persistent.Add("persisted query");
+            var reopened = new WinSight.App.Services.SearchHistoryStore(file);
+            if (reopened.Items.Count != 1 || reopened.Items[0] != "persisted query") throw new Exception("History must survive a restart");
+            reopened.Clear();
+            if (new WinSight.App.Services.SearchHistoryStore(file).Items.Count != 0) throw new Exception("Clear must persist");
+            return "type: operator parsed at word boundaries, unknown values and code: untouched; history ordered, capped, persistent and clearable";
+        }, log));
+
+        // 4e. Layout state: dragged list width and the one-time tip persist; widths are always clamped to something usable
+        results.Add(await RunTestAsync("Search_Layout_State", () =>
+        {
+            var file = Path.Combine(tempDir, "layout", "search-layout.json");
+            var store = new WinSight.App.Services.SearchLayoutStore(file);
+            if (store.ListWidth is not null || store.TipSeen) throw new Exception("Fresh layout state must be empty");
+            store.ListWidth = 410; store.TipSeen = true;
+            var reopened = new WinSight.App.Services.SearchLayoutStore(file);
+            if (reopened.ListWidth != 410 || !reopened.TipSeen) throw new Exception("Layout state must survive a restart");
+            reopened.ListWidth = null;
+            if (new WinSight.App.Services.SearchLayoutStore(file).ListWidth is not null) throw new Exception("Reset must persist");
+            File.WriteAllText(file, "{ not json");
+            if (new WinSight.App.Services.SearchLayoutStore(file).ListWidth is not null) throw new Exception("A corrupt file must fall back to defaults");
+            File.WriteAllText(file, "{\"ListWidth\": 12}");
+            if (new WinSight.App.Services.SearchLayoutStore(file).ListWidth is not null) throw new Exception("A width below the minimum must be ignored");
+            double Clamp(double w, double c) => WinSight.App.Services.SearchLayoutStore.ClampListWidth(w, c);
+            if (Clamp(100, 1200) != 260) throw new Exception("Lower clamp");
+            if (Clamp(2000, 1200) != 840) throw new Exception("Upper clamp must leave 360px for the stage");
+            if (Clamp(500, 500) != 260) throw new Exception("A container too small for both falls back to the minimum list width");
+            return "list width and tip flag persist; corrupt or tiny values fall back; clamp keeps list >=260 and stage >=360";
         }, log));
 
         // 13. Search Kind Contracts & Mapping

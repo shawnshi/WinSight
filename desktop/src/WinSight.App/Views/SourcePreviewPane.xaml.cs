@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Shapes;
 using WinSight.App.Services;
 using WinSight.App.ViewModels;
 using WinSight.Core;
+using WinSight.Core.Diagnostics;
 using Windows.Storage.Streams;
 
 namespace WinSight.App.Views;
@@ -45,7 +46,7 @@ public sealed partial class SourcePreviewPane : UserControl
             DrawRegions(loaded);
             Notice.Text=loaded.Notice;Excerpt.Text=loaded.Excerpt;ExactOpen.IsEnabled=loaded.SourceCurrent&&loaded.CanNavigate;
             preview=loaded;loaded=null;
-            UpdateLayout();FitRasterToViewport();ShowRasterInViewport();
+            UpdateLayout();FitRasterToViewport();ShowRasterInViewport();PlayRasterHandoff();
         }
         catch(OperationCanceledException){if(epoch==generation){ResetRaster();Notice.Text=UiText.PreviewCanceled;}}
         catch(Exception e){if(epoch==generation){ResetRaster();Notice.Text=UiText.PreviewUnavailable(e.Message);}}
@@ -54,6 +55,11 @@ public sealed partial class SourcePreviewPane : UserControl
             try{if(loaded is not null)await loaded.DisposeAsync();}
             finally{if(epoch==generation){LoadingRing.IsActive=false;LoadingRing.Visibility=Visibility.Collapsed;}}
         }
+    }
+    private void PlayRasterHandoff()
+    {
+        try{Microsoft.UI.Xaml.Media.Animation.ConnectedAnimationService.GetForCurrentView().GetAnimation("pageRaster")?.TryStart(RasterImage);}
+        catch(Exception error){AppLog.Warn("raster handoff skipped",error);}
     }
     private void DrawRegions(ISourcePreview value)
     {

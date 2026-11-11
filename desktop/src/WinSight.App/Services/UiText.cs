@@ -19,9 +19,9 @@ internal static class UiText
         ? "关键词无结果，正在进行语义检索…"
         : $"已找到 {count} 条关键词结果，正在补充语义结果…";
 
-    public static string Completed(int count, double firstMs, double totalMs, bool keywordOnly)
+    public static string Completed(int count, int files, double firstMs, double totalMs, bool keywordOnly)
     {
-        var text = $"共 {count} 条结果 · 耗时 {totalMs:F0} ms";
+        var text = (files > 0 && files < count ? $"共 {count} 条命中，分布在 {files} 个文件" : $"共 {count} 条结果") + $" · 耗时 {totalMs:F0} ms";
         if (firstMs > 0 && totalMs - firstMs > 400) text += $"（首批 {firstMs:F0} ms）";
         return keywordOnly ? text + " · 仅关键词" : text;
     }

@@ -19,10 +19,18 @@ public sealed partial class SearchPage : Page
     private bool previewSessionOpen;
     private bool closingPreview;
     private CancellationTokenSource? heroPreviewCts;
+    private readonly SearchLayoutStore layout;
+    private const double CompactWidth = 700;
+    private bool compact, showingDetail;
 
-    public SearchPage(IDesktopBackend backend, AppSettings? settings = null)
+    /// <summary>Hosts that drive the page headlessly (tests) turn the one-time tip off.</summary>
+    internal bool FirstRunTipEnabled { get; set; } = true;
+
+    public SearchPage(IDesktopBackend backend, AppSettings? settings = null, string? dataDirectory = null)
     {
-        ViewModel = new QuickSearchViewModel(backend);
+        var stateDirectory = dataDirectory ?? CommandLineParser.DefaultDataDirectory;
+        layout = new SearchLayoutStore(SearchLayoutStore.FileIn(stateDirectory));
+        ViewModel = new QuickSearchViewModel(backend, history: new SearchHistoryStore(SearchHistoryStore.FileIn(stateDirectory)));
         InitializeComponent();
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
@@ -69,7 +77,7 @@ public sealed partial class SearchPage : Page
     internal void FocusSearchBox()
     {
         SearchBox.Focus(FocusState.Keyboard);
-        SearchBox.SelectAll();
+        InnerSearchTextBox()?.SelectAll();
     }
 
     private async void OnCopyAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
@@ -90,8 +98,28 @@ public sealed partial class SearchPage : Page
         UpdateHeroStage(ViewModel.SelectedItem);
     }
 
+    private static readonly Windows.UI.ViewManagement.UISettings SystemUi = new();
+
+    /// <summary>Short deceleration fade so a new selection settles in instead of snapping; skipped when Windows animations are off.</summary>
+    private void AnimateStageIn()
+    {
+        try
+        {
+            if (!SystemUi.AnimationsEnabled || DetailScroll is null) return;
+            var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(DetailScroll);
+            var compositor = visual.Compositor;
+            var fade = compositor.CreateScalarKeyFrameAnimation();
+            fade.InsertKeyFrame(0f, 0.15f);
+            fade.InsertKeyFrame(1f, 1f, compositor.CreateCubicBezierEasingFunction(new System.Numerics.Vector2(0f, 0f), new System.Numerics.Vector2(0f, 1f)));
+            fade.Duration = TimeSpan.FromMilliseconds(180);
+            visual.StartAnimation("Opacity", fade);
+        }
+        catch (Exception error) { AppLog.Warn("stage animation skipped", error); }
+    }
+
     private async void UpdateHeroStage(SearchItemViewModel? selected)
     {
+        AnimateStageIn();
         heroPreviewCts?.Cancel();
         heroPreviewCts?.Dispose();
         heroPreviewCts = new CancellationTokenSource();
@@ -133,9 +161,13 @@ public sealed partial class SearchPage : Page
         // Auto-load high-resolution page raster preview for documents (PPTX slides, PDF pages)
         if (selected.IsDocumentVisibility == Visibility.Visible && DocumentRasterImage != null)
         {
+            ISourcePreview? preview = null;
             try
             {
-                var preview = await ViewModel.PreviewAsync(selected, ct);
+                // Rendering a page spawns a media process and holds the shared preview gate, so wait for the selection to settle
+                // instead of rendering every row an arrow-key scroll passes over.
+                await Task.Delay(250, ct);
+                preview = await ViewModel.PreviewAsync(selected, ct);
                 if (ct.IsCancellationRequested) return;
 
                 if (preview.SourceCurrent && preview.RasterPath is { } rasterPath && File.Exists(rasterPath))
@@ -158,6 +190,15 @@ public sealed partial class SearchPage : Page
             catch (Exception ex)
             {
                 AppLog.Warn("Auto hero preview load failed", ex);
+            }
+            finally
+            {
+                // The preview holds a pin on the source file and a rendered artifact; the decoded bitmap no longer needs either.
+                if (preview is not null)
+                {
+                    try { await preview.DisposeAsync(); }
+                    catch (Exception ex) { AppLog.Warn("Hero preview lease release failed", ex); }
+                }
             }
         }
     }
@@ -256,65 +297,118 @@ public sealed partial class SearchPage : Page
         });
     }
 
-    private void OnContextOpenClick(object sender, RoutedEventArgs e)
+    private SearchItemViewModel? CommandTarget(ExecuteRequestedEventArgs args) =>
+        args.Parameter as SearchItemViewModel ?? ViewModel.SelectedItem;
+
+    private void OnOpenCommand(XamlUICommand sender, ExecuteRequestedEventArgs args)
     {
-        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item) _ = ViewModel.OpenHitAsync(item);
+        if (CommandTarget(args) is { } item) _ = ViewModel.OpenHitAsync(item);
     }
 
-    private void OnContextRevealClick(object sender, RoutedEventArgs e)
+    private void OnRevealCommand(XamlUICommand sender, ExecuteRequestedEventArgs args)
     {
-        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item) _ = ViewModel.RevealHitAsync(item);
+        if (CommandTarget(args) is { } item) _ = ViewModel.RevealHitAsync(item);
     }
 
-    private void OnContextCopyExcerptClick(object sender, RoutedEventArgs e)
+    private async void OnPreviewCommand(XamlUICommand sender, ExecuteRequestedEventArgs args)
     {
-        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item)
-        {
-            var dp = new Windows.ApplicationModel.DataTransfer.DataPackage();
-            dp.SetText(!string.IsNullOrWhiteSpace(item.Excerpt) ? item.Excerpt : item.Path);
-            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dp);
-        }
+        if (CommandTarget(args) is { } item) await ShowPreviewAsync(item, keyboard: false);
     }
 
-    private async void OnContextCopyPathClick(object sender, RoutedEventArgs e)
+    private async void OnCopyPathCommand(XamlUICommand sender, ExecuteRequestedEventArgs args)
     {
-        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item) await ViewModel.CopyHitAsync(item);
+        if (CommandTarget(args) is { } item) await ViewModel.CopyHitAsync(item);
     }
 
-    private async void OnContextPreviewClick(object sender, RoutedEventArgs e)
+    private void OnCopyExcerptCommand(XamlUICommand sender, ExecuteRequestedEventArgs args)
     {
-        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item) await ShowPreviewAsync(item, keyboard: false);
+        if (CommandTarget(args) is not { } item) return;
+        var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
+        package.SetText(!string.IsNullOrWhiteSpace(item.Excerpt) ? item.Excerpt : item.Path);
+        Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
     }
 
     public void SetInitialQuery(string query, string? kind = null)
     {
         if (kind is not null)
         {
-            KindFilterCombo.SelectedIndex = kind.ToLowerInvariant() switch
+            SelectKindBar(kind.ToLowerInvariant() switch
             {
-                "doc" or "document" => 1,
-                "pdf" => 2,
-                "image" => 3,
-                "screenshot" => 4,
-                "audio" => 5,
-                "video" or "media" => 6,
-                "code" => 7,
-                _ => 0
-            };
+                "doc" or "document" => "doc",
+                "media" => "video",
+                var other => other
+            });
         }
         ViewModel.Query = query;
     }
 
-    private void OnKindFilterChanged(object sender, SelectionChangedEventArgs e)
+    private void SelectKindBar(string tag)
     {
-        if (KindFilterCombo.SelectedItem is ComboBoxItem item && item.Tag is string tag)
-        {
+        var item = KindSelector.Items.OfType<SelectorBarItem>().FirstOrDefault(i => string.Equals(i.Tag as string, tag, StringComparison.Ordinal))
+            ?? KindSelector.Items.OfType<SelectorBarItem>().First();
+        KindSelector.SelectedItem = item;
+    }
+
+    private void OnKindSelectorChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
+    {
+        if (sender.SelectedItem?.Tag is string tag)
             ViewModel.SelectedKind = tag == "all" ? null : tag;
+    }
+
+    private void OnSearchTextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
+    {
+        if (args.Reason == AutoSuggestionBoxTextChangeReason.UserInput)
+            sender.ItemsSource = ViewModel.History.Suggest(sender.Text, 6);
+        else
+            sender.IsSuggestionListOpen = false; // a programmatic or chosen text change must not leave a stale dropdown owning the arrow keys
+    }
+
+    private void OnSuggestionChosen(AutoSuggestBox sender, AutoSuggestBoxSuggestionChosenEventArgs args)
+    {
+        if (args.SelectedItem is string text) sender.Text = text;
+    }
+
+    private void OnQuerySubmitted(AutoSuggestBox sender, AutoSuggestBoxQuerySubmittedEventArgs args)
+    {
+        if (args.ChosenSuggestion is string chosen) sender.Text = chosen;
+        ViewModel.RecordCurrentQuery();
+    }
+
+    /// <summary>An empty, focused search box offers recent queries so repeat searches are two keystrokes.</summary>
+    private void OnSearchBoxGotFocus(object sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(SearchBox.Text) || ViewModel.History.Items.Count == 0) return;
+        SearchBox.ItemsSource = ViewModel.History.Suggest(string.Empty, 6);
+        SearchBox.IsSuggestionListOpen = true;
+    }
+
+    private void OnClearHistoryClick(object sender, RoutedEventArgs e)
+    {
+        ViewModel.History.Clear();
+        SearchBox.ItemsSource = null;
+    }
+
+    public Visibility VisibleIfAny(int count) => count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    private TextBox? InnerSearchTextBox()
+    {
+        static TextBox? Find(DependencyObject root)
+        {
+            for (var i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+            {
+                var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, i);
+                if (child is TextBox box) return box;
+                if (Find(child) is { } found) return found;
+            }
+            return null;
         }
+        return Find(SearchBox);
     }
 
     private async void OnSearchBoxKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        // While the suggestion dropdown is open, arrows and Enter belong to it.
+        if (SearchBox.IsSuggestionListOpen && e.Key is VirtualKey.Down or VirtualKey.Up or VirtualKey.Enter) return;
         if (e.Key == VirtualKey.Down && ViewModel.Hits.Count > 0)
         {
             e.Handled = true;
@@ -324,6 +418,7 @@ public sealed partial class SearchPage : Page
         }
         else if (e.Key == VirtualKey.Enter)
         {
+            ViewModel.RecordCurrentQuery();
             _ = ViewModel.OpenCurrentAsync();
             e.Handled = true;
         }
@@ -336,6 +431,7 @@ public sealed partial class SearchPage : Page
 
     private void OnResultItemClick(object sender, ItemClickEventArgs e)
     {
+        if (compact) { showingDetail = true; UpdateColumns(); }
         if (e.ClickedItem is SearchItemViewModel item)
         {
             var idx = ViewModel.Hits.IndexOf(item);
@@ -356,22 +452,6 @@ public sealed partial class SearchPage : Page
         if (ViewModel.SelectedItem is { } item)
         {
             _ = ViewModel.OpenHitAsync(item);
-        }
-    }
-
-    private void OnRevealSelectedClick(object sender, RoutedEventArgs e)
-    {
-        if (ViewModel.SelectedItem is { } item)
-        {
-            _ = ViewModel.RevealHitAsync(item);
-        }
-    }
-
-    private async void OnCopySelectedClick(object sender, RoutedEventArgs e)
-    {
-        if (ViewModel.SelectedItem is { } item)
-        {
-            await ViewModel.CopyHitAsync(item);
         }
     }
 
@@ -407,9 +487,122 @@ public sealed partial class SearchPage : Page
         }
     }
 
+    // ---- adaptive layout: draggable list width, two-level navigation when narrow ----
+
+    private void OnResultsCardSizeChanged(object sender, SizeChangedEventArgs e) => UpdateColumns();
+
+    /// <summary>The shortcut legend is a convenience; below this width it would clip, so it steps aside.</summary>
+    private void OnPageSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        var show = e.NewSize.Width >= 820;
+        FooterHintsHost.MaxWidth = show ? double.PositiveInfinity : 0;
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAccessibilityView(FooterHintsHost,
+            show ? Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Content : Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+    }
+
+    private void UpdateColumns()
+    {
+        if (ResultsCard is null || ResultsCard.ActualWidth <= 0) return;
+        var width = ResultsCard.ActualWidth;
+        compact = width < CompactWidth;
+        if (compact)
+        {
+            ListColumn.MinWidth = 0;
+            SplitterColumn.Width = new GridLength(0);
+            ListSplitter.Visibility = Visibility.Collapsed;
+            ResultsListView.Visibility = showingDetail ? Visibility.Collapsed : Visibility.Visible;
+            DetailScroll.Visibility = showingDetail ? Visibility.Visible : Visibility.Collapsed;
+            BackToListButton.Visibility = showingDetail ? Visibility.Visible : Visibility.Collapsed;
+            ListColumn.Width = showingDetail ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+            StageColumn.Width = showingDetail ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+        }
+        else
+        {
+            showingDetail = false;
+            ListColumn.MinWidth = SearchLayoutStore.MinListWidth;
+            SplitterColumn.Width = new GridLength(9);
+            ListSplitter.Visibility = Visibility.Visible;
+            ResultsListView.Visibility = Visibility.Visible;
+            DetailScroll.Visibility = Visibility.Visible;
+            BackToListButton.Visibility = Visibility.Collapsed;
+            if (layout.ListWidth is { } saved)
+            {
+                ListColumn.Width = new GridLength(SearchLayoutStore.ClampListWidth(saved, width));
+                StageColumn.Width = new GridLength(1, GridUnitType.Star);
+            }
+            else
+            {
+                ListColumn.Width = new GridLength(3.8, GridUnitType.Star);
+                StageColumn.Width = new GridLength(6.2, GridUnitType.Star);
+            }
+        }
+        // Icon-only actions when the stage is narrow; labels once there is room for them.
+        var stage = compact ? width : width - Math.Max(ListColumn.ActualWidth, SearchLayoutStore.MinListWidth);
+        if (ActionBar is not null)
+            ActionBar.DefaultLabelPosition = stage >= 560 ? CommandBarDefaultLabelPosition.Right : CommandBarDefaultLabelPosition.Collapsed;
+    }
+
+    private void OnSplitterDragged(object? sender, double delta)
+    {
+        if (compact) return;
+        var basis = ListColumn.Width.IsAbsolute ? ListColumn.Width.Value : ListColumn.ActualWidth;
+        ListColumn.Width = new GridLength(SearchLayoutStore.ClampListWidth(basis + delta, ResultsCard.ActualWidth));
+        StageColumn.Width = new GridLength(1, GridUnitType.Star);
+    }
+
+    private void OnSplitterDragCompleted(object? sender, EventArgs e)
+    {
+        if (!compact && ListColumn.Width.IsAbsolute) layout.ListWidth = ListColumn.Width.Value;
+        UpdateColumns();
+    }
+
+    private void OnSplitterReset(object? sender, EventArgs e)
+    {
+        layout.ListWidth = null;
+        UpdateColumns();
+    }
+
+    private async void OnBackToListClick(object sender, RoutedEventArgs e) => await ReturnToListAsync();
+
+    private async Task ReturnToListAsync()
+    {
+        showingDetail = false;
+        UpdateColumns();
+        await FocusSelectedResultAsync();
+    }
+
+    private async void OnPageLoaded(object sender, RoutedEventArgs e)
+    {
+        UpdateColumns();
+        if (!FirstRunTipEnabled || layout.TipSeen) return;
+        await Task.Delay(900); // let the window settle and the user see the page first
+        if (IsLoaded && !layout.TipSeen) FirstRunTip.IsOpen = true;
+    }
+
+    private void OnFirstRunTipClosed(TeachingTip sender, TeachingTipClosedEventArgs args) => layout.TipSeen = true;
+
+    private void OnGroupToggleClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is SearchItemViewModel item) ViewModel.ToggleGroup(item);
+    }
+
     private async void OnResultsPreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
         if (e.Handled || HasKeyModifier() || IsInteractiveChild(e.OriginalSource as DependencyObject)) return;
+        if (e.Key == VirtualKey.Right && ViewModel.SelectedItem is { IsSecondary: false, GroupExpanded: false, MoreCount: > 0 } closed)
+        {
+            e.Handled = true;
+            ViewModel.ToggleGroup(closed);
+            await FocusSelectedResultAsync();
+            return;
+        }
+        if (e.Key == VirtualKey.Left && ViewModel.SelectedItem is { } open && (open.IsSecondary || open.GroupExpanded))
+        {
+            e.Handled = true;
+            ViewModel.CollapseGroupOf(open);
+            await FocusSelectedResultAsync();
+            return;
+        }
         if (e.Key == VirtualKey.Space && ViewModel.SelectedItem is { } selected)
         {
             e.Handled = true;
@@ -437,6 +630,12 @@ public sealed partial class SearchPage : Page
 
     private async void OnPagePreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (e.Key == VirtualKey.Escape && compact && showingDetail && !previewSessionOpen && !HasKeyModifier())
+        {
+            e.Handled = true;
+            await ReturnToListAsync();
+            return;
+        }
         if (e.Key != VirtualKey.Escape || !previewSessionOpen || HasKeyModifier()) return;
         e.Handled = true;
         await ClosePreviewAsync(restoreFocus: true);
@@ -448,12 +647,24 @@ public sealed partial class SearchPage : Page
             await ShowPreviewAsync(selected, button.FocusState == FocusState.Keyboard);
     }
 
+    /// <summary>Lets the stage page image fly into the drawer so opening the preview reads as one object growing, not a swap.</summary>
+    private void PrepareRasterHandoff()
+    {
+        try
+        {
+            if (!SystemUi.AnimationsEnabled || DocumentRasterImage is not { Visibility: Visibility.Visible, Source: not null }) return;
+            Microsoft.UI.Xaml.Media.Animation.ConnectedAnimationService.GetForCurrentView().PrepareToAnimate("pageRaster", DocumentRasterImage);
+        }
+        catch (Exception error) { AppLog.Warn("raster handoff skipped", error); }
+    }
+
     private async Task ShowPreviewAsync(SearchItemViewModel selected, bool keyboard)
     {
         if (FocusManager.GetFocusedElement(XamlRoot) is Control focused && !IsInsidePreview(focused))
             previewReturnFocus = new WeakReference<Control>(focused);
         previewSessionOpen = true;
         UpdatePreviewLayout();
+        PrepareRasterHandoff();
         PreviewHost.IsPaneOpen = true;
         HeroStage.Visibility = Visibility.Collapsed; // the drawer shows the same page, so the stage steps aside instead of repeating it
         UpdateLayout();
@@ -554,7 +765,7 @@ public sealed partial class SearchPage : Page
 
     private void OnClearFilterClick(object sender, RoutedEventArgs e)
     {
-        KindFilterCombo.SelectedIndex = 0;
+        SelectKindBar("all");
         ViewModel.SelectedKind = null;
         ViewModel.TriggerSearch();
     }

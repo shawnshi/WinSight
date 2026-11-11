@@ -29,6 +29,7 @@
     <Compile Include="..\..\src\WinSight.App\Services\*.cs" Link="AppServices\%(Filename)%(Extension)" />
     <Compile Include="..\..\src\WinSight.App\ViewModels\*.cs" Link="AppViewModels\%(Filename)%(Extension)" />
     <Compile Include="..\..\src\WinSight.App\Views\*.xaml.cs" Exclude="..\..\src\WinSight.App\Views\QuickSearchWindow.xaml.cs" Link="AppViews\%(Filename)%(Extension)" />
+    <Compile Include="..\..\src\WinSight.App\Views\SplitterHandle.cs" Link="AppViews\SplitterHandle.cs" />
     <Page Include="..\..\src\WinSight.App\Views\*.xaml" Exclude="..\..\src\WinSight.App\Views\QuickSearchWindow.xaml" Link="AppViews\%(Filename)%(Extension)" />
   </ItemGroup>
 

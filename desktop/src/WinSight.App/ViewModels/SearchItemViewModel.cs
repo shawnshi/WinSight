@@ -114,7 +114,9 @@ public sealed class SearchItemViewModel : INotifyPropertyChanged
     }
 
     public string ListAutomationName =>
-        $"{FileName}，{ParentFolderLabel}，{MatchRationale}" + (ScorePercentage.Length > 0 ? $"，相关度 {ScorePercentage}" : "");
+        (IsSecondary ? $"{FileName} 的另一处命中，{MatchRationale}" : $"{FileName}，{ParentFolderLabel}，{MatchRationale}")
+        + (ScorePercentage.Length > 0 ? $"，相关度 {ScorePercentage}" : "")
+        + (GroupToggleVisibility == Visibility.Visible ? (groupExpanded ? "，已展开其他命中，按左方向键收起" : $"，另有 {MoreHits.Count} 处命中，按右方向键展开") : "");
 
     public ImageSource? ThumbnailSource
     {
@@ -137,7 +139,7 @@ public sealed class SearchItemViewModel : INotifyPropertyChanged
     /// </summary>
     public async Task EnsureThumbnailAsync()
     {
-        if (thumbnailRequested) return;
+        if (thumbnailRequested || IsSecondary) return;
         thumbnailRequested = true;
         var cts = thumbnailCts = new CancellationTokenSource();
         var token = cts.Token;
@@ -503,9 +505,39 @@ public sealed class SearchItemViewModel : INotifyPropertyChanged
         }
     }
 
-    public SearchItemViewModel(SearchHit hit)
+    /// <summary>Further hits inside the same file, shown on demand under this row.</summary>
+    public IReadOnlyList<SearchHit> MoreHits { get; }
+
+    /// <summary>True for an extra hit listed under its file row.</summary>
+    public bool IsSecondary { get; }
+
+    private bool groupExpanded;
+    public bool GroupExpanded
+    {
+        get => groupExpanded;
+        set
+        {
+            if (groupExpanded == value) return;
+            groupExpanded = value;
+            foreach (var name in new[] { nameof(GroupExpanded), nameof(GroupToggleText), nameof(GroupToggleGlyph), nameof(ListAutomationName) })
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+    }
+
+    public int MoreCount => MoreHits.Count;
+    public Visibility GroupToggleVisibility => !IsSecondary && MoreHits.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    public string GroupToggleText => groupExpanded ? "收起其他命中" : $"另有 {MoreHits.Count} 处命中";
+    public string GroupToggleGlyph => groupExpanded ? "\uE70E" : "\uE70D";
+
+    public Visibility PrimaryRowVisibility => IsSecondary ? Visibility.Collapsed : Visibility.Visible;
+    public Thickness TextIndent => IsSecondary ? new Thickness(58, 0, 0, 0) : new Thickness(0);
+    public string RowTitle => IsSecondary ? MatchRationale : FileName;
+
+    public SearchItemViewModel(SearchHit hit, IReadOnlyList<SearchHit>? moreHits = null, bool isSecondary = false)
     {
         Hit = hit;
+        MoreHits = moreHits ?? Array.Empty<SearchHit>();
+        IsSecondary = isSecondary;
         FileName = System.IO.Path.GetFileName(hit.Path);
         DirectoryPath = System.IO.Path.GetDirectoryName(hit.Path) ?? string.Empty;
     }

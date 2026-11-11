@@ -118,7 +118,7 @@ public sealed partial class MainWindow : Window
         switch (tag)
         {
             case "search":
-                var searchPage = new SearchPage(backend, settings);
+                var searchPage = new SearchPage(backend, settings, dataDirectory);
                 if (initialQuery != null)
                 {
                     searchPage.SetInitialQuery(initialQuery, initialKind);

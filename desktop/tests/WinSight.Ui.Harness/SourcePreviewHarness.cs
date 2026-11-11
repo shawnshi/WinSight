@@ -60,7 +60,7 @@ internal sealed class SourcePreviewHarnessApp : HarnessApp
             backend.SearchHandler = (_, _) => Task.FromResult(new SearchResponse(hits, TimeSpan.FromMilliseconds(1), true, null));
             backend.PreviewHandler = (_, _) => { previewCalls++; return Task.FromResult<ISourcePreview>(Fixture()); };
             backend.NavigationHandler = (_, _) => { navigationCalls++; return Task.FromResult(new SourceNavigationResult(true, "Synthetic exact-location callback; no Office opened.")); };
-            page = new SearchPage(backend);
+            page = new SearchPage(backend, null, Path.Combine(output, "data")) { FirstRunTipEnabled = false }; // never the real user data directory; no popups over UIA checks
             // Capture the real opaque own host, not a transparent Page or an edited PNG.
             var captureHost = (Grid)Microsoft.UI.Xaml.Markup.XamlReader.Load("<Grid xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Background=\"{ThemeResource ApplicationPageBackgroundThemeBrush}\" />");
             captureHost.Children.Add(page);
@@ -71,7 +71,7 @@ internal sealed class SourcePreviewHarnessApp : HarnessApp
             page.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler((_, e) => keys.Add(new { phase = "routed-key-down", key = e.Key.ToString(), e.Handled, shiftDown = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down) })), true);
             window.Activate();
             await Task.Delay(180);
-            var search = (TextBox)page.FindName("SearchBox");
+            var search = (AutoSuggestBox)page.FindName("SearchBox");
             var list = (ListView)page.FindName("ResultsListView");
             var pane = page.PreviewControl;
             var close = (Button)pane.FindName("ClosePreview");
@@ -226,7 +226,7 @@ internal sealed class SourcePreviewHarnessApp : HarnessApp
                     await Populate("keyboard-layout");
                     int beforeEditor = previewCalls;
                     search.Focus(FocusState.Keyboard); await Key(VirtualKey.Space);
-                    Check("editor_space_does_not_open_preview", !page.IsPreviewOpen && previewCalls == beforeEditor && ReferenceEquals(FocusManager.GetFocusedElement(page.XamlRoot), search));
+                    Check("editor_space_does_not_open_preview", !page.IsPreviewOpen && previewCalls == beforeEditor && IsWithin(FocusManager.GetFocusedElement(page.XamlRoot) as DependencyObject, search));
                     await Until(() => !page.ViewModel.IsLoading && page.ViewModel.Hits.Count == 3);
                     await Key(VirtualKey.Down);
                     Check("down_moves_from_query_to_results", page.ViewModel.SelectedIndex == 0 && IsWithin(FocusManager.GetFocusedElement(page.XamlRoot) as DependencyObject, list), new { modelIndex = page.ViewModel.SelectedIndex, listIndex = list.SelectedIndex, focusedType = FocusManager.GetFocusedElement(page.XamlRoot)?.GetType().FullName, focusedName = (FocusManager.GetFocusedElement(page.XamlRoot) as FrameworkElement)?.Name, focusedWithinResults = IsWithin(FocusManager.GetFocusedElement(page.XamlRoot) as DependencyObject, list), searchCalls = backend.SearchCallCount });

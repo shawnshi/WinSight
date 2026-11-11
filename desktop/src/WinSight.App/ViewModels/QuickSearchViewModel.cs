@@ -120,10 +120,14 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     public SearchItemViewModel? SelectedItem =>
         selectedIndex >= 0 && selectedIndex < Hits.Count ? Hits[selectedIndex] : null;
 
-    public QuickSearchViewModel(IDesktopBackend backend, string? dataDir = null, TimeSpan? searchDebounce = null)
+    /// <summary>Committed queries, most recent first. In-memory unless the host passes a persistent store.</summary>
+    public SearchHistoryStore History { get; }
+
+    public QuickSearchViewModel(IDesktopBackend backend, string? dataDir = null, TimeSpan? searchDebounce = null, SearchHistoryStore? history = null)
     {
         this.backend = backend;
         this.dataDir = dataDir;
+        History = history ?? new SearchHistoryStore();
         this.searchDebounce = searchDebounce is { } value && value >= TimeSpan.Zero ? value : DefaultSearchDebounce;
     }
 
@@ -138,8 +142,14 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         _ = ExecuteSearchAsync(query, selectedKind, currentSeq, ct);
     }
 
-    private async Task ExecuteSearchAsync(string q, string? kind, long seq, CancellationToken ct)
+    /// <summary>Remembers the current query once the user commits to it (Enter, or acting on a result).</summary>
+    public void RecordCurrentQuery() => History.Add(query);
+
+    private async Task ExecuteSearchAsync(string rawQuery, string? barKind, long seq, CancellationToken ct)
     {
+        // An inline "type:" operator wins over the type bar for this query only; the bar itself is left alone.
+        var (q, operatorKind) = SearchOperators.Parse(rawQuery);
+        var kind = operatorKind ?? barKind;
         if (string.IsNullOrWhiteSpace(q))
         {
             selectedIndex = -1;
@@ -204,7 +214,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
             {
                 if (IsStale(seq, ct)) return;
                 SetNotice(UiText.SemanticUnavailable);
-                StatusText = UiText.Completed(Hits.Count, firstMs, firstMs, keywordOnly: true);
+                StatusText = UiText.Completed(fast!.Hits.Count, FileCount(fast.Hits), firstMs, firstMs, keywordOnly: true);
                 AppLog.Warn("hybrid search failed; keeping keyword results", ex);
                 return;
             }
@@ -214,7 +224,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
             SetNotice(full.Notice);
             StatusText = full.Hits.Count == 0
                 ? UiText.NoResult
-                : UiText.Completed(full.Hits.Count, firstMs, full.Elapsed.TotalMilliseconds, keywordOnly: !full.SemanticAvailable && full.Hits.All(h => h.MatchType == "keyword"));
+                : UiText.Completed(full.Hits.Count, FileCount(full.Hits), firstMs, full.Elapsed.TotalMilliseconds, keywordOnly: !full.SemanticAvailable && full.Hits.All(h => h.MatchType == "keyword"));
             ViewState = Hits.Count == 0 ? SearchViewState.NoResults : SearchViewState.Results;
         }
         catch (OperationCanceledException)
@@ -246,6 +256,8 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         }
     }
 
+    private static int FileCount(IReadOnlyList<SearchHit> hits) => hits.Select(h => h.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+
     private bool IsStale(long seq, CancellationToken ct) => ct.IsCancellationRequested || Interlocked.Read(ref querySequence) != seq;
 
     private void SetNotice(string? notice)
@@ -258,21 +270,58 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     internal static string HitKey(SearchHit hit) =>
         $"{hit.Path}|{hit.Source?.Location.Page}|{hit.Source?.Location.Paragraph}|{hit.Source?.Location.Sheet}|{hit.Source?.Location.Range}|{hit.Location}|{hit.SegmentKind}";
 
+    private static string RowKey(SearchItemViewModel row) =>
+        (row.IsSecondary ? "2|" : "1|") + HitKey(row.Hit) + "|" + row.MoreHits.Count;
+
+    /// <summary>Files whose extra hits are currently shown. Survives refinement so a refresh never folds a group the user opened.</summary>
+    private readonly HashSet<string> expandedFiles = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>One row per file (its best hit); further hits of the same file hang off that row and appear only when expanded.</summary>
+    private List<SearchItemViewModel> BuildRows(IReadOnlyList<SearchHit> hits)
+    {
+        var order = new List<string>();
+        var groups = new Dictionary<string, List<SearchHit>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var hit in hits)
+        {
+            if (!groups.TryGetValue(hit.Path, out var list))
+            {
+                groups[hit.Path] = list = [];
+                order.Add(hit.Path);
+            }
+            list.Add(hit);
+        }
+
+        var rows = new List<SearchItemViewModel>(order.Count);
+        foreach (var path in order)
+        {
+            var list = groups[path];
+            var primary = new SearchItemViewModel(list[0], list.Skip(1).ToArray());
+            rows.Add(primary);
+            if (primary.MoreHits.Count > 0 && expandedFiles.Contains(path))
+            {
+                primary.GroupExpanded = true;
+                rows.AddRange(primary.MoreHits.Select(more => new SearchItemViewModel(more, null, isSecondary: true)));
+            }
+        }
+        return rows;
+    }
+
     /// <summary>Swaps in a new hit list without churn: an identical list keeps its row objects, a changed one keeps the selection by identity.</summary>
     private void ApplyHits(IReadOnlyList<SearchHit> hits, bool preserveSelection)
     {
-        var incoming = hits.Select(HitKey).ToArray();
-        if (incoming.Length == Hits.Count && incoming.SequenceEqual(Hits.Select(h => HitKey(h.Hit)), StringComparer.Ordinal))
+        var rows = BuildRows(hits);
+        var incoming = rows.Select(RowKey).ToArray();
+        if (incoming.Length == Hits.Count && incoming.SequenceEqual(Hits.Select(RowKey), StringComparer.Ordinal))
         {
             if (Hits.Count > 0 && selectedIndex < 0) SelectedIndex = 0;
             OnPropertyChanged(nameof(IsRefining));
             return;
         }
 
-        var keep = preserveSelection && SelectedItem is { } current ? HitKey(current.Hit) : null;
+        var keep = preserveSelection && SelectedItem is { } current ? RowKey(current) : null;
         selectedIndex = -1;
         Hits.Clear();
-        foreach (var hit in hits) Hits.Add(new SearchItemViewModel(hit));
+        foreach (var row in rows) Hits.Add(row);
 
         var index = keep is null ? -1 : Array.IndexOf(incoming, keep);
         SelectedIndex = index >= 0 ? index : Hits.Count > 0 ? 0 : -1;
@@ -282,9 +331,58 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         ViewState = Hits.Count == 0 ? SearchViewState.Searching : SearchViewState.Results;
     }
 
+    /// <summary>Shows or hides the other hits of one file in place; the selection stays on the same row (or its file row when it folds away).</summary>
+    public void ToggleGroup(SearchItemViewModel? primary)
+    {
+        if (primary is null || primary.IsSecondary || primary.MoreHits.Count == 0) return;
+        var index = Hits.IndexOf(primary);
+        if (index < 0) return;
+        var selected = SelectedItem;
+        var path = primary.Path;
+
+        if (primary.GroupExpanded)
+        {
+            while (index + 1 < Hits.Count && Hits[index + 1].IsSecondary && string.Equals(Hits[index + 1].Path, path, StringComparison.OrdinalIgnoreCase))
+                Hits.RemoveAt(index + 1);
+            primary.GroupExpanded = false;
+            expandedFiles.Remove(path);
+            if (selected is { IsSecondary: true } && !Hits.Contains(selected)) selected = primary;
+        }
+        else
+        {
+            var at = index + 1;
+            foreach (var more in primary.MoreHits) Hits.Insert(at++, new SearchItemViewModel(more, null, isSecondary: true));
+            primary.GroupExpanded = true;
+            expandedFiles.Add(path);
+        }
+
+        selectedIndex = -1; // force a change notification even when the index number is unchanged
+        SelectedIndex = selected is null ? -1 : Hits.IndexOf(selected);
+        OnPropertyChanged(nameof(SelectedItem));
+    }
+
+    /// <summary>Folds the group a secondary row belongs to and selects its file row (keyboard Left on a child).</summary>
+    public void CollapseGroupOf(SearchItemViewModel? row)
+    {
+        if (row is null) return;
+        var primary = row.IsSecondary
+            ? Hits.FirstOrDefault(h => !h.IsSecondary && string.Equals(h.Path, row.Path, StringComparison.OrdinalIgnoreCase))
+            : row;
+        if (primary is { GroupExpanded: true }) ToggleGroup(primary);
+    }
+
+    /// <summary>Drops every row of a file, e.g. after its authorization was revoked.</summary>
+    private void RemoveRows(SearchItemViewModel item)
+    {
+        for (var i = Hits.Count - 1; i >= 0; i--)
+            if (string.Equals(Hits[i].Path, item.Path, StringComparison.OrdinalIgnoreCase)) Hits.RemoveAt(i);
+        expandedFiles.Remove(item.Path);
+    }
+
     public async Task<bool> OpenHitAsync(SearchItemViewModel? item)
     {
         if (item is null) return false;
+        RecordCurrentQuery();
 
         // NM-UI-06: Asynchronously load latest settings before action
         var settings = await backend.LoadSettingsAsync();
@@ -293,7 +391,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         if (!plan.IsAuthorized)
         {
             // Revoked scope: remove outdated hit from results list
-            Hits.Remove(item);
+            RemoveRows(item);
             HasNotice = true;
             NoticeText = UiText.NotAuthorized(plan.DenialReason);
             StatusText = UiText.ActionBlocked;
@@ -327,7 +425,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
 
         if (!plan.IsAuthorized)
         {
-            Hits.Remove(item);
+            RemoveRows(item);
             HasNotice = true;
             NoticeText = UiText.NotAuthorized(plan.DenialReason);
             StatusText = UiText.ActionBlocked;
@@ -347,7 +445,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
 
         if (!plan.IsAuthorized)
         {
-            Hits.Remove(item);
+            RemoveRows(item);
             HasNotice = true;
             NoticeText = UiText.NotAuthorized(plan.DenialReason);
             StatusText = UiText.ActionBlocked;
