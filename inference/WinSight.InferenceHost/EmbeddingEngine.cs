@@ -13,6 +13,7 @@ internal sealed class EmbeddingEngine : IDisposable
     private readonly ExecutionProviderManager providers;
     private bool disposed;
     internal string Profile { get; }
+    internal bool IsModernPlatform => models.IsModernPlatform;
     internal bool TextLoaded => models.IsRyzenAI
         ? providers.Loaded("model_text_s256.onnx")
         : models.IsIntelOpenVINO
@@ -145,6 +146,12 @@ internal sealed class EmbeddingEngine : IDisposable
         ObjectDisposedException.ThrowIf(disposed, this);
         if (models.IsModernPlatform)
         {
+            var validCount = positions.Where((value, index) => index % 2 == 0 && value >= 0).Count();
+            if (validCount <= 0 || validCount % 9 != 0 || validCount > 1260)
+                throw new ArgumentException("Static vision encoder requires 1..1260 valid patches divisible by 9");
+            if (pixels.Length < validCount * 768 || positions.Length < validCount * 2)
+                throw new ArgumentException("Vision pixel/position buffers are smaller than valid patch count");
+
             var staticPixels = new float[1260 * 768];
             Array.Copy(pixels, staticPixels, Math.Min(pixels.Length, staticPixels.Length));
             var staticPos = new long[1260 * 2];
@@ -156,7 +163,11 @@ internal sealed class EmbeddingEngine : IDisposable
                 NamedOnnxValue.CreateFromTensor("pixel_position_ids", new DenseTensor<long>(staticPos, new[] { 1, 1260, 2 }))
             };
             var res = providers.Run("vision_encoder_static_140.onnx", npuInputs, "image_features");
-            return res.Values;
+            int tokenCount = validCount / 9;
+            int expectedFloats = tokenCount * 512;
+            if (res.Values.Length < expectedFloats)
+                throw new InvalidDataException("Static vision encoder returned fewer features than valid tokens");
+            return res.Values.Length == expectedFloats ? res.Values : res.Values[..expectedFloats];
         }
 
         if (patchCount is <= 0 or > 10080 || patchCount % 9 != 0 || pixels.Length != patchCount * 768 || positions.Length != patchCount * 2)
@@ -305,6 +316,8 @@ internal sealed class EmbeddingEngine : IDisposable
         if (!vector.All(float.IsFinite) || Math.Abs(norm - 1) > .001) throw new InvalidDataException("Embedding must be finite and L2-normalized");
         return vector;
     }
+
+    internal int TrimIdle(TimeSpan idleThreshold) => providers.TrimIdleSessions(idleThreshold);
 
     public void Dispose()
     {

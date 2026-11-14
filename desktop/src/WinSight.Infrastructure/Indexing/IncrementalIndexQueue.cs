@@ -362,7 +362,10 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                 indexMap.Remove(norm);
                 bool needsPageImageUpgrade = upgradePageImages && indexed.State == "partial" &&
                     indexed.Detail?.StartsWith("Text-only PDF:", StringComparison.Ordinal) == true;
-                if (!needsPageImageUpgrade && indexed.State != "failed" && indexed.Size == file.Length && Math.Abs(indexed.ModifiedTime - mtime) < 0.001)
+                bool needsEmbeddingUpgrade = indexed.State == "partial" &&
+                    (indexed.Detail?.Contains("Semantic extraction unavailable", StringComparison.OrdinalIgnoreCase) == true
+                     || indexed.Detail?.Contains("no embedding service", StringComparison.OrdinalIgnoreCase) == true);
+                if (!needsPageImageUpgrade && !needsEmbeddingUpgrade && indexed.State != "failed" && indexed.Size == file.Length && Math.Abs(indexed.ModifiedTime - mtime) < 0.001)
                 {
                     continue;
                 }

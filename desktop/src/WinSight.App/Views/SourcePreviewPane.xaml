@@ -6,39 +6,120 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
     TabFocusNavigation="Local">
-    <Border Background="{ThemeResource LayerFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1,0,0,0" Padding="12">
-        <Grid RowSpacing="12">
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-            <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel><TextBlock Text="来源定位与预览" Style="{ThemeResource SubtitleTextBlockStyle}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="SourceTitle" TextWrapping="Wrap" MaxLines="2"/><TextBlock x:Name="SourceLocation" Style="{ThemeResource CaptionTextBlockStyle}" TextWrapping="Wrap"/></StackPanel>
-                <Button x:Name="ClosePreview" Grid.Column="1" Click="OnClose" MinWidth="32" Padding="6" AutomationProperties.Name="Close source preview" ToolTipService.ToolTip="关闭预览 (Escape)"><FontIcon Glyph="&#xE8BB;"/></Button>
+    <Border Background="{ThemeResource LayerFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1,0,0,0" Padding="14,12">
+        <Grid RowSpacing="10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Header -->
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="2">
+                    <TextBlock Text="来源定位与交互预览" Style="{ThemeResource SubtitleTextBlockStyle}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="SourceTitle" TextWrapping="Wrap" MaxLines="2" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                    <TextBlock x:Name="SourceLocation" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
+                </StackPanel>
+                <Button x:Name="ClosePreview" Grid.Column="1" Click="OnClose" MinWidth="32" Padding="6" VerticalAlignment="Top"
+                        AutomationProperties.Name="Close source preview" ToolTipService.ToolTip="关闭预览 (Escape)">
+                    <FontIcon Glyph="&#xE8BB;" FontSize="13"/>
+                </Button>
             </Grid>
+
             <ScrollViewer x:Name="PreviewScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" SizeChanged="OnViewportSizeChanged">
-                <StackPanel Spacing="12">
-                    <ProgressRing x:Name="LoadingRing" IsActive="False" Visibility="Collapsed" Width="24" Height="24" HorizontalAlignment="Left" AutomationProperties.Name="Loading source preview"/>
-                    <TextBlock x:Name="Notice" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+                <StackPanel Spacing="10">
+                    <ProgressRing x:Name="LoadingRing" IsActive="False" Visibility="Collapsed" Width="22" Height="22" HorizontalAlignment="Left" AutomationProperties.Name="Loading source preview"/>
+                    <TextBlock x:Name="Notice" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" AutomationProperties.LiveSetting="Polite"/>
+
                     <Grid x:Name="PreviewActions" ColumnSpacing="8">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <Button x:Name="ExactOpen" Click="OnExactOpen" IsEnabled="False" MinWidth="0" HorizontalAlignment="Stretch" ToolTipService.ToolTip="在 Office 中以只读方式定位打开" AutomationProperties.Name="Open at indexed location">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="ExactOpen" Click="OnExactOpen" IsEnabled="False" MinWidth="0" HorizontalAlignment="Stretch"
+                                Style="{ThemeResource AccentButtonStyle}" CornerRadius="6"
+                                ToolTipService.ToolTip="在 Office 中以只读方式定位打开" AutomationProperties.Name="Open at indexed location">
                             <TextBlock Text="定位到此位置" TextWrapping="Wrap" TextAlignment="Center"/>
                         </Button>
-                        <Button x:Name="OpenSourceFile" Grid.Column="1" Click="OnOpenFile" MinWidth="0" HorizontalAlignment="Stretch" AutomationProperties.Name="Open source file">
+                        <Button x:Name="OpenSourceFile" Grid.Column="1" Click="OnOpenFile" MinWidth="0" HorizontalAlignment="Stretch"
+                                CornerRadius="6" AutomationProperties.Name="Open source file">
                             <TextBlock Text="打开文件" TextWrapping="Wrap" TextAlignment="Center"/>
                         </Button>
                     </Grid>
-                    <CheckBox x:Name="ShowBoxes" Content="显示 OCR 文字框" IsChecked="True" Checked="OnBoxesChanged" Unchecked="OnBoxesChanged"/>
-                    <Border x:Name="RasterArea" Visibility="Collapsed" Background="{ThemeResource ControlAltFillColorSecondaryBrush}" CornerRadius="4" Height="220" Padding="4">
-                        <Viewbox Stretch="Uniform">
-                            <Grid x:Name="PixelFrame">
+
+                    <!-- Interactive Page & Zoom Toolbar -->
+                    <Grid x:Name="PreviewToolbar" ColumnSpacing="8" Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Page Stepper -->
+                        <StackPanel x:Name="PageStepperPanel" Grid.Column="0" Orientation="Horizontal" Spacing="4" Visibility="Collapsed">
+                            <Button x:Name="PrevPageBtn" Click="OnPrevPageClick" Padding="6,4" MinWidth="28" CornerRadius="5" ToolTipService.ToolTip="上一页">
+                                <FontIcon Glyph="&#xE76B;" FontSize="11"/>
+                            </Button>
+                            <TextBlock x:Name="PageIndicatorText" Text="1 / 1" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Margin="4,0" Typography.NumeralAlignment="Tabular"/>
+                            <Button x:Name="NextPageBtn" Click="OnNextPageClick" Padding="6,4" MinWidth="28" CornerRadius="5" ToolTipService.ToolTip="下一页">
+                                <FontIcon Glyph="&#xE76C;" FontSize="11"/>
+                            </Button>
+                        </StackPanel>
+
+                        <CheckBox x:Name="ShowBoxes" Grid.Column="1" Content="OCR 标定框" IsChecked="True" Checked="OnBoxesChanged" Unchecked="OnBoxesChanged"
+                                  VerticalAlignment="Center" MinWidth="0"/>
+
+                        <!-- Zoom Controls -->
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4">
+                            <Button Click="OnZoomOutClick" Padding="6,4" MinWidth="28" CornerRadius="5" ToolTipService.ToolTip="缩小">
+                                <FontIcon Glyph="&#xE71F;" FontSize="11"/>
+                            </Button>
+                            <Button Click="OnZoomFitClick" Padding="8,4" CornerRadius="5" ToolTipService.ToolTip="适应宽度">
+                                <TextBlock Text="适应" Style="{ThemeResource CaptionTextBlockStyle}"/>
+                            </Button>
+                            <Button Click="OnZoomInClick" Padding="6,4" MinWidth="28" CornerRadius="5" ToolTipService.ToolTip="放大">
+                                <FontIcon Glyph="&#xE8A3;" FontSize="11"/>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Zoomable & Pannable High-DPI Raster Stage -->
+                    <Border x:Name="RasterArea" Visibility="Collapsed"
+                            Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" MinHeight="360" MaxHeight="760" Height="520" Padding="2">
+                        <ScrollViewer x:Name="RasterZoomScroll"
+                                      ZoomMode="Enabled"
+                                      MinZoomFactor="0.25"
+                                      MaxZoomFactor="4.0"
+                                      HorizontalScrollBarVisibility="Auto"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollMode="Auto"
+                                      VerticalScrollMode="Auto">
+                            <Grid x:Name="PixelFrame" HorizontalAlignment="Center" VerticalAlignment="Top">
                                 <Image x:Name="RasterImage" Stretch="Fill" AutomationProperties.Name="Current source page image"/>
-                                <Canvas x:Name="Overlay" IsHitTestVisible="False"/>
+                                <Canvas x:Name="Overlay"/>
                             </Grid>
-                        </Viewbox>
+                        </ScrollViewer>
                     </Border>
-                    <TextBlock x:Name="BoxStatus" Style="{ThemeResource CaptionTextBlockStyle}" TextWrapping="Wrap"/>
+
+                    <TextBlock x:Name="BoxStatus" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
                     <ListBox x:Name="OcrLines" MaxHeight="160" SelectionChanged="OnLineSelected" AutomationProperties.Name="Indexed OCR text lines" Visibility="Collapsed"/>
-                    <TextBlock Text="索引上下文片段" FontWeight="SemiBold"/>
-                    <TextBlock x:Name="Excerpt" TextWrapping="Wrap" IsTextSelectionEnabled="True" AutomationProperties.Name="Indexed source context"/>
+
+                    <TextBlock Text="正文与索引上下文" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                    <Border Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="12">
+                        <TextBlock x:Name="Excerpt" TextWrapping="Wrap" IsTextSelectionEnabled="True"
+                                   FontFamily="Cascadia Code, Consolas, Segoe UI Variable"
+                                   FontSize="13" LineHeight="20"
+                                   AutomationProperties.Name="Indexed source context"/>
+                    </Border>
                 </StackPanel>
             </ScrollViewer>
         </Grid>

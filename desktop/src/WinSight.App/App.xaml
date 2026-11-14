@@ -7,6 +7,51 @@
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
+
+            <!-- WinSight Fluent 2 Design System Tokens & Shared Control Styles -->
+            <x:Double x:Key="WsPageMaxWidth">880</x:Double>
+            <CornerRadius x:Key="WsCardCornerRadius">10</CornerRadius>
+            <CornerRadius x:Key="WsSubCardCornerRadius">8</CornerRadius>
+            <CornerRadius x:Key="WsControlCornerRadius">6</CornerRadius>
+
+            <Style x:Key="WsCardStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}"/>
+                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="CornerRadius" Value="10"/>
+                <Setter Property="Padding" Value="20"/>
+            </Style>
+
+            <Style x:Key="WsSubCardStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource ControlAltFillColorSecondaryBrush}"/>
+                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="CornerRadius" Value="8"/>
+                <Setter Property="Padding" Value="14,12"/>
+            </Style>
+
+            <Style x:Key="WsPillBadgeStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource ControlAltFillColorSecondaryBrush}"/>
+                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="CornerRadius" Value="10"/>
+                <Setter Property="Padding" Value="9,3"/>
+            </Style>
+
+            <Style x:Key="WsKeyCapBorder" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource ControlAltFillColorSecondaryBrush}"/>
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="CornerRadius" Value="4"/>
+                <Setter Property="Padding" Value="5,1"/>
+                <Setter Property="VerticalAlignment" Value="Center"/>
+            </Style>
+
+            <Style x:Key="WsKeyCapText" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}">
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+                <Setter Property="FontSize" Value="11"/>
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

@@ -7,43 +7,54 @@
     mc:Ignorable="d">
 
     <ScrollViewer Padding="24,16,24,24">
-        <StackPanel Spacing="24" MaxWidth="800" HorizontalAlignment="Left">
-            <!-- Header -->
-            <StackPanel Spacing="4">
-                <TextBlock Text="系统设置" Style="{ThemeResource TitleTextBlockStyle}"/>
-                <TextBlock Text="配置快捷键、后台索引计划、界面外观与系统行为。"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-            </StackPanel>
+        <StackPanel Spacing="20" MaxWidth="{StaticResource WsPageMaxWidth}" HorizontalAlignment="Left">
+            <!-- Header + Live Auto-Save Status -->
+            <Grid ColumnSpacing="16">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="系统设置" Style="{ThemeResource TitleTextBlockStyle}"/>
+                    <TextBlock Text="配置全局快捷键、后台索引计划、外观主题与 AI 硬件加速（开关与选择器即改即存）。"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                </StackPanel>
+                <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                           HorizontalAlignment="Right" VerticalAlignment="Center"
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+            </Grid>
 
-            <!-- Hotkey Section -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="20">
+            <!-- Hotkey Section with Key Recorder -->
+            <Border Style="{StaticResource WsCardStyle}">
                 <StackPanel Spacing="12">
                     <TextBlock Text="全局快捷键" Style="{ThemeResource SubtitleTextBlockStyle}"/>
-                    <TextBlock Text="从 Windows 任何位置呼出快捷搜索栏的全局键盘快捷键。"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock Text="从 Windows 任何位置呼出快捷搜索栏的全局快捷键（支持点击录制后直接按下组合键）。"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
 
-                    <Grid ColumnSpacing="12">
+                    <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
                         <TextBox x:Name="HotkeyBox"
                                  Text="{x:Bind ViewModel.Hotkey, Mode=TwoWay}"
-                                 PlaceholderText="e.g. Control+Shift+Space"
+                                 PlaceholderText="例如 Control+Shift+Space"
+                                 PreviewKeyDown="OnHotkeyBoxPreviewKeyDown"
                                  VerticalAlignment="Center"/>
 
-                        <Button Grid.Column="1"
+                        <ToggleButton x:Name="RecordHotkeyButton" Grid.Column="1"
+                                      Content="按下组合键录制"
+                                      Checked="OnRecordHotkeyChecked"
+                                      Unchecked="OnRecordHotkeyUnchecked"
+                                      CornerRadius="6" VerticalAlignment="Center"/>
+
+                        <Button Grid.Column="2"
                                 Content="应用快捷键"
+                                Style="{ThemeResource AccentButtonStyle}"
+                                CornerRadius="6"
                                 Click="OnApplyHotkeyClick"
                                 VerticalAlignment="Center"/>
                     </Grid>
 
-                    <!-- Conflict Warning Banner -->
                     <InfoBar IsOpen="{x:Bind ViewModel.HasHotkeyConflict, Mode=OneWay}"
                              Severity="Warning"
                              Title="快捷键注册冲突"
@@ -53,15 +64,10 @@
             </Border>
 
             <!-- Background Indexing & Schedule Section -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="20">
+            <Border Style="{StaticResource WsCardStyle}">
                 <StackPanel Spacing="16">
                     <TextBlock Text="索引与计划" Style="{ThemeResource SubtitleTextBlockStyle}"/>
 
-                    <!-- Background monitoring -->
                     <Grid ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -74,51 +80,44 @@
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
                         <ToggleSwitch Grid.Column="1"
-                                      IsOn="{x:Bind ViewModel.BackgroundIndexingEnabled, Mode=TwoWay}"/>
+                                      IsOn="{x:Bind ViewModel.BackgroundIndexingEnabled, Mode=TwoWay}"
+                                      Toggled="OnAutoSaveToggled"/>
                     </Grid>
 
-                    <!-- Index Hours Toggle -->
+                    <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+
                     <Grid ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="2">
-                            <TextBlock Text="限制在指定时间段内索引" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
-                            <TextBlock Text="将重型索引限制在非高峰时段（自午夜起的分钟数）。"
+                            <TextBlock Text="限制在指定时段内自动索引" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                            <TextBlock Text="将重型索引限制在设定的起止时间窗口内运行（24 小时制）。"
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
                         <ToggleSwitch Grid.Column="1"
-                                      IsOn="{x:Bind ViewModel.IndexHoursOn, Mode=TwoWay}"/>
+                                      IsOn="{x:Bind ViewModel.IndexHoursOn, Mode=TwoWay}"
+                                      Toggled="OnAutoSaveToggled"/>
                     </Grid>
 
-                    <!-- Hours Inputs (in minutes since midnight) -->
-                    <Grid ColumnSpacing="16" RowSpacing="8" Visibility="{x:Bind BoolToVisibility(ViewModel.IndexHoursOn), Mode=OneWay}">
+                    <!-- Native WinUI 3 24-Hour TimePickers -->
+                    <Grid ColumnSpacing="16" Visibility="{x:Bind BoolToVisibility(ViewModel.IndexHoursOn), Mode=OneWay}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0" Spacing="4">
-                            <TextBlock Text="开始时间（自午夜起的分钟数，例如 60 即 01:00）：" Style="{ThemeResource CaptionTextBlockStyle}"/>
-                            <NumberBox Value="{x:Bind ViewModel.IndexHoursStart, Mode=TwoWay}"
-                                       Minimum="0" Maximum="1439" SmallChange="15" SpinButtonPlacementMode="Inline"/>
-                            <TextBlock Text="{x:Bind ViewModel.IndexHoursStartFormatted, Mode=OneWay}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"/>
-                        </StackPanel>
-
-                        <StackPanel Grid.Column="1" Spacing="4">
-                            <TextBlock Text="结束时间（自午夜起的分钟数，例如 420 即 07:00）：" Style="{ThemeResource CaptionTextBlockStyle}"/>
-                            <NumberBox Value="{x:Bind ViewModel.IndexHoursEnd, Mode=TwoWay}"
-                                       Minimum="0" Maximum="1439" SmallChange="15" SpinButtonPlacementMode="Inline"/>
-                            <TextBlock Text="{x:Bind ViewModel.IndexHoursEndFormatted, Mode=OneWay}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"/>
-                        </StackPanel>
+                        <TimePicker x:Name="StartTimePicker" Grid.Column="0" Header="开始时间"
+                                    ClockIdentifier="24HourClock" MinuteIncrement="15"
+                                    TimeChanged="OnScheduleTimeChanged" HorizontalAlignment="Stretch"/>
+                        <TimePicker x:Name="EndTimePicker" Grid.Column="1" Header="结束时间"
+                                    ClockIdentifier="24HourClock" MinuteIncrement="15"
+                                    TimeChanged="OnScheduleTimeChanged" HorizontalAlignment="Stretch"/>
                     </Grid>
 
-                    <!-- Processor Only -->
+                    <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+
                     <Grid ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -134,21 +133,17 @@
                         <ToggleSwitch Grid.Column="1"
                                       AutomationProperties.AutomationId="AcOnlyIndexingToggle"
                                       AutomationProperties.Name="Automatic indexing on AC power only"
-                                      IsOn="{x:Bind ViewModel.ProcessorOnly, Mode=TwoWay}"/>
+                                      IsOn="{x:Bind ViewModel.ProcessorOnly, Mode=TwoWay}"
+                                      Toggled="OnAutoSaveToggled"/>
                     </Grid>
                 </StackPanel>
             </Border>
 
             <!-- Appearance & Integration Section -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="20">
+            <Border Style="{StaticResource WsCardStyle}">
                 <StackPanel Spacing="16">
                     <TextBlock Text="外观与系统集成" Style="{ThemeResource SubtitleTextBlockStyle}"/>
 
-                    <!-- Theme Selection -->
                     <Grid ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -160,16 +155,15 @@
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
-                        <ComboBox Grid.Column="1"
-                                  x:Name="ThemeComboBox"
-                                  SelectionChanged="OnThemeSelectionChanged">
+                        <ComboBox Grid.Column="1" x:Name="ThemeComboBox" SelectionChanged="OnThemeSelectionChanged">
                             <ComboBoxItem Content="跟随系统" Tag="Default"/>
                             <ComboBoxItem Content="浅色" Tag="Light"/>
                             <ComboBoxItem Content="深色" Tag="Dark"/>
                         </ComboBox>
                     </Grid>
 
-                    <!-- Tray Click Action -->
+                    <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+
                     <Grid ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -181,15 +175,14 @@
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
-                        <ComboBox Grid.Column="1"
-                                  x:Name="TrayClickComboBox"
-                                  SelectionChanged="OnTrayClickSelectionChanged">
+                        <ComboBox Grid.Column="1" x:Name="TrayClickComboBox" SelectionChanged="OnTrayClickSelectionChanged">
                             <ComboBoxItem Content="呼出快捷搜索栏" Tag="panel"/>
                             <ComboBoxItem Content="打开主窗口" Tag="window"/>
                         </ComboBox>
                     </Grid>
 
-                    <!-- Code Editor Choice -->
+                    <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+
                     <Grid ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -201,9 +194,7 @@
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
-                        <ComboBox Grid.Column="1"
-                                  x:Name="CodeEditorComboBox"
-                                  SelectionChanged="OnCodeEditorSelectionChanged">
+                        <ComboBox Grid.Column="1" x:Name="CodeEditorComboBox" SelectionChanged="OnCodeEditorSelectionChanged">
                             <ComboBoxItem Content="系统默认程序 (记事本)" Tag="default"/>
                             <ComboBoxItem Content="Visual Studio Code (code)" Tag="vscode"/>
                             <ComboBoxItem Content="Cursor (cursor)" Tag="cursor"/>
@@ -213,7 +204,8 @@
                         </ComboBox>
                     </Grid>
 
-                    <!-- Open At Login -->
+                    <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+
                     <Grid ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -221,26 +213,22 @@
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="2">
                             <TextBlock Text="开机自动启动" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
-                            <TextBlock Text="登录 Windows 时在系统托盘启动（仅当前用户登录项，不修改系统全局项）。"
+                            <TextBlock Text="登录 Windows 时在系统托盘静默启动（仅当前用户启动项）。"
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
                         <ToggleSwitch Grid.Column="1"
-                                      IsOn="{x:Bind ViewModel.OpenAtLogin, Mode=TwoWay}"/>
+                                      IsOn="{x:Bind ViewModel.OpenAtLogin, Mode=TwoWay}"
+                                      Toggled="OnAutoSaveToggled"/>
                     </Grid>
                 </StackPanel>
             </Border>
 
             <!-- Hardware & Inference Acceleration Section -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="20">
+            <Border Style="{StaticResource WsCardStyle}">
                 <StackPanel Spacing="16">
                     <TextBlock Text="AI 与硬件加速" Style="{ThemeResource SubtitleTextBlockStyle}"/>
 
-                    <!-- Accelerator Selection -->
                     <Grid ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -248,7 +236,7 @@
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="2">
                             <TextBlock Text="加速设备选择" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
-                            <TextBlock Text="选择用于向量嵌入与模型推理的硬件设备。"
+                            <TextBlock Text="选择用于向量嵌入与视觉编码的硬件执行设备。"
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
@@ -257,7 +245,7 @@
                                   AutomationProperties.AutomationId="AcceleratorComboBox"
                                   AutomationProperties.Name="Acceleration device"
                                   SelectionChanged="OnAcceleratorSelectionChanged">
-                            <ComboBoxItem Content="自动选择 (优先独立显卡)" Tag="auto"/>
+                            <ComboBoxItem Content="自动选择 (优先独立显卡/NPU)" Tag="auto"/>
                             <ComboBoxItem Content="独立显卡 (Discrete GPU)" Tag="discrete-gpu"/>
                             <ComboBoxItem Content="神经网络处理器 (NPU)" Tag="npu"/>
                             <ComboBoxItem Content="显卡 (GPU)" Tag="gpu"/>
@@ -265,8 +253,8 @@
                         </ComboBox>
                     </Grid>
 
-                    <!-- Page Images Rasterization Toggle -->
                     <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+
                     <Grid ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -274,7 +262,7 @@
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="2" VerticalAlignment="Center">
                             <TextBlock Text="索引期间生成页面图像 (PDF / PPTX 栅格化)" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
-                            <TextBlock Text="默认关闭。开启后支持页面级视觉预览与扫描件 OCR，但会增加 Office/PDF 渲染耗时。"
+                            <TextBlock Text="默认关闭。开启后支持页面级视觉检索与扫描件 OCR，但会增加后台渲染耗时。"
                                        TextWrapping="Wrap"
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
@@ -283,11 +271,12 @@
                                       VerticalAlignment="Center"
                                       AutomationProperties.AutomationId="PageImagesToggle"
                                       AutomationProperties.Name="Generate page images during indexing"
-                                      IsOn="{x:Bind ViewModel.GeneratePageImages, Mode=TwoWay}"/>
+                                      IsOn="{x:Bind ViewModel.GeneratePageImages, Mode=TwoWay}"
+                                      Toggled="OnAutoSaveToggled"/>
                     </Grid>
 
-                    <!-- Install Execution Providers Toggle -->
                     <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+
                     <Grid ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -304,116 +293,41 @@
                                       VerticalAlignment="Center"
                                       AutomationProperties.AutomationId="InstallExecutionProvidersToggle"
                                       AutomationProperties.Name="Allow Windows ML to install and register execution providers"
-                                      IsOn="{x:Bind ViewModel.InstallExecutionProviders, Mode=TwoWay}"/>
+                                      IsOn="{x:Bind ViewModel.InstallExecutionProviders, Mode=TwoWay}"
+                                      Toggled="OnAutoSaveToggled"/>
                     </Grid>
                 </StackPanel>
             </Border>
 
-            <!-- MCP client configuration (Primary Feature Card) -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="20">
-                <StackPanel Spacing="12">
-                    <Grid>
-                        <StackPanel VerticalAlignment="Center" Spacing="4">
-                            <TextBlock Text="AI 智能体 MCP 服务集成 (SDK 2.0)" Style="{ThemeResource SubtitleTextBlockStyle}"/>
-                            <TextBlock Text="支持 Model Context Protocol 2.0 规范。打开开关后可直接复制 JSON 配置，粘贴到 Claude Desktop、Cursor、Windsurf 等智能体配置文件中即可挂载本地知识库。"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                       TextWrapping="Wrap"/>
-                        </StackPanel>
-                        <ToggleSwitch HorizontalAlignment="Right" VerticalAlignment="Center"
-                                      IsOn="{x:Bind ViewModel.EnableMcpServer, Mode=TwoWay}"
-                                      OnContent="已启用" OffContent="已停用"
-                                      AutomationProperties.AutomationId="McpServerToggle"/>
-                    </Grid>
-
-                    <!-- 打开启用开关后直接给出即用配置 -->
-                    <StackPanel Spacing="10" Visibility="{x:Bind ToVisibility(ViewModel.EnableMcpServer), Mode=OneWay}">
-                        <Border Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                BorderThickness="1" CornerRadius="6" Padding="12">
-                            <Grid RowSpacing="8">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="*"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
-
-                                <Grid Grid.Row="0">
-                                    <TextBlock Text="智能体客户端配置 JSON (mcpServers)" FontWeight="SemiBold"
-                                               Style="{ThemeResource CaptionTextBlockStyle}" VerticalAlignment="Center"/>
-                                    <Button HorizontalAlignment="Right" Click="OnCopyMcpConfigClick"
-                                            Style="{ThemeResource AccentButtonStyle}" Padding="12,6"
-                                            AutomationProperties.AutomationId="CopyMcpConfigButton">
-                                        <StackPanel Orientation="Horizontal" Spacing="6">
-                                            <FontIcon Glyph="&#xE8C8;" FontSize="14"/>
-                                            <TextBlock Text="一键复制配置"/>
-                                        </StackPanel>
-                                    </Button>
-                                </Grid>
-
-                                <TextBox Grid.Row="1"
-                                         Text="{x:Bind ViewModel.McpConfigSnippet, Mode=OneWay}"
-                                         IsReadOnly="True" AcceptsReturn="True"
-                                         FontFamily="Consolas, Cascadia Code, Courier New"
-                                         FontSize="12" MinHeight="140"
-                                         TextWrapping="NoWrap"
-                                         AutomationProperties.AutomationId="McpConfigSnippetBox"/>
-
-                                <TextBlock Grid.Row="2" Text="{x:Bind ViewModel.McpCopyStatusMessage, Mode=OneWay}"
-                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                           Foreground="{ThemeResource SystemFillColorSuccessBrush}"
-                                           TextWrapping="Wrap"/>
-                            </Grid>
-                        </Border>
-
-                        <Expander Header="高级选项：自动注入到本地配置文件 (可选)" IsExpanded="False" HorizontalAlignment="Stretch">
-                            <StackPanel Spacing="10" Margin="0,8,0,0">
-                                <StackPanel Orientation="Horizontal" Spacing="16">
-                                    <RadioButton Content="stdio 进程管道 (推荐)" GroupName="ClientTransport"
-                                                 IsChecked="{x:Bind ViewModel.UseStdioTransport, Mode=TwoWay}"
-                                                 AutomationProperties.AutomationId="TransportStdioRadio"/>
-                                    <RadioButton Content="环回 HTTP" GroupName="ClientTransport"
-                                                 IsChecked="{x:Bind ViewModel.UseHttpTransport, Mode=TwoWay}"
-                                                 AutomationProperties.AutomationId="TransportHttpRadio"/>
-                                    <TextBox Header="HTTP 端口" Width="110" Text="{x:Bind ViewModel.HttpPortText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                             AutomationProperties.AutomationId="HttpPortBox"/>
-                                </StackPanel>
-                                <TextBlock Text="{x:Bind ViewModel.ClientTransportDescription, Mode=OneWay}" TextWrapping="Wrap"
-                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                           AutomationProperties.AutomationId="ClientTransportDescription"/>
-                                <TextBox Header="客户端配置文件路径"
-                                         Text="{x:Bind ViewModel.ClientConfigPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                         PlaceholderText="例如: C:\path\to\client-config.json"
-                                         AutomationProperties.AutomationId="ClientConfigPathBox"/>
-                                <StackPanel Orientation="Horizontal" Spacing="12">
-                                    <Button Content="预览配置" Click="OnPreviewClientConfigClick"
-                                            IsEnabled="{x:Bind ViewModel.CanConfigureClient, Mode=OneWay}"
-                                            AutomationProperties.AutomationId="PreviewClientConfigButton"/>
-                                    <Button Content="应用配置" Click="OnApplyClientConfigClick"
-                                            IsEnabled="{x:Bind ViewModel.CanConfigureClient, Mode=OneWay}"
-                                            AutomationProperties.AutomationId="ApplyClientConfigButton"/>
-                                </StackPanel>
-                                <TextBlock Text="{x:Bind ViewModel.ClientConfigSummary, Mode=OneWay}" TextWrapping="Wrap"
-                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                           AutomationProperties.AutomationId="ClientConfigSummary"/>
-                            </StackPanel>
-                        </Expander>
+            <!-- Streamlined MCP Entry Card (Links to dedicated MCP Console) -->
+            <Border Style="{StaticResource WsCardStyle}">
+                <Grid ColumnSpacing="16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center" Spacing="4">
+                        <TextBlock Text="AI 智能体 MCP 服务集成 (SDK 2.0)" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                        <TextBlock Text="启用后可通过 MCP 控制台一键导出 Claude / Cursor / VS Code 客户端接入配置。"
+                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextWrapping="Wrap"/>
                     </StackPanel>
-                </StackPanel>
+                    <Button x:Name="GoMcpConsoleButton" Grid.Column="1" Content="前往 MCP 控制台"
+                            CornerRadius="6" VerticalAlignment="Center" Click="OnOpenMcpConsoleClick"/>
+                    <ToggleSwitch Grid.Column="2" VerticalAlignment="Center"
+                                  IsOn="{x:Bind ViewModel.EnableMcpServer, Mode=TwoWay}"
+                                  OnContent="已启用" OffContent="已停用"
+                                  Toggled="OnAutoSaveToggled"
+                                  AutomationProperties.AutomationId="McpServerToggle"/>
+                </Grid>
             </Border>
 
             <!-- Collapsible Advanced Diagnostics & Maintenance Section -->
             <Expander Header="高级存储迁移、索引代际与底层驱动诊断" IsExpanded="False" HorizontalAlignment="Stretch">
                 <StackPanel Spacing="16" Margin="0,12,0,0">
-                    <!-- Models -->
-                    <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="1" CornerRadius="8" Padding="18">
+                    <Border Style="{StaticResource WsCardStyle}" Padding="18">
                         <StackPanel Spacing="10">
                             <TextBlock Text="模型与计算设备规模" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
                             <TextBlock Text="{x:Bind ViewModel.ModelsSummary, Mode=OneWay}" TextWrapping="Wrap"
@@ -422,18 +336,15 @@
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        AutomationProperties.AutomationId="VectorScaleSummary"/>
                             <StackPanel Orientation="Horizontal" Spacing="12">
-                                <Button Content="刷新模型状态" Click="OnRefreshModelsClick"
+                                <Button Content="刷新模型状态" CornerRadius="6" Click="OnRefreshModelsClick"
                                         AutomationProperties.AutomationId="RefreshModelsButton"/>
-                                <Button Content="评估向量规模" Click="OnMeasureVectorsClick"
+                                <Button Content="评估向量规模" CornerRadius="6" Click="OnMeasureVectorsClick"
                                         AutomationProperties.AutomationId="MeasureVectorsButton"/>
                             </StackPanel>
                         </StackPanel>
                     </Border>
 
-                    <!-- Index location -->
-                    <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="1" CornerRadius="8" Padding="18">
+                    <Border Style="{StaticResource WsCardStyle}" Padding="18">
                         <StackPanel Spacing="10">
                             <TextBlock Text="索引存储目录迁移" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
                             <TextBlock Text="将索引安全迁移至新的空目录，校验通过后自动切换路径，原目录保留作为备份。"
@@ -444,9 +355,9 @@
                                      PlaceholderText="D:\WinSightIndex"
                                      AutomationProperties.AutomationId="MigrationTargetBox"/>
                             <StackPanel Orientation="Horizontal" Spacing="12">
-                                <Button Content="预检路径" Click="OnInspectMigrationClick"
+                                <Button Content="预检路径" CornerRadius="6" Click="OnInspectMigrationClick"
                                         AutomationProperties.AutomationId="InspectMigrationButton"/>
-                                <Button Content="开始迁移" Click="OnMigrateIndexClick"
+                                <Button Content="开始迁移" CornerRadius="6" Click="OnMigrateIndexClick"
                                         IsEnabled="{x:Bind ViewModel.CanMigrate, Mode=OneWay}"
                                         AutomationProperties.AutomationId="MigrateIndexButton"/>
                             </StackPanel>
@@ -456,48 +367,21 @@
                         </StackPanel>
                     </Border>
 
-                    <!-- Index generation -->
-                    <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="1" CornerRadius="8" Padding="18">
+                    <Border Style="{StaticResource WsCardStyle}" Padding="18">
                         <StackPanel Spacing="10">
                             <TextBlock Text="索引代际版本与全量重建" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
                             <TextBlock Text="{x:Bind ViewModel.RebuildSummary, Mode=OneWay}" TextWrapping="Wrap"
                                        AutomationProperties.AutomationId="RebuildSummary"/>
                             <StackPanel Orientation="Horizontal" Spacing="12">
-                                <Button Content="检查代际" Click="OnRefreshRebuildClick"
+                                <Button Content="检查代际" CornerRadius="6" Click="OnRefreshRebuildClick"
                                         AutomationProperties.AutomationId="RefreshRebuildButton"/>
-                                <Button Content="重建索引" Click="OnStartRebuildClick"
+                                <Button Content="重建索引" CornerRadius="6" Click="OnStartRebuildClick"
                                         AutomationProperties.AutomationId="StartRebuildButton"/>
                             </StackPanel>
                         </StackPanel>
                     </Border>
 
-                    <!-- MCP maintenance authorization -->
-                    <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="1" CornerRadius="8" Padding="18">
-                        <StackPanel Spacing="10">
-                            <TextBlock Text="MCP 客户端维护队列" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
-                            <TextBlock Text="处理外部智能体通过 index_directory 提交的受控目录索引请求。"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                       TextWrapping="Wrap"/>
-                            <StackPanel Orientation="Horizontal" Spacing="12">
-                                <Button Content="立即处理请求" Click="OnDrainMaintenanceClick"
-                                        IsEnabled="{x:Bind ViewModel.CanManageMaintenance, Mode=OneWay}"
-                                        AutomationProperties.AutomationId="DrainMaintenanceButton"/>
-                            </StackPanel>
-                            <TextBlock Text="{x:Bind ViewModel.MaintenanceSummary, Mode=OneWay}" TextWrapping="Wrap"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                       AutomationProperties.AutomationId="MaintenanceSummary"/>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- NPU & Foundry Probes -->
-                    <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="1" CornerRadius="8" Padding="18">
+                    <Border Style="{StaticResource WsCardStyle}" Padding="18">
                         <StackPanel Spacing="10">
                             <TextBlock Text="Windows ML / NPU 与硬件加速探针" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
                             <TextBlock Text="{x:Bind ViewModel.NpuSummary, Mode=OneWay}" TextWrapping="Wrap"
@@ -514,7 +398,7 @@
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        AutomationProperties.AutomationId="NpuQualification"/>
                             <StackPanel Orientation="Horizontal" Spacing="12">
-                                <Button Content="探测硬件与 NPU 宿主" Click="OnProbeNpuClick"
+                                <Button Content="探测硬件与 NPU 宿主" CornerRadius="6" Click="OnProbeNpuClick"
                                         IsEnabled="{x:Bind ViewModel.CanProbeNpu, Mode=OneWay}"
                                         AutomationProperties.AutomationId="ProbeNpuButton"/>
                             </StackPanel>
@@ -524,11 +408,7 @@
             </Expander>
 
             <!-- About -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="20">
+            <Border Style="{StaticResource WsCardStyle}">
                 <StackPanel Spacing="10">
                     <TextBlock Text="关于 WinSight" Style="{ThemeResource SubtitleTextBlockStyle}"/>
                     <Grid ColumnSpacing="16" RowSpacing="8">
@@ -551,7 +431,7 @@
                                          Padding="0"/>
                     </Grid>
                     <StackPanel Orientation="Horizontal" Spacing="12">
-                        <Button Content="导出诊断日志包"
+                        <Button Content="导出诊断日志包" CornerRadius="6"
                                 AutomationProperties.AutomationId="ExportDiagnosticsButton"
                                 Click="OnExportDiagnosticsClick"/>
                         <TextBlock x:Name="DiagnosticsStatus"
@@ -566,7 +446,7 @@
                              PlaceholderText="https://example.org/winsight/update.json"
                              AutomationProperties.AutomationId="UpdateFeedUrlBox"/>
                     <StackPanel Orientation="Horizontal" Spacing="12">
-                        <Button Content="检查更新"
+                        <Button Content="检查更新" CornerRadius="6"
                                 AutomationProperties.AutomationId="CheckForUpdatesButton"
                                 Click="OnCheckForUpdatesClick"/>
                         <HyperlinkButton x:Name="UpdateLink" Visibility="Collapsed" Content="前往下载页面"
@@ -578,17 +458,14 @@
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                    TextWrapping="Wrap"/>
                     </StackPanel>
-                    <TextBlock Text="当前为本地开发预览版，非正式稳定发行版。历史旧索引不会自动迁移。"
-                               Style="{ThemeResource CaptionTextBlockStyle}"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                               TextWrapping="Wrap"/>
                 </StackPanel>
             </Border>
 
-            <!-- Save Button and Feedback -->
+            <!-- Save Button and Feedback (also auto-saves on toggle/combo/time changes) -->
             <StackPanel Orientation="Horizontal" Spacing="16">
-                <Button Content="保存设置"
+                <Button Content="保存全部设置"
                         Style="{ThemeResource AccentButtonStyle}"
+                        CornerRadius="6"
                         Click="OnSaveSettingsClick"/>
                 <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
                            VerticalAlignment="Center"

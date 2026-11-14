@@ -21,6 +21,9 @@ public sealed class McpConsoleViewModel : INotifyPropertyChanged
     private bool busy;
     private string configSnippet = "";
     private string copyFeedback = "";
+    private string selectedClient = "claude";
+    private string clientPathHint = @"%APPDATA%\Claude\claude_desktop_config.json";
+    private string bridgeHealthStatus = "";
 
     public McpConsoleViewModel(IMcpBackend backend)
     {
@@ -35,6 +38,28 @@ public sealed class McpConsoleViewModel : INotifyPropertyChanged
     public bool CanDrain => !busy;
     public string ConfigSnippet => configSnippet;
     public string CopyFeedback => copyFeedback;
+    public string ClientPathHint => clientPathHint;
+    public string BridgeHealthStatus => bridgeHealthStatus;
+
+    public string SelectedClient
+    {
+        get => selectedClient;
+        set
+        {
+            if (selectedClient == value) return;
+            selectedClient = value;
+            clientPathHint = value switch
+            {
+                "cursor" => @"%USERPROFILE%\.cursor\mcp.json",
+                "windsurf" => @"%USERPROFILE%\.codeium\windsurf\mcp_config.json",
+                "vscode" => @".vscode\mcp.json（工作区）或 ~/.pi/agent/mcp.json",
+                _ => @"%APPDATA%\Claude\claude_desktop_config.json"
+            };
+            Raise(nameof(SelectedClient));
+            Raise(nameof(ClientPathHint));
+            UpdateSnippet();
+        }
+    }
 
     public void UpdateSnippet()
     {
@@ -56,25 +81,49 @@ public sealed class McpConsoleViewModel : INotifyPropertyChanged
         catch { }
         var indexPath = Path.Combine(indexDir, "index.sqlite");
 
+        var rootKey = selectedClient == "vscode" ? "servers" : "mcpServers";
+        var entry = new JsonObject
+        {
+            ["command"] = bridge,
+            ["args"] = new JsonArray
+            {
+                "--index",
+                indexPath,
+                "--stdio"
+            }
+        };
+        if (selectedClient == "vscode") entry["type"] = "stdio";
+
         var doc = new JsonObject
         {
-            ["mcpServers"] = new JsonObject
+            [rootKey] = new JsonObject
             {
-                ["winsight"] = new JsonObject
-                {
-                    ["command"] = bridge,
-                    ["args"] = new JsonArray
-                    {
-                        "--index",
-                        indexPath,
-                        "--stdio"
-                    }
-                }
+                ["winsight"] = entry
             }
         };
 
         configSnippet = doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
         Raise(nameof(ConfigSnippet));
+    }
+
+    public void ProbeBridgeHealth()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "bridge", "winsight-mcp.exe"),
+            @"C:\Program Files\WinSight\bridge\winsight-mcp.exe"
+        };
+        var exe = candidates.FirstOrDefault(File.Exists);
+        if (exe is null)
+        {
+            bridgeHealthStatus = "未检测到 winsight-mcp.exe，请检查安装目录下的 bridge\\ 子目录。";
+        }
+        else
+        {
+            var fi = new FileInfo(exe);
+            bridgeHealthStatus = $"✓ 桥接器就绪：{exe}（{fi.Length / 1024} KB · 更新于 {fi.LastWriteTime:yyyy-MM-dd HH:mm}）";
+        }
+        Raise(nameof(BridgeHealthStatus));
     }
 
     public void CopyConfig()
@@ -122,11 +171,11 @@ public sealed class McpConsoleViewModel : INotifyPropertyChanged
         try
         {
             var outcomes = await backend.DrainMaintenanceJobsAsync();
-            actionResult = outcomes.Count == 0 ? "No pending requests." : string.Join("; ", outcomes);
+            actionResult = outcomes.Count == 0 ? "当前没有待处理的维护请求。" : string.Join("; ", outcomes);
         }
         catch (Exception error) when (error is IOException or InvalidOperationException)
         {
-            actionResult = "Drain failed: " + error.Message;
+            actionResult = "处理维护请求失败：" + error.Message;
         }
         finally { busy = false; Raise(nameof(CanDrain)); Raise(nameof(ActionResult)); }
         await RefreshAsync();

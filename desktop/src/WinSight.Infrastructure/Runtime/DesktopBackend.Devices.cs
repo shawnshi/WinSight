@@ -80,13 +80,15 @@ public sealed partial class DesktopBackend
     }
 
 /// <summary>
-    /// Asks the isolated Windows ML host (ORT 1.27) which devices it can see. Read-only: the host registers
+    /// Asks the inference host (Windows ML ORT 1.27) which devices it can see. Read-only: the host registers
     /// local provider libraries only and never downloads.
     /// </summary>
     public async Task<WinMlProbe?> ProbeWinMlAsync(CancellationToken cancellationToken = default)
     {
-        var executable = Path.Combine(applicationDirectory, "inference", "winml", "WinSight.WinMlHost.exe");
-        if (!File.Exists(executable)) return new WinMlProbe("unavailable", Array.Empty<string>(), Array.Empty<string>(), Array.Empty<WinMlDevice>(), "The Windows ML host is not part of this payload.");
+        var executable = Path.Combine(applicationDirectory, "inference", "WinSight.InferenceHost.exe");
+        if (!File.Exists(executable))
+            executable = Path.Combine(applicationDirectory, "inference", "winml", "WinSight.WinMlHost.exe");
+        if (!File.Exists(executable)) return new WinMlProbe("unavailable", Array.Empty<string>(), Array.Empty<string>(), Array.Empty<WinMlDevice>(), "The inference host is not part of this payload.");
         try
         {
             var start = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
@@ -224,24 +226,51 @@ public async Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancell
     }
 
 /// <summary>
-    /// The NPU path runs on the isolated Windows ML host (ORT 1.27), because vendor NPU plugins are built
-    /// against that runtime. Every other preference keeps the default host (ORT 1.31). The choice is stable
-    /// per accelerator setting: each runtime produces its own embedding profile, and switching retires the
-    /// old index instead of mixing vectors.
+    /// Embeddings run on the unified inference host (Windows ML ORT 1.27), supporting CPU, DirectML (GPU)
+    /// and NPU execution. The choice is stable per accelerator setting.
     /// </summary>
     private IEmbeddingService GetEmbeddings() => embeddings ??= new InferenceHostClient(
         settings.InferenceExecutable ?? ResolveInferenceExecutable(),
-        settings.ModelDirectory ?? Path.Combine(applicationDirectory, "models"),
-        settings.ManifestPath ?? Path.Combine(applicationDirectory, "inference", "model-manifest.json"),
+        settings.ModelDirectory ?? ResolveModelDirectory(),
+        settings.ManifestPath ?? ResolveManifestPath(),
         settings.Accelerator);
 
     private string ResolveInferenceExecutable()
     {
         var defaultHost = Path.Combine(applicationDirectory, "inference", "WinSight.InferenceHost.exe");
+        if (File.Exists(defaultHost)) return defaultHost;
         var winMlHost = Path.Combine(applicationDirectory, "inference", "winml", "WinSight.WinMlHost.exe");
-        if (File.Exists(winMlHost) && !string.Equals(settings.Accelerator, "cpu", StringComparison.OrdinalIgnoreCase))
-            return winMlHost;
+        if (File.Exists(winMlHost)) return winMlHost;
+
+        const string installedHost = @"C:\Program Files\WinSight\inference\WinSight.InferenceHost.exe";
+        if (File.Exists(installedHost)) return installedHost;
+
+        var devHost = Path.GetFullPath(Path.Combine(applicationDirectory, "..", "..", "..", "..", "..", "..", "inference", "WinSight.InferenceHost", "bin", "Debug", "net11.0-windows10.0.26100.0", "win-x64", "WinSight.InferenceHost.exe"));
+        if (File.Exists(devHost)) return devHost;
+
         return defaultHost;
+    }
+
+    private string ResolveModelDirectory()
+    {
+        var defaultModels = Path.Combine(applicationDirectory, "models");
+        if (Directory.Exists(defaultModels)) return defaultModels;
+        const string installedModels = @"C:\Program Files\WinSight\models";
+        if (Directory.Exists(installedModels)) return installedModels;
+        var devModels = Path.GetFullPath(Path.Combine(applicationDirectory, "..", "..", "..", "..", "..", "..", "models"));
+        if (Directory.Exists(devModels)) return devModels;
+        return defaultModels;
+    }
+
+    private string ResolveManifestPath()
+    {
+        var defaultManifest = Path.Combine(applicationDirectory, "inference", "model-manifest.json");
+        if (File.Exists(defaultManifest)) return defaultManifest;
+        const string installedManifest = @"C:\Program Files\WinSight\inference\model-manifest.json";
+        if (File.Exists(installedManifest)) return installedManifest;
+        var devManifest = Path.GetFullPath(Path.Combine(applicationDirectory, "..", "..", "..", "..", "..", "..", "inference", "WinSight.InferenceHost", "model-manifest.json"));
+        if (File.Exists(devManifest)) return devManifest;
+        return defaultManifest;
     }
 
 /// <summary>

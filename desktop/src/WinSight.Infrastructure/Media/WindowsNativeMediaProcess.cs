@@ -49,6 +49,8 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
             NativeMediaOperation.RenderPdfPage => "render-pdf-page",
             NativeMediaOperation.RenderPresentation => "render-presentation",
             NativeMediaOperation.RenderPresentationPage => "render-presentation-page",
+            NativeMediaOperation.RenderWordPage => "render-word-page",
+            NativeMediaOperation.RenderExcelPage => "render-excel-page",
             NativeMediaOperation.RenderRasterPreview => "render-raster-preview",
             NativeMediaOperation.OfficeNavigation => "navigate-office",
             NativeMediaOperation.OfficeNavigationServer => Path.GetFileName(executable).ToUpperInvariant() switch
@@ -70,7 +72,7 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
             job = CreateJobObjectW(IntPtr.Zero, null);
             Check(!job.IsInvalid, "Create media job");
             var limits = new ExtendedLimits { Basic = new BasicLimits { LimitFlags = 0x2000 } };
-            if (operation is NativeMediaOperation.RenderPdfPage or NativeMediaOperation.RenderRasterPreview)
+            if (operation is NativeMediaOperation.RenderPdfPage or NativeMediaOperation.RenderRasterPreview or NativeMediaOperation.RenderWordPage or NativeMediaOperation.RenderExcelPage)
             {
                 // Bound this new native parser's aggregate committed memory; other operations retain their existing policy.
                 limits.Basic.LimitFlags |= 0x0200;
@@ -367,7 +369,7 @@ internal sealed class WindowsNativeMediaProcess : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool ReadFile(SafeFileHandle file, byte[] buffer, uint count, out uint read, IntPtr overlapped);
 }
 
-internal enum NativeMediaOperation { Extract, Inspect, Soundtrack, InspectImage, ExtractLegacyText, InspectOcr, RenderPdfPage, RenderPresentation, PowerPointServer, RenderPresentationPage, RenderRasterPreview, OfficeNavigation, OfficeNavigationServer }
+internal enum NativeMediaOperation { Extract, Inspect, Soundtrack, InspectImage, ExtractLegacyText, InspectOcr, RenderPdfPage, RenderPresentation, PowerPointServer, RenderPresentationPage, RenderWordPage, RenderExcelPage, RenderRasterPreview, OfficeNavigation, OfficeNavigationServer }
 
 internal sealed class MediaTerminationException(string message, Exception inner) : IOException(message, inner);
 

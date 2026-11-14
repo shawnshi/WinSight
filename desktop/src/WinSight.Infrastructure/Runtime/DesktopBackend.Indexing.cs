@@ -173,7 +173,7 @@ public Task IndexAsync(IndexRequest request, IProgress<IndexProgress>? progress 
                             continue;
                         }
                         var counts = await queue.GetTaskCountsAsync(token);
-                        if (counts.GetValueOrDefault("Stabilizing") == 0 || settling.Elapsed > TimeSpan.FromSeconds(15)) break;
+                        if ((counts.GetValueOrDefault("Stabilizing") + counts.GetValueOrDefault("Pending")) == 0 || settling.Elapsed > TimeSpan.FromSeconds(15)) break;
                         await Task.Delay(300, token);
                     }
                     progress?.Report(new IndexProgress("finished", null, Volatile.Read(ref totalCompleted), Volatile.Read(ref totalFailed), Volatile.Read(ref totalPartial)));

@@ -41,6 +41,7 @@ try
         "search" => ["--data-dir", "--query", "--mode", "--root", "--kind", "--limit"],
         "index" => ["--data-dir", "--root", "--code", "--force"],
         "status" or "model-info" => ["--data-dir"],
+        "backfill" => ["--data-dir", "--limit"],
         "diagnostics" => ["--data-dir", "--out"],
         _ => throw new ArgumentException($"Unknown command {command}.")
     };
@@ -93,6 +94,18 @@ try
             response = await backend.GetStatusAsync(stop.Token);
             break;
         case "model-info": response = await backend.GetEmbeddingInfoAsync(stop.Token); break;
+        case "backfill":
+            var maxSegs = 0;
+            if (One("--limit") is { } maxText && !int.TryParse(maxText, out maxSegs))
+                throw new ArgumentException("--limit must be an integer.");
+            var backfillProgress = new Progress<(int Processed, int Remaining)>(p =>
+            {
+                Console.Error.Write($"\rBackfilling vectors: {p.Processed} segments processed...    ");
+            });
+            var processed = await backend.BackfillMissingEmbeddingsAsync(maxSegs, backfillProgress, stop.Token);
+            Console.Error.WriteLine();
+            response = new { ok = true, backfilledSegments = processed, status = await backend.GetStatusAsync(stop.Token) };
+            break;
         default: throw new ArgumentException("Unsupported command.");
     }
     Console.WriteLine(JsonSerializer.Serialize(response, json));

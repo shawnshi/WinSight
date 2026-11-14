@@ -33,13 +33,16 @@ internal sealed class MediaTaskFiles
                 });
         });
 
+    private const long DefaultMaxInputBytes = 32L * 1024 * 1024;
+    private const long PreviewMaxInputBytes = 256L * 1024 * 1024;
+
     internal static MediaTaskFiles CreatePdfPage(string hostPath, string workspacePath, NativePdfPageRequest input) =>
         CreateOwned(hostPath, workspacePath, input.SourcePath, files =>
         {
             files.ArtifactPath = Path.Combine(files.OutputDirectory, "page.png");
             return JsonSerializer.SerializeToUtf8Bytes(new { protocol = 1, inputPath = input.SourcePath,
                 outputDirectory = files.OutputDirectory, pageNumber = input.PageNumber, maxEdge = input.MaxEdge });
-        });
+        }, PreviewMaxInputBytes);
 
     internal static MediaTaskFiles CreatePresentation(string hostPath, string workspacePath, NativePresentationRequest input) =>
         CreateOwned(hostPath, workspacePath, input.SourcePath, files =>
@@ -54,7 +57,19 @@ internal sealed class MediaTaskFiles
         {
             files.presentation=true;
             return JsonSerializer.SerializeToUtf8Bytes(new{protocol=1,inputPath=input.SourcePath,outputDirectory=files.OutputDirectory,pageNumber=input.PageNumber,maxEdge=input.MaxEdge});
-        });
+        }, PreviewMaxInputBytes);
+    internal static MediaTaskFiles CreateWordPage(string hostPath, string workspacePath, NativeWordPageRequest input) =>
+        CreateOwned(hostPath, workspacePath, input.SourcePath, files =>
+        {
+            files.ArtifactPath = Path.Combine(files.OutputDirectory, "page.png");
+            return JsonSerializer.SerializeToUtf8Bytes(new { protocol = 1, inputPath = input.SourcePath, outputDirectory = files.OutputDirectory, pageNumber = input.PageNumber, maxEdge = input.MaxEdge, paragraphNumber = input.ParagraphNumber });
+        }, PreviewMaxInputBytes);
+    internal static MediaTaskFiles CreateExcelPage(string hostPath, string workspacePath, NativeExcelPageRequest input) =>
+        CreateOwned(hostPath, workspacePath, input.SourcePath, files =>
+        {
+            files.ArtifactPath = Path.Combine(files.OutputDirectory, "page.png");
+            return JsonSerializer.SerializeToUtf8Bytes(new { protocol = 1, inputPath = input.SourcePath, outputDirectory = files.OutputDirectory, pageNumber = input.PageNumber, maxEdge = input.MaxEdge, sheetName = input.SheetName });
+        }, PreviewMaxInputBytes);
     internal static MediaTaskFiles CreateRasterPreview(string hostPath,string workspacePath,NativeRasterPreviewRequest input) =>
         CreateOwned(hostPath,workspacePath,input.SourcePath,files=>
         {
@@ -87,7 +102,7 @@ internal sealed class MediaTaskFiles
             JsonSerializer.SerializeToUtf8Bytes(new { inputPath = sourcePath, kind }));
 
     private static MediaTaskFiles CreateOwned(string hostPath, string workspacePath, string sourcePath,
-        Func<MediaTaskFiles, byte[]> createPayload)
+        Func<MediaTaskFiles, byte[]> createPayload, long maxInputBytes = DefaultMaxInputBytes)
     {
         var files = new MediaTaskFiles();
         try
@@ -97,8 +112,8 @@ internal sealed class MediaTaskFiles
             LocalPath(hostPath);
             LocalPath(workspacePath);
             files.source = SafeFile.Open(sourcePath);
-            if (files.source.Stream!.Length is <= 0 or > 32L * 1024 * 1024)
-                throw new IOException("Native media source must be nonempty and at most 32 MiB.");
+            if (files.source.Stream!.Length <= 0 || files.source.Stream!.Length > maxInputBytes)
+                throw new IOException($"Native media source must be nonempty and at most {maxInputBytes / (1024 * 1024)} MiB.");
             files.host = SafeFile.Open(hostPath);
             files.workspace = SafeFile.Open(workspacePath, directory: true);
             var path = Path.Combine(workspacePath, "media-" + Guid.NewGuid().ToString("N"));

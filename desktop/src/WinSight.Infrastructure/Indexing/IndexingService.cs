@@ -35,6 +35,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
     }
 
     private const int MaxWalkEntries = 250000;
+    private const int EmbeddingBatchSize = 16;
     private sealed class EmbeddingDependencyException(Exception cause, string? mediaSafeMessage = null)
         : IOException(mediaSafeMessage ?? "Embedding service failed: " + Describe(cause), cause);
     private sealed record Candidate(string Path, string Kind, long Size, double Mtime, string? Skip);
@@ -531,7 +532,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
             }
             var succeeded = 0;
             foreach (var group in jobs.GroupBy(j => (j.Input.Operation, j.Input.Budget)))
-            foreach (var batch in group.Chunk(2))
+            foreach (var batch in group.Chunk(EmbeddingBatchSize))
             {
                 token.ThrowIfCancellationRequested();
                 IReadOnlyList<EmbeddingResult> vectors;

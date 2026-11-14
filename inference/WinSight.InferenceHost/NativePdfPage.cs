@@ -33,11 +33,17 @@ internal static partial class NativeMediaCommand
         var outputPath = ValidateLocalPath(fields["outputDirectory"].GetString()!, GetDriveType);
         ValidateAncestors(outputPath, includeLeaf: false);
         if (Path.Exists(outputPath)) throw new IOException("PDF output directory must be new.");
-        using var sourcePin = OpenPinnedFile(sourcePath, MaxInputBytes);
+        using var sourcePin = OpenPinnedFile(sourcePath, MaxPreviewInputBytes);
         var source = await StorageFile.GetFileFromPathAsync(sourcePath).AsTask(token);
         var document = await PdfDocument.LoadFromFileAsync(source).AsTask(token);
         if (number > document.PageCount) throw new ArgumentOutOfRangeException(nameof(number), "PDF page is outside the source.");
         using var page = document.GetPage((uint)(number - 1));
+        var (width, height) = await RenderPdfPageToOutputAsync(page, edge, outputPath, token);
+        return new(1, sourcePath, number, document.PageCount, width, height, PdfRenderPolicy, "page.png");
+    }
+
+    internal static async Task<(uint Width, uint Height)> RenderPdfPageToOutputAsync(PdfPage page, int edge, string outputPath, CancellationToken token, bool createDirectory = true)
+    {
         var size = page.Size;
         if (!double.IsFinite(size.Width) || !double.IsFinite(size.Height) || size.Width <= 0 || size.Height <= 0)
             throw new InvalidDataException("PDF page has invalid display dimensions.");
@@ -65,7 +71,9 @@ internal static partial class NativeMediaCommand
         using var bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore,
             new BitmapTransform { ScaledWidth = width, ScaledHeight = height }, ExifOrientationMode.IgnoreExifOrientation,
             ColorManagementMode.DoNotColorManage).AsTask(token);
-        var folder = await CreateOutputAsync(outputPath, token);
+        var folder = createDirectory
+            ? await CreateOutputAsync(outputPath, token)
+            : await StorageFolder.GetFolderFromPathAsync(outputPath).AsTask(token);
         var output = await folder.CreateFileAsync("page.png", CreationCollisionOption.FailIfExists).AsTask(token);
         using (var stream = await output.OpenAsync(FileAccessMode.ReadWrite).AsTask(token))
         {
@@ -74,7 +82,7 @@ internal static partial class NativeMediaCommand
             await encoder.FlushAsync().AsTask(token);
         }
         token.ThrowIfCancellationRequested();
-        return new(1, sourcePath, number, document.PageCount, width, height, PdfRenderPolicy, "page.png");
+        return (width, height);
     }
 
     private static void ValidatePdfRaster(IRandomAccessStream stream, BitmapDecoder decoder)

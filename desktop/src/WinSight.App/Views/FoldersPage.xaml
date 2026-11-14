@@ -9,199 +9,212 @@
     <ScrollViewer Padding="24,16,24,24">
         <ContentControl IsEnabled="{x:Bind ViewModel.IsInitialized, Mode=OneWay}"
                         IsTabStop="False" HorizontalContentAlignment="Stretch">
-        <StackPanel Spacing="24" MaxWidth="800" HorizontalAlignment="Left">
-            <!-- Header -->
-            <StackPanel Spacing="4">
-                <TextBlock Text="搜索目录管理" Style="{ThemeResource TitleTextBlockStyle}"/>
-                <TextBlock Text="管理用于即时关键词和多模态语义搜索的本地目录。"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <StackPanel Spacing="20" MaxWidth="{StaticResource WsPageMaxWidth}" HorizontalAlignment="Left">
+                <!-- Header + Scope Switcher -->
+                <Grid ColumnSpacing="16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="搜索目录管理" Style="{ThemeResource TitleTextBlockStyle}"/>
+                        <TextBlock Text="管理用于即时关键词、多模态语义以及代码仓库检索的本地授权目录。"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
+                    <SelectorBar x:Name="ScopeSelector" Grid.Column="1" VerticalAlignment="Center"
+                                 SelectionChanged="OnScopeSelectorChanged">
+                        <SelectorBarItem Text="文档与媒体" Tag="documents" IsSelected="True"/>
+                        <SelectorBarItem Text="代码仓库 (code:)" Tag="code"/>
+                    </SelectorBar>
+                </Grid>
+
+                <!-- Primary Card: Indexed Folders Section (Supports Drag & Drop) -->
+                <Border Style="{StaticResource WsCardStyle}"
+                        AllowDrop="True" DragOver="OnFoldersDragOver" Drop="OnFoldersDrop">
+                    <StackPanel Spacing="12">
+                        <Grid>
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Text="{x:Bind ViewModel.CurrentScopeTitle, Mode=OneWay}" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                                <TextBlock Text="{x:Bind ViewModel.CurrentScopeSubtitle, Mode=OneWay}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <Button x:Name="AddFolderButton" Content="添加目录"
+                                    AutomationProperties.AutomationId="AddFolderButton"
+                                    Click="OnAddFolderClick"
+                                    HorizontalAlignment="Right" VerticalAlignment="Center"
+                                    CornerRadius="6" Padding="14,7"
+                                    Style="{ThemeResource AccentButtonStyle}"/>
+                        </Grid>
+
+                        <ListView x:Name="FoldersListView"
+                                  ItemsSource="{x:Bind ViewModel.CurrentFolders, Mode=OneWay}"
+                                  SelectionMode="Single"
+                                  BorderThickness="1"
+                                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                  CornerRadius="8"
+                                  MinHeight="110"
+                                  MaxHeight="280"
+                                  Padding="6">
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="x:String">
+                                    <Border Style="{StaticResource WsSubCardStyle}" Padding="12,8" Margin="0,3">
+                                        <Grid ColumnSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Border Background="{ThemeResource AccentFillColorTertiaryBrush}" CornerRadius="6" Width="32" Height="32">
+                                                <FontIcon Glyph="&#xED25;" FontSize="15" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock Text="{x:Bind}" Style="{ThemeResource BodyStrongTextBlockStyle}" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Text="已授权本地索引根目录" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                            </StackPanel>
+                                            <Button Grid.Column="2" CornerRadius="6" Click="OnOpenFolderClick" Tag="{x:Bind}"
+                                                    ToolTipService.ToolTip="在资源管理器中打开">
+                                                <FontIcon Glyph="&#xE838;" FontSize="13"/>
+                                            </Button>
+                                            <Button Grid.Column="3" Content="移除" CornerRadius="6" Click="OnRemoveFolderClick" Tag="{x:Bind}"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
+                </Border>
+
+                <!-- Background Indexing & Confirmation Card -->
+                <Border Style="{StaticResource WsCardStyle}">
+                    <StackPanel Spacing="12">
+                        <Grid ColumnSpacing="16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Spacing="4" VerticalAlignment="Center">
+                                <TextBlock Text="后台实时监听与自动增量同步" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                                <TextBlock Text="在系统空闲时自动监听已授权目录的文件变动并静默更新索引。"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+
+                            <ToggleSwitch Grid.Column="1"
+                                          IsOn="{x:Bind ViewModel.BackgroundIndexingEnabled, Mode=TwoWay}"
+                                          OnContent="已启用"
+                                          OffContent="已禁用"
+                                          VerticalAlignment="Center"/>
+                        </Grid>
+
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{x:Bind ViewModel.MonitoringStatusText, Mode=OneWay}"
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                       VerticalAlignment="Center"/>
+                            <Button Grid.Column="1"
+                                    Content="确认目录并应用监听配置"
+                                    Click="OnConfirmFoldersClick"
+                                    CornerRadius="6"
+                                    Style="{ThemeResource AccentButtonStyle}"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- Exclusion Rules Card (Skipped Subfolders & Extensions) -->
+                <Border Style="{StaticResource WsCardStyle}">
+                    <StackPanel Spacing="18">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="跳过的子目录" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="NewSkippedBox" PlaceholderText="输入要排除的子目录完整路径，或点击右侧浏览…"/>
+                                <Button Grid.Column="1" Content="浏览目录" CornerRadius="6" Click="OnBrowseSkippedClick"/>
+                                <Button Grid.Column="2" Content="添加跳过" CornerRadius="6" Click="OnAddSkippedClick"/>
+                            </Grid>
+
+                            <ListView ItemsSource="{x:Bind ViewModel.CurrentSkipped, Mode=OneWay}"
+                                      SelectionMode="Single"
+                                      BorderThickness="1"
+                                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                      CornerRadius="6"
+                                      MinHeight="64"
+                                      MaxHeight="150">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate x:DataType="x:String">
+                                        <Grid Padding="8,4" ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{x:Bind}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                            <Button Grid.Column="1" Content="移除" CornerRadius="6" Click="OnRemoveSkippedClick" Tag="{x:Bind}"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </StackPanel>
+
+                        <StackPanel Spacing="10" Visibility="{x:Bind BoolToVisibility(ViewModel.ShowExtensionExclusions), Mode=OneWay}">
+                            <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+                            <TextBlock Text="排除的文件扩展名" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="NewExtBox" PlaceholderText="输入要忽略的扩展名，如 .tmp, .bak, .log…"/>
+                                <Button Grid.Column="1" Content="添加扩展名" CornerRadius="6" Click="OnAddSkipTypeClick"/>
+                            </Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock Text="常用建议：" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center"/>
+                                <Button Content="+ .tmp" Tag=".tmp" Click="OnPresetExtClick" CornerRadius="10" Padding="8,2" FontSize="11"/>
+                                <Button Content="+ .log" Tag=".log" Click="OnPresetExtClick" CornerRadius="10" Padding="8,2" FontSize="11"/>
+                                <Button Content="+ .bak" Tag=".bak" Click="OnPresetExtClick" CornerRadius="10" Padding="8,2" FontSize="11"/>
+                                <Button Content="+ .cache" Tag=".cache" Click="OnPresetExtClick" CornerRadius="10" Padding="8,2" FontSize="11"/>
+                            </StackPanel>
+
+                            <ListView ItemsSource="{x:Bind ViewModel.SkipTypes, Mode=OneWay}"
+                                      SelectionMode="Single"
+                                      BorderThickness="1"
+                                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                      CornerRadius="6"
+                                      MinHeight="64"
+                                      MaxHeight="140">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate x:DataType="x:String">
+                                        <Grid Padding="8,4" ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{x:Bind}" VerticalAlignment="Center" FontFamily="Consolas"/>
+                                            <Button Grid.Column="1" Content="移除" CornerRadius="6" Click="OnRemoveSkipTypeClick" Tag="{x:Bind}"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Status Notice -->
+                <InfoBar IsOpen="{x:Bind HasStatus(ViewModel.StatusMessage), Mode=OneWay}"
+                         Severity="Informational"
+                         Message="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                         IsClosable="False"/>
             </StackPanel>
-
-            <!-- Primary Card: Indexed Folders Section -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1" CornerRadius="10" Padding="20">
-                <StackPanel Spacing="12">
-                    <Grid>
-                        <StackPanel VerticalAlignment="Center" Spacing="2">
-                            <TextBlock Text="已授权索引目录" Style="{ThemeResource SubtitleTextBlockStyle}"/>
-                            <TextBlock Text="WinSight 仅对下方显式授权的目录执行全文与多模态向量检索。"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                        </StackPanel>
-                        <Button x:Name="AddFolderButton" Content="添加目录"
-                                AutomationProperties.AutomationId="AddFolderButton"
-                                Click="OnAddFolderClick"
-                                HorizontalAlignment="Right" VerticalAlignment="Center"
-                                CornerRadius="6" Padding="14,7"
-                                Style="{ThemeResource AccentButtonStyle}"/>
-                    </Grid>
-
-                    <ListView x:Name="FoldersListView"
-                              ItemsSource="{x:Bind ViewModel.Folders, Mode=OneWay}"
-                              SelectionMode="Single"
-                              BorderThickness="1"
-                              BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                              CornerRadius="8"
-                              MinHeight="110"
-                              MaxHeight="260"
-                              Padding="6">
-                        <ListView.ItemTemplate>
-                            <DataTemplate x:DataType="x:String">
-                                <Border Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                        BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,3">
-                                    <Grid ColumnSpacing="12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <Border Background="{ThemeResource AccentFillColorTertiaryBrush}" CornerRadius="6" Width="34" Height="34">
-                                            <FontIcon Glyph="&#xED25;" FontSize="16" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </Border>
-                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
-                                            <TextBlock Text="{x:Bind}" Style="{ThemeResource BodyStrongTextBlockStyle}" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Text="本地已授权多模态索引根目录" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                                        </StackPanel>
-                                        <Button Grid.Column="2"
-                                                Content="移除"
-                                                CornerRadius="6"
-                                                Click="OnRemoveFolderClick"
-                                                Tag="{x:Bind}"/>
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
-                </StackPanel>
-            </Border>
-
-            <!-- Background Indexing & Confirmation Card -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="10"
-                    Padding="20">
-                <StackPanel Spacing="12">
-                    <Grid ColumnSpacing="16">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <StackPanel Spacing="4" VerticalAlignment="Center">
-                            <TextBlock Text="后台实时监听与自动增量同步" Style="{ThemeResource SubtitleTextBlockStyle}"/>
-                            <TextBlock Text="在系统空闲时自动监听已授权目录的文件变动并静默更新索引。"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                        </StackPanel>
-
-                        <ToggleSwitch Grid.Column="1"
-                                      IsOn="{x:Bind ViewModel.BackgroundIndexingEnabled, Mode=TwoWay}"
-                                      OnContent="已启用"
-                                      OffContent="已禁用"
-                                      VerticalAlignment="Center"/>
-                    </Grid>
-
-                    <Grid ColumnSpacing="12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="{x:Bind ViewModel.MonitoringStatusText, Mode=OneWay}"
-                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
-                                   VerticalAlignment="Center"/>
-                        <Button Grid.Column="1"
-                                Content="确认目录并应用监听配置"
-                                Click="OnConfirmFoldersClick"
-                                CornerRadius="6"
-                                Style="{ThemeResource AccentButtonStyle}"/>
-                    </Grid>
-                </StackPanel>
-            </Border>
-
-            <!-- Exclusion Rules Card (Skipped Subfolders & Extensions) -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1" CornerRadius="10" Padding="20">
-                <StackPanel Spacing="18">
-                    <StackPanel Spacing="10">
-                        <TextBlock Text="跳过的子目录" Style="{ThemeResource SubtitleTextBlockStyle}"/>
-                        <Grid ColumnSpacing="8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="NewSkippedBox" PlaceholderText="输入在已授权目录中要排除的子目录路径..."/>
-                            <Button Grid.Column="1" Content="添加跳过" CornerRadius="6" Click="OnAddSkippedClick"/>
-                        </Grid>
-
-                        <ListView ItemsSource="{x:Bind ViewModel.Skipped, Mode=OneWay}"
-                                  SelectionMode="Single"
-                                  BorderThickness="1"
-                                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                  CornerRadius="6"
-                                  MinHeight="64"
-                                  MaxHeight="150">
-                            <ListView.ItemTemplate>
-                                <DataTemplate x:DataType="x:String">
-                                    <Grid Padding="8,4" ColumnSpacing="12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="{x:Bind}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                        <Button Grid.Column="1" Content="移除" CornerRadius="6" Click="OnRemoveSkippedClick" Tag="{x:Bind}"/>
-                                    </Grid>
-                                </DataTemplate>
-                            </ListView.ItemTemplate>
-                        </ListView>
-                    </StackPanel>
-
-                    <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
-
-                    <StackPanel Spacing="10">
-                        <TextBlock Text="排除的文件扩展名" Style="{ThemeResource SubtitleTextBlockStyle}"/>
-                        <Grid ColumnSpacing="8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="NewExtBox" PlaceholderText="输入要忽略的扩展名，如 .tmp, .bak, .log..."/>
-                            <Button Grid.Column="1" Content="添加扩展名" CornerRadius="6" Click="OnAddSkipTypeClick"/>
-                        </Grid>
-
-                        <ListView ItemsSource="{x:Bind ViewModel.SkipTypes, Mode=OneWay}"
-                                  SelectionMode="Single"
-                                  BorderThickness="1"
-                                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                  CornerRadius="6"
-                                  MinHeight="64"
-                                  MaxHeight="140">
-                            <ListView.ItemTemplate>
-                                <DataTemplate x:DataType="x:String">
-                                    <Grid Padding="8,4" ColumnSpacing="12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="{x:Bind}" VerticalAlignment="Center" FontFamily="Consolas"/>
-                                        <Button Grid.Column="1" Content="移除" CornerRadius="6" Click="OnRemoveSkipTypeClick" Tag="{x:Bind}"/>
-                                    </Grid>
-                                </DataTemplate>
-                            </ListView.ItemTemplate>
-                        </ListView>
-                    </StackPanel>
-                </StackPanel>
-            </Border>
-
-            <!-- Status Notice -->
-            <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
-                       Style="{ThemeResource CaptionTextBlockStyle}"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-        </StackPanel>
         </ContentControl>
     </ScrollViewer>
 </Page>

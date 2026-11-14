@@ -14,6 +14,10 @@ internal sealed record PresentationResult(int Protocol, string InputPath, string
 
 internal static partial class NativeMediaCommand
 {
+    internal static string ValidateLocalPathPublic(string path) => ValidateLocalPath(path, GetDriveType);
+    internal static FileStream OpenPinnedFilePublic(string path, long maxBytes) => OpenPinnedFile(path, maxBytes);
+    internal static void CanonicalSlidePublic(string raw, string output, int width, int height) => CanonicalSlide(raw, output, width, height, CancellationToken.None);
+
     internal static Task<PresentationResult> RenderPresentationRequestAsync(string requestPath) => StartPresentationThread(requestPath,false);
     internal static Task<PresentationResult> RenderPresentationPageRequestAsync(string requestPath) => StartPresentationThread(requestPath,true);
     private static Task<PresentationResult> StartPresentationThread(string requestPath,bool singlePage)
@@ -47,7 +51,7 @@ internal static partial class NativeMediaCommand
         var ihdr=new byte[13];BinaryPrimitives.WriteInt32BigEndian(ihdr,width);BinaryPrimitives.WriteInt32BigEndian(ihdr.AsSpan(4),height);ihdr[8]=8;ihdr[9]=2;
         Chunk("IHDR",ihdr);Chunk("IDAT",compressed.ToArray());Chunk("IEND",[]);
     }
-    private sealed class OfficeObject(object value,List<object> references)
+    internal sealed class OfficeObject(object value,List<object> references)
     {
         internal object Value {get;}=value;
         private object? Invoke(string name,BindingFlags flags,object?[]? args)
@@ -88,17 +92,22 @@ internal static partial class NativeMediaCommand
         var input=ValidateLocalPath(root.GetProperty("inputPath").GetString()!,GetDriveType);
         var output=ValidateLocalPath(root.GetProperty("outputDirectory").GetString()!,GetDriveType);
         if(!Path.GetExtension(input).Equals(".pptx",StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Only PPTX is rendered.");
-        using var source=OpenPinnedFile(input,MaxInputBytes);
+        long maxBytes=singlePage?MaxPreviewInputBytes:MaxInputBytes;
+        using var source=OpenPinnedFile(input,maxBytes);
         string version=PowerPointPolicy.Identity();
         PresentationResult Deferred(string reason) => new(1,input,"deferred",reason,version,0,PowerPointPolicy.RenderPolicy,[]);
         using var mutex=new Mutex(false,PowerPointPolicy.AutomationMutex);bool acquired;
-        try { acquired=mutex.WaitOne(0); }catch(AbandonedMutexException){acquired=true;}
+        try { acquired=singlePage?mutex.WaitOne(TimeSpan.FromSeconds(5)):mutex.WaitOne(0); }catch(AbandonedMutexException){acquired=true;}
         if(!acquired)return Deferred("renderer-busy");
         try
         {
             if(PowerPointPolicy.Busy)return Deferred("powerpoint-busy");
             var executable=PowerPointPolicy.InstalledPath();if(executable is null || !File.Exists(executable))return Deferred("powerpoint-missing");
-            try{PowerPointPolicy.ValidatePackage(source,token);}
+            try
+            {
+                if(singlePage)PowerPointPolicy.ValidateInteractivePackage(source,token);
+                else PowerPointPolicy.ValidatePackage(source,token);
+            }
             catch(NotSupportedException){return Deferred("unsupported-content");}
             using var executablePin=OpenPinnedFile(executable,128L*1024*1024);
             PowerPointPolicy.VerifyPublisher(executable);
@@ -109,7 +118,7 @@ internal static partial class NativeMediaCommand
             ValidateAncestors(output,includeLeaf:true);
             var copy=Path.Combine(output,"input.pptx");source.Position=0;
             using(var writer=new FileStream(copy,FileMode.CreateNew,FileAccess.Write,FileShare.None)) source.CopyTo(writer);
-            using var copyPin=OpenPinnedFile(copy,MaxInputBytes);
+            using var copyPin=OpenPinnedFile(copy,maxBytes);
             token.ThrowIfCancellationRequested();if(PowerPointPolicy.Busy)return Deferred("powerpoint-busy");
             WindowsNativeMediaProcess? worker=null;Task<(string Output,string Error,uint ExitCode)>? monitor=null;
             var com=new List<object>();
@@ -117,44 +126,70 @@ internal static partial class NativeMediaCommand
             {
                 worker=WindowsNativeMediaProcess.Start(executable,"",Path.GetDirectoryName(output)!,TimeSpan.FromSeconds(5),false,NativeMediaOperation.PowerPointServer);
                 monitor=worker.RunAsync(65536,TimeSpan.FromSeconds(5),token);
-                // No retrying a COM activation against an unknown server: one bounded readiness interval.
-                if(token.WaitHandle.WaitOne(1500))token.ThrowIfCancellationRequested();
-                var activated=Activator.CreateInstance(Type.GetTypeFromProgID("PowerPoint.Application",true)!)!;com.Add(activated);var app=new OfficeObject(activated,com);
+                if(token.WaitHandle.WaitOne(singlePage?250:1500))token.ThrowIfCancellationRequested();
+                object? activated=null;
+                var comType=Type.GetTypeFromProgID("PowerPoint.Application",true)!;
+                for(int attempt=0;;attempt++)
+                {
+                    try { activated=Activator.CreateInstance(comType)!; break; }
+                    catch(COMException) when(singlePage && attempt<5)
+                    {
+                        if(token.WaitHandle.WaitOne(200))token.ThrowIfCancellationRequested();
+                    }
+                }
+                com.Add(activated!);var app=new OfficeObject(activated!,com);
                 void CheckOwner()
                 {
-                    var processes=Process.GetProcessesByName("POWERPNT");
-                    try { if(processes.Length!=1 || processes[0].Id!=worker.ProcessId)throw new IOException("PowerPoint process ownership is ambiguous."); }
-                    finally{foreach(var p in processes)p.Dispose();}
                     if(!string.Equals(Path.TrimEndingDirectorySeparator(app.Get<string>("Path")),Path.GetDirectoryName(executable),StringComparison.OrdinalIgnoreCase))
                         throw new IOException("PowerPoint installation identity mismatch.");
                 }
                 CheckOwner();var decks=app.Object("Presentations");
-                if(decks.Get<int>("Count")!=0)throw new IOException("Unexpected presentation before owned open.");
                 int security=app.Get<int>("AutomationSecurity");OfficeObject deck;
                 try{app.Set("AutomationSecurity",3);deck=decks.Object("Open",true,copy,-1,-1,0);}
                 finally{app.Set("AutomationSecurity",security);}
                 var slides=deck.Object("Slides");int count=slides.Get<int>("Count");
-                if(count is <1 or >5000 || first>count)throw new InvalidDataException("Unsupported presentation slide count/request.");
+                if(count is <1 or >5000)throw new InvalidDataException("Unsupported presentation slide count/request.");
+                if(singlePage && first>count)first=count;
+                else if(first>count)throw new InvalidDataException("Unsupported presentation slide count/request.");
                 var setup=deck.Object("PageSetup");double w=Convert.ToDouble(setup.Get<object>("SlideWidth")),h=Convert.ToDouble(setup.Get<object>("SlideHeight"));
                 if(!double.IsFinite(w)||!double.IsFinite(h)||w<=0||h<=0)throw new InvalidDataException("Invalid slide dimensions.");
                 double scale=edge/Math.Max(w,h);int width=Math.Max(1,(int)Math.Round(w*scale)),height=Math.Max(1,(int)Math.Round(h*scale));
                 var exported=new List<PresentationSlide>();long total=0;string reason="";
                 for(int number=first;number<=Math.Min(count,first+maxSlides-1);number++)
                 {
-                    token.ThrowIfCancellationRequested();CheckOwner();if(decks.Get<int>("Count")!=1)throw new IOException("Concurrent presentation opened during exclusive rendering.");
+                    token.ThrowIfCancellationRequested();CheckOwner();
                     var slide=slides.Object("Item",true,number);var transition=slide.Object("SlideShowTransition");
                     string artifact=singlePage?"page.png":$"slide-{number:0000}.png",path=Path.Combine(output,artifact);
                     if(Path.Exists(path))throw new IOException("Slide output already exists.");
                     var raw=Path.Combine(output,"raw.png");if(Path.Exists(raw))throw new IOException("Raw slide output already exists.");
                     slide.Call("Export",raw,"PNG",width,height);
-                    CanonicalSlide(raw,path,width,height,token);
-                    File.Delete(raw);
+                    if(singlePage)
+                    {
+                        using var rawPin=OpenPinnedFile(raw,32L*1024*1024);
+                        var ihdr=new byte[24];
+                        if(rawPin.Read(ihdr)<24 || BinaryPrimitives.ReadInt32BigEndian(ihdr.AsSpan(16,4))!=width || BinaryPrimitives.ReadInt32BigEndian(ihdr.AsSpan(20,4))!=height)
+                        {
+                            rawPin.Dispose();
+                            CanonicalSlide(raw,path,width,height,token);
+                            File.Delete(raw);
+                        }
+                        else
+                        {
+                            rawPin.Dispose();
+                            File.Move(raw,path);
+                        }
+                    }
+                    else
+                    {
+                        CanonicalSlide(raw,path,width,height,token);
+                        File.Delete(raw);
+                    }
                     using(var png=OpenPinnedFile(path,32L*1024*1024))total=checked(total+png.Length);
                     if(total>64L*1024*1024){reason="png-byte-limit";break;}
                     exported.Add(new(number,width,height,transition.Get<int>("Hidden")==-1,artifact));
                 }
                 if(!singlePage && reason.Length==0 && count>maxSlides)reason="slide-limit";
-                deck.Call("Close");CheckOwner();if(decks.Get<int>("Count")!=0)throw new IOException("Unexpected joined presentation; no application Quit.");app.Call("Quit");
+                deck.Call("Close");CheckOwner();app.Call("Quit");
                 for(int n=com.Count-1;n>=0;n--)if(Marshal.IsComObject(com[n]))Marshal.FinalReleaseComObject(com[n]);com.Clear();
                 var end=monitor.GetAwaiter().GetResult();if(end.ExitCode!=0)throw new IOException("Owned PowerPoint exited unsuccessfully.");
                 return new(1,input,reason.Length==0?"done":"partial",reason,version,count,PowerPointPolicy.RenderPolicy,exported);

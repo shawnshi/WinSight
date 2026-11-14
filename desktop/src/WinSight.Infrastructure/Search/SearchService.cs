@@ -43,12 +43,36 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
             // Older schema5 metadata has no anchors. Exact excerpt checking still occurs after bounded hydration.
             return plan.Matches(path, info, anchor, checkLiterals: false);
         }
-        SearchSnapshot snapshot = repository is SqliteIndexRepository sqlite
-            ? await sqlite.ReadSearchSnapshotAsync(keywordQuery, request.Kind, request.Root, wantSemantic,
+        bool needHeaderInfo = plan.Filters.Any(f => f.Name is "folder1" or "folder2" or "folder3") || (plan.Text.Length == 0 && plan.HasFilters);
+        bool needsSourceAnchors = plan.Filters.Any(f => f.Name is not ("name" or "folder" or "folder1" or "folder2" or "folder3"));
+        CompactSearchSnapshot? compactSnapshot = null;
+        SearchSnapshot? genericSnapshot = null;
+        IReadOnlyDictionary<long, IndexedFile> files;
+        IReadOnlyList<WordEvidence> words;
+        string? profile;
+        if (repository is SqliteIndexRepository sqlite)
+        {
+            compactSnapshot = await sqlite.ReadCompactSearchSnapshotAsync(keywordQuery, request.Kind, request.Root, wantSemantic,
                 request.Mode != SearchMode.Semantic && plan.Text.Length != 0, request.Limit, cancellationToken,
-                authorize, plan.HasFilters ? MatchesSource : null, allHeaders: true).ConfigureAwait(false)
-            : await ReadGenericSnapshot(keywordQuery, request, cancellationToken).ConfigureAwait(false);
-        var files = snapshot.Files.Where(f => InScope(f, request) && (authorize is null || authorize(f.Path))).ToDictionary(f => f.Id);
+                authorize, plan.HasFilters ? MatchesSource : null, allHeaders: true, includeHeaderInfo: needHeaderInfo, needsSourceAnchors: needsSourceAnchors).ConfigureAwait(false);
+            var scoped = new Dictionary<long, IndexedFile>(compactSnapshot.Headers.Count);
+            foreach (var f in compactSnapshot.Headers.Values)
+            {
+                if (InScope(f, request) && (authorize is null || authorize(f.Path)))
+                    scoped[f.Id] = f;
+            }
+            files = scoped;
+            words = compactSnapshot.Words;
+            profile = compactSnapshot.Profile;
+        }
+        else
+        {
+            genericSnapshot = await ReadGenericSnapshot(keywordQuery, request, cancellationToken).ConfigureAwait(false);
+            files = genericSnapshot.Files.Where(f => InScope(f, request) && (authorize is null || authorize(f.Path))).ToDictionary(f => f.Id);
+            words = genericSnapshot.Words;
+            profile = genericSnapshot.Profile;
+        }
+
         float[]? queryVector = null;
         string? notice = null;
         if (wantSemantic)
@@ -56,16 +80,19 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
             try
             {
                 if (embeddings is null) throw new InvalidOperationException("No embedding service configured.");
-                if (string.IsNullOrWhiteSpace(snapshot.Profile)) throw new InvalidDataException("Index has no profile_id; reindex separately.");
-                ValidateProfile(await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false), snapshot.Profile);
-                if (!files.Values.Any(f => f.Segments.Any(s => s.Vector is not null))) throw new InvalidOperationException("Index has no semantic vectors.");
+                if (string.IsNullOrWhiteSpace(profile)) throw new InvalidDataException("Index has no profile_id; reindex separately.");
+                ValidateProfile(await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false), profile);
+                bool hasVectors = compactSnapshot is not null
+                    ? HasVectorsInScope(compactSnapshot.Vectors, files)
+                    : files.Values.Any(f => f.Segments.Any(s => s.Vector is not null));
+                if (!hasVectors) throw new InvalidOperationException("Index has no semantic vectors.");
                 var encoded = await embeddings.EmbedInteractiveAsync([new("text", (code ? "task: code retrieval | query: " : "task: search result | query: ") + plan.Text)], cancellationToken).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (encoded.Count != 1 || encoded[0].Vector is null || encoded[0].Error is not null)
                     throw new InvalidDataException(encoded.Count == 1 ? "Query embedding failed: " + (encoded[0].Error ?? "missing vector") : "Query embedding result count is invalid.");
                 queryVector = encoded[0].Vector;
                 VectorContract.Validate(queryVector!);
-                ValidateProfile(await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false), snapshot.Profile);
+                ValidateProfile(await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false), profile);
             }
             catch (Exception error) when (request.Mode == SearchMode.Hybrid && error is InvalidDataException or IOException or InvalidOperationException or TimeoutException or NotSupportedException)
             {
@@ -83,17 +110,48 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         }
         if (queryVector is not null)
         {
-            // Vectors read from SQLite were validated once when decoded; only foreign repositories need a per-query check.
-            foreach (var group in Semantic(files.Values, queryVector, plan, cancellationToken, validateVectors: repository is not SqliteIndexRepository).GroupBy(s => s.Channel))
+            if (compactSnapshot?.Vectors is { } compactVectors && repository is SqliteIndexRepository sqliteRepo)
             {
-                if (group.Any(s => s.SmallSample)) notice = Append(notice, "Small-sample semantic fallback: fewer than 5 calibration source units in a channel; cosine >= 0.5.");
-                Channel("semantic:" + group.Key, 1, group.Where(s => s.Accepted).OrderByDescending(s => s.Rank)
-                    .ThenBy(s => s.File.Id).Select(s => new Candidate(s.File, s.Segment)));
+                IReadOnlyDictionary<long, IndexedFile> semanticFiles = files;
+                HashSet<long>? allowedSegmentIds = null;
+                if (plan.HasFilters && !plan.HasSegmentLevelFilters)
+                {
+                    var filtered = new Dictionary<long, IndexedFile>();
+                    foreach (var kv in files)
+                        if (plan.Matches(kv.Value.Path, kv.Value.Info, null))
+                            filtered[kv.Key] = kv.Value;
+                    semanticFiles = filtered;
+                }
+                else if (plan.HasSegmentLevelFilters)
+                {
+                    allowedSegmentIds = await sqliteRepo.FilterVectorSegmentsAsync(files, plan, cancellationToken).ConfigureAwait(false);
+                }
+
+                var compactGroups = SemanticCompact(compactVectors, semanticFiles, queryVector, channelLimit, cancellationToken, allowedSegmentIds);
+                var winnerIds = compactGroups.SelectMany(g => g.Winners.Select(w => w.SegmentId)).Distinct().ToArray();
+                var hydrated = await sqliteRepo.HydrateSemanticHitsAsync(winnerIds, cancellationToken).ConfigureAwait(false);
+                foreach (var group in compactGroups)
+                {
+                    if (group.SmallSample) notice = Append(notice, "Small-sample semantic fallback: fewer than 5 calibration source units in a channel; cosine >= 0.5.");
+                    Channel("semantic:" + group.Channel, 1, group.Winners
+                        .Where(w => hydrated.ContainsKey(w.SegmentId))
+                        .Select(w => { var h = hydrated[w.SegmentId]; return new Candidate(h.File, h.Segment); }));
+                }
+            }
+            else
+            {
+                // Vectors read from SQLite were validated once when decoded; only foreign repositories need a per-query check.
+                foreach (var group in Semantic(files.Values, queryVector, plan, cancellationToken, validateVectors: repository is not SqliteIndexRepository).GroupBy(s => s.Channel))
+                {
+                    if (group.Any(s => s.SmallSample)) notice = Append(notice, "Small-sample semantic fallback: fewer than 5 calibration source units in a channel; cosine >= 0.5.");
+                    Channel("semantic:" + group.Key, 1, group.Where(s => s.Accepted).OrderByDescending(s => s.Rank)
+                        .ThenBy(s => s.File.Id).Select(s => new Candidate(s.File, s.Segment)));
+                }
             }
         }
         if (request.Mode != SearchMode.Semantic || plan.Text.Length == 0)
         {
-            Channel("keyword", 2, snapshot.Words.Where(w => files.ContainsKey(w.FileId) && w.Coverage >= 0.5)
+            Channel("keyword", 2, words.Where(w => files.ContainsKey(w.FileId) && w.Coverage >= 0.5)
                 .OrderByDescending(w => w.Coverage).ThenBy(w => w.Rank).ThenBy(w => w.FileId)
                 .Where(w => plan.Matches(files[w.FileId].Path, files[w.FileId].Info, w.Segment.Source, w.Segment.Excerpt, checkLiterals: !w.ExactLiteralsVerified))
                 .Select(w => new Candidate(files[w.FileId], w.Segment)));
@@ -293,6 +351,82 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         }
         return result;
     }
+
+    private readonly record struct CompactWinner(long SegmentId, long FileId, double Rank);
+    private sealed record CompactChannelGroup(string Channel, bool SmallSample, IReadOnlyList<CompactWinner> Winners);
+
+    private static bool HasVectorsInScope(CompactVectorIndex? index, IReadOnlyDictionary<long, IndexedFile> files)
+    {
+        if (index is null || index.Count == 0 || files.Count == 0) return false;
+        for (int c = 0; c < index.ChunkCount; c++)
+        {
+            var (_, metas, len) = index.GetChunk(c);
+            for (int i = 0; i < len; i++)
+                if (metas[i].FileId >= 0 && files.ContainsKey(metas[i].FileId))
+                    return true;
+        }
+        return false;
+    }
+
+    private static List<CompactChannelGroup> SemanticCompact(CompactVectorIndex index, IReadOnlyDictionary<long, IndexedFile> files, float[] query, int channelLimit, CancellationToken ct, HashSet<long>? allowedSegmentIds = null)
+    {
+        var best = new Dictionary<(long FileId, ulong UnitHash, byte ChannelId), (long SegmentId, double Cosine)>();
+        for (int c = 0; c < index.ChunkCount; c++)
+        {
+            var (vecs, metas, len) = index.GetChunk(c);
+            for (int i = 0; i < len; i++)
+            {
+                if ((i & 255) == 0) ct.ThrowIfCancellationRequested();
+                ref readonly var m = ref metas[i];
+                if (m.FileId < 0 || !files.ContainsKey(m.FileId)) continue;
+                if (allowedSegmentIds is not null && !allowedSegmentIds.Contains(m.SegmentId)) continue;
+                double cosine = CompactVectorIndex.DotInt8(vecs.AsSpan(i * CompactVectorIndex.Dimension, CompactVectorIndex.Dimension), m.Scale, query);
+                var key = (m.FileId, m.UnitHash, m.ChannelId);
+                if (!best.TryGetValue(key, out var old) || cosine > old.Cosine)
+                    best[key] = (m.SegmentId, cosine);
+            }
+        }
+
+        var byChannel = new Dictionary<byte, List<(long SegmentId, long FileId, double Cosine)>>();
+        foreach (var kv in best)
+        {
+            if (!byChannel.TryGetValue(kv.Key.ChannelId, out var list))
+                byChannel[kv.Key.ChannelId] = list = [];
+            list.Add((kv.Value.SegmentId, kv.Key.FileId, kv.Value.Cosine));
+        }
+
+        var groups = new List<CompactChannelGroup>(byChannel.Count);
+        foreach (var kv in byChannel)
+        {
+            var list = kv.Value;
+            bool small = list.Count < MinCalibratedUnits;
+            double mean = 0;
+            foreach (var item in list) mean += item.Cosine;
+            mean /= list.Count;
+            double variance = 0;
+            foreach (var item in list) variance += (item.Cosine - mean) * (item.Cosine - mean);
+            double deviation = Math.Sqrt(variance / list.Count);
+            double threshold = SignificanceThreshold(list.Count);
+
+            var winners = new List<CompactWinner>();
+            foreach (var item in list)
+            {
+                double rank = small ? item.Cosine : deviation > 1e-12 ? (item.Cosine - mean) / deviation : 0;
+                bool accepted = small ? item.Cosine >= SmallSampleCosineFloor : rank >= threshold;
+                if (accepted) winners.Add(new CompactWinner(item.SegmentId, item.FileId, rank));
+            }
+            if (winners.Count == 0) continue;
+            winners.Sort((a, b) =>
+            {
+                int cmp = b.Rank.CompareTo(a.Rank);
+                return cmp != 0 ? cmp : a.FileId.CompareTo(b.FileId);
+            });
+            if (winners.Count > channelLimit) winners.RemoveRange(channelLimit, winners.Count - channelLimit);
+            string channelName = kv.Key < index.Channels.Count ? index.Channels[kv.Key] : "text";
+            groups.Add(new CompactChannelGroup(channelName, small, winners));
+        }
+        return groups;
+    }
 }
 
 /// <summary>SIMD dot product over embedding vectors; the query path scans every candidate vector.</summary>
@@ -326,5 +460,20 @@ internal static class VectorMath
         double total = System.Numerics.Vector.Sum(sum);
         for (; i < left.Length; i++) total += (double)left[i] * right[i];
         return total;
+    }
+
+    /// <summary>Dot product between a normalized float query vector and an int8 scalar-quantized vector blob.</summary>
+    internal static double DotInt8(ReadOnlySpan<float> query, ReadOnlySpan<byte> quantized)
+    {
+        if (query.Length != VectorContract.Dimension || quantized.Length != VectorContract.Int8ByteCount)
+            throw new ArgumentException("Vector dimensions mismatch for int8 dot product.");
+        float scale = System.Buffers.Binary.BinaryPrimitives.ReadSingleLittleEndian(quantized[..4]);
+        var qBytes = quantized[4..];
+        double sum = 0;
+        for (int i = 0; i < VectorContract.Dimension; i++)
+        {
+            sum += (double)query[i] * (sbyte)qBytes[i];
+        }
+        return sum * scale;
     }
 }

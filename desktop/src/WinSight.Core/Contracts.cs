@@ -131,7 +131,13 @@ public interface IIndexRepository : IAsyncDisposable
         var files = await ReadFilesAsync(cancellationToken).ConfigureAwait(false);
         return files.Sum(file => (long)file.Segments.Count(segment => segment.Vector is not null));
     }
+    Task<IReadOnlyList<PendingEmbeddingSegment>> ReadPendingEmbeddingSegmentsAsync(int limit, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<PendingEmbeddingSegment>>([]);
+    Task<int> SaveBackfilledVectorsAsync(IReadOnlyList<SegmentVectorUpdate> updates, CancellationToken cancellationToken = default) =>
+        Task.FromResult(0);
 }
+public sealed record PendingEmbeddingSegment(long Id, long FileId, string Path, string Title, string Excerpt, string Kind);
+public sealed record SegmentVectorUpdate(long Id, long FileId, float[] Vector);
 public interface IEmbeddingService : IAsyncDisposable
 {
     Task<EmbeddingInfo> GetInfoAsync(CancellationToken cancellationToken = default);
@@ -218,8 +224,11 @@ public interface ISourcePreview : IAsyncDisposable
     string Notice { get; }
     bool SourceCurrent { get; }
     bool CanNavigate { get; }
+    int PageNumber => 1;
+    int? TotalPages => null;
 }
 public sealed record SourceNavigationResult(bool Exact, string Message, int? ProcessId = null);
+public sealed record StorageMetrics(long DatabaseBytes, long TotalSegments, long EmbeddedSegments, long PreviewCacheBytes, int PreviewCacheFiles);
 
 /// <summary>Reads and writes persisted settings.</summary>
 public interface ISettingsBackend
@@ -236,6 +245,8 @@ public interface ISearchBackend
     Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancellationToken = default);
     Task<ISourcePreview> PreviewSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>
         Task.FromException<ISourcePreview>(new NotSupportedException("Source preview is unavailable in this backend."));
+    Task<ISourcePreview> PreviewSourcePageAsync(SearchHit hit, int pageNumber, bool code = false, CancellationToken cancellationToken = default) =>
+        PreviewSourceAsync(hit, code, cancellationToken);
     Task<SourceNavigationResult> NavigateSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>
         Task.FromException<SourceNavigationResult>(new NotSupportedException("Precise source navigation is unavailable in this backend."));
 }
@@ -253,6 +264,11 @@ public interface IIndexingBackend
     Task<int> ResetFailedFilesAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
     Task SetIndexingPausedAsync(bool paused, CancellationToken cancellationToken = default);
     Task<string> DescribeVectorScaleAsync(CancellationToken cancellationToken = default) => Task.FromResult(string.Empty);
+    Task<StorageMetrics?> GetStorageMetricsAsync(CancellationToken cancellationToken = default) => Task.FromResult<StorageMetrics?>(null);
+    Task<int> RunVectorBackfillAsync(int maxSegments = 0, IProgress<(int Processed, int Remaining)>? progress = null, CancellationToken cancellationToken = default) => Task.FromResult(0);
+    Task<int> ClearPreviewCacheAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
+    Task<int> CompactDatabaseAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
+    Task<int> CountFolderFilesAsync(string root, CancellationToken cancellationToken = default) => Task.FromResult(-1);
 }
 
 /// <summary>Inference providers, probes and the model inventory.</summary>
@@ -299,6 +315,9 @@ public interface IDesktopBackend : ISettingsBackend, ISearchBackend, IIndexingBa
 public static class VectorContract
 {
     public const int Dimension = 768;
+    public const int Float16ByteCount = Dimension * sizeof(short); // 1536
+    public const int Int8ByteCount = Dimension + sizeof(float);    // 772 (4-byte float scale + 768 sbytes)
+
     public static void Validate(ReadOnlySpan<float> vector)
     {
         if (vector.Length != Dimension) throw new InvalidDataException("Embedding dimension must be 768.");
@@ -310,5 +329,52 @@ public static class VectorContract
         }
         if (norm < 1e-12 || Math.Abs(Math.Sqrt(norm) - 1) > 0.025)
             throw new InvalidDataException("Embedding must be nonzero and L2-normalized.");
+    }
+
+    /// <summary>Symmetric scalar quantization from L2-normalized float32 into int8 (4-byte scale + 768 sbytes, 772 bytes total).</summary>
+    public static byte[] QuantizeInt8(ReadOnlySpan<float> vector)
+    {
+        Validate(vector);
+        var bytes = new byte[Int8ByteCount];
+        float maxVal = 0;
+        for (int i = 0; i < Dimension; i++)
+        {
+            float abs = Math.Abs(vector[i]);
+            if (abs > maxVal) maxVal = abs;
+        }
+        float scale = maxVal <= 1e-12f ? 1.0f / 127.0f : maxVal / 127.0f;
+        System.Buffers.Binary.BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(0, 4), scale);
+        float invScale = 1.0f / scale;
+        for (int i = 0; i < Dimension; i++)
+        {
+            bytes[4 + i] = (byte)(sbyte)Math.Clamp((int)Math.Round(vector[i] * invScale), -127, 127);
+        }
+        return bytes;
+    }
+
+    /// <summary>Dequantizes a 772-byte int8 vector blob back to normalized float32 with guaranteed L2 contract compliance.</summary>
+    public static float[] DequantizeInt8(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length != Int8ByteCount)
+            throw new InvalidDataException($"Int8 vector blob must be {Int8ByteCount} bytes (4-byte scale + 768 bytes).");
+        float scale = System.Buffers.Binary.BinaryPrimitives.ReadSingleLittleEndian(bytes[..4]);
+        if (!float.IsFinite(scale) || scale <= 0)
+            throw new InvalidDataException("Invalid vector quantization scale.");
+        var vector = new float[Dimension];
+        double normSq = 0;
+        for (int i = 0; i < Dimension; i++)
+        {
+            sbyte q = (sbyte)bytes[4 + i];
+            float val = q * scale;
+            vector[i] = val;
+            normSq += (double)val * val;
+        }
+        if (normSq > 1e-12)
+        {
+            float invNorm = (float)(1.0 / Math.Sqrt(normSq));
+            for (int i = 0; i < Dimension; i++) vector[i] *= invNorm;
+        }
+        Validate(vector);
+        return vector;
     }
 }

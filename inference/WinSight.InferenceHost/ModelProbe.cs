@@ -29,6 +29,27 @@ internal static class ModelProbe
             LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING
         };
         options.AddSessionConfigEntry("session.intra_op.allow_spinning", "0");
+        options.AddSessionConfigEntry("session.inter_op.allow_spinning", "0");
+        return options;
+    }
+
+    /// <summary>
+    /// Session options for GPU (DirectML) and NPU (VitisAI) execution.
+    /// Dedicated accelerators execute kernels asynchronously on hardware queues, requiring only a single
+    /// coordination thread. This completely prevents worker thread busy-spinning and eliminates idle CPU consumption.
+    /// </summary>
+    internal static SessionOptions AcceleratorOptions()
+    {
+        var options = new SessionOptions
+        {
+            ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
+            GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+            InterOpNumThreads = 1,
+            IntraOpNumThreads = 1,
+            LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING
+        };
+        options.AddSessionConfigEntry("session.intra_op.allow_spinning", "0");
+        options.AddSessionConfigEntry("session.inter_op.allow_spinning", "0");
         return options;
     }
 

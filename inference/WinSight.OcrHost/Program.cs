@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.ML.OnnxRuntime;
 using Microsoft.Win32.SafeHandles;
 using RapidOcrNet;
 using SkiaSharp;
@@ -58,9 +59,12 @@ internal static class Program
             using var models = PinnedModels.Open();
             phase = "engine";
             // Application runtime policy, not a change to the vendored recognition algorithm.
-            // This bounded CPU setting is included in the pinned model/runtime profile.
-            using var options = RapidOcr.GetDefaultSessionOptions(4);
+            // Bounded CPU threads scaled to physical/logical topology (4-8 threads) for high throughput on multi-core Zen/Core architectures.
+            int cpuThreads = Math.Clamp(Environment.ProcessorCount / 2, 4, 8);
+            using var options = RapidOcr.GetDefaultSessionOptions(cpuThreads);
             options.AppendExecutionProvider_CPU(0);
+            options.EnableMemoryPattern = true;
+            options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
             using var engine = new RapidOcr();
             engine.InitModels(models.ModelSet, options);
             var result = engine.Detect(bitmap, RapidOcrOptions.PPOCRv6);

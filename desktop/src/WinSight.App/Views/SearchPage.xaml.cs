@@ -22,6 +22,8 @@ public sealed partial class SearchPage : Page
     private readonly SearchLayoutStore layout;
     private const double CompactWidth = 700;
     private bool compact, showingDetail;
+    private int heroCurrentPage = 1;
+    private int? heroTotalPages;
 
     /// <summary>Hosts that drive the page headlessly (tests) turn the one-time tip off.</summary>
     internal bool FirstRunTipEnabled { get; set; } = true;
@@ -117,7 +119,9 @@ public sealed partial class SearchPage : Page
         catch (Exception error) { AppLog.Warn("stage animation skipped", error); }
     }
 
-    private async void UpdateHeroStage(SearchItemViewModel? selected)
+    private void UpdateHeroStage(SearchItemViewModel? selected) => LoadHeroStageAsync(selected, overridePage: null);
+
+    private async void LoadHeroStageAsync(SearchItemViewModel? selected, int? overridePage)
     {
         AnimateStageIn();
         heroPreviewCts?.Cancel();
@@ -128,15 +132,29 @@ public sealed partial class SearchPage : Page
         ApplyQueryHighlights(CanvasExcerptBlock, ViewModel.Query);
         ApplyQueryHighlights(CodeExcerptBlock, ViewModel.Query);
 
+        if (!overridePage.HasValue)
+        {
+            heroCurrentPage = 1;
+            heroTotalPages = null;
+            if (HeroPageStepper != null) HeroPageStepper.Visibility = Visibility.Collapsed;
+        }
+
         if (DocumentRasterImage != null)
         {
             DocumentRasterImage.Source = null;
-            DocumentRasterImage.Visibility = Visibility.Collapsed;
+            if (DocumentRasterBorder != null) DocumentRasterBorder.Visibility = Visibility.Collapsed;
+            else DocumentRasterImage.Visibility = Visibility.Collapsed;
+            if (HeroDocumentCard != null)
+            {
+                HeroDocumentCard.Padding = new Thickness(20, 16, 20, 16);
+                HeroDocumentCard.MaxHeight = 340;
+            }
         }
         if (DocumentExcerptScroll != null)
         {
             DocumentExcerptScroll.Visibility = Visibility.Visible;
         }
+        if (PreviewLoadingPill != null) PreviewLoadingPill.Visibility = Visibility.Collapsed;
 
         if (selected is null)
         {
@@ -162,13 +180,34 @@ public sealed partial class SearchPage : Page
         if (selected.IsDocumentVisibility == Visibility.Visible && DocumentRasterImage != null)
         {
             ISourcePreview? preview = null;
+            using var loadingBadgeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             try
             {
-                // Rendering a page spawns a media process and holds the shared preview gate, so wait for the selection to settle
-                // instead of rendering every row an arrow-key scroll passes over.
-                await Task.Delay(250, ct);
-                preview = await ViewModel.PreviewAsync(selected, ct);
+                await Task.Delay(overridePage.HasValue ? 20 : 120, ct);
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(250, loadingBadgeCts.Token);
+                        DispatcherQueue.TryEnqueue(() =>
+                        {
+                            if (!loadingBadgeCts.IsCancellationRequested && PreviewLoadingPill != null)
+                                PreviewLoadingPill.Visibility = Visibility.Visible;
+                        });
+                    }
+                    catch (OperationCanceledException) { }
+                }, loadingBadgeCts.Token);
+
+                preview = overridePage.HasValue
+                    ? await ViewModel.PreviewPageAsync(selected, overridePage.Value, ct)
+                    : await ViewModel.PreviewAsync(selected, ct);
+                loadingBadgeCts.Cancel();
+                if (PreviewLoadingPill != null) PreviewLoadingPill.Visibility = Visibility.Collapsed;
                 if (ct.IsCancellationRequested) return;
+
+                heroCurrentPage = preview.PageNumber;
+                heroTotalPages = preview.TotalPages;
+                UpdateHeroPageStepper();
 
                 if (preview.SourceCurrent && preview.RasterPath is { } rasterPath && File.Exists(rasterPath))
                 {
@@ -182,8 +221,20 @@ public sealed partial class SearchPage : Page
                     if (ct.IsCancellationRequested) return;
 
                     DocumentRasterImage.Source = bitmap;
-                    DocumentRasterImage.Visibility = Visibility.Visible;
+                    if (DocumentRasterBorder != null) DocumentRasterBorder.Visibility = Visibility.Visible;
+                    else DocumentRasterImage.Visibility = Visibility.Visible;
                     if (DocumentExcerptScroll != null) DocumentExcerptScroll.Visibility = Visibility.Collapsed;
+                    if (HeroDocumentCard != null)
+                    {
+                        HeroDocumentCard.Padding = new Thickness(12, 10, 12, 10);
+                        HeroDocumentCard.MaxHeight = 740;
+                    }
+                    FitDocumentRasterToViewport();
+                    DocumentRasterScroll?.ChangeView(0, 0, 1.0f, true);
+                }
+                else if (!string.IsNullOrWhiteSpace(preview.Excerpt) && CanvasExcerptBlock != null)
+                {
+                    CanvasExcerptBlock.Text = preview.Excerpt;
                 }
             }
             catch (OperationCanceledException) { }
@@ -193,6 +244,8 @@ public sealed partial class SearchPage : Page
             }
             finally
             {
+                loadingBadgeCts.Cancel();
+                if (PreviewLoadingPill != null) PreviewLoadingPill.Visibility = Visibility.Collapsed;
                 // The preview holds a pin on the source file and a rendered artifact; the decoded bitmap no longer needs either.
                 if (preview is not null)
                 {
@@ -200,6 +253,48 @@ public sealed partial class SearchPage : Page
                     catch (Exception ex) { AppLog.Warn("Hero preview lease release failed", ex); }
                 }
             }
+        }
+    }
+
+    private void UpdateHeroPageStepper()
+    {
+        if (HeroPageStepper is null || HeroPageText is null || HeroPrevPageBtn is null || HeroNextPageBtn is null) return;
+        if (heroTotalPages is > 1)
+        {
+            HeroPageStepper.Visibility = Visibility.Visible;
+            HeroPageText.Text = $"{heroCurrentPage} / {heroTotalPages.Value}";
+            HeroPrevPageBtn.IsEnabled = heroCurrentPage > 1;
+            HeroNextPageBtn.IsEnabled = heroCurrentPage < heroTotalPages.Value;
+        }
+        else
+        {
+            HeroPageStepper.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void OnHeroPrevPageClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SelectedItem is { } selected && heroCurrentPage > 1)
+            LoadHeroStageAsync(selected, heroCurrentPage - 1);
+    }
+
+    private void OnHeroNextPageClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SelectedItem is { } selected && heroTotalPages is { } max && heroCurrentPage < max)
+            LoadHeroStageAsync(selected, heroCurrentPage + 1);
+    }
+
+    private void OnDocumentRasterScrollSizeChanged(object sender, SizeChangedEventArgs e) => FitDocumentRasterToViewport();
+
+    private void FitDocumentRasterToViewport()
+    {
+        if (DocumentRasterImage is null || DocumentRasterScroll is null) return;
+        double width = DocumentRasterScroll.ViewportWidth;
+        if (width <= 0) width = DocumentRasterScroll.ActualWidth;
+        if (width > 32)
+        {
+            // Render page at full readable column width so portrait A4 PDF/Word text stays crisp and scrollable
+            DocumentRasterImage.Width = Math.Max(320, width - 12);
         }
     }
 
@@ -353,6 +448,27 @@ public sealed partial class SearchPage : Page
     {
         if (sender.SelectedItem?.Tag is string tag)
             ViewModel.SelectedKind = tag == "all" ? null : tag;
+    }
+
+    private void OnModeSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ViewModel is null || ModeComboBox?.SelectedItem is not ComboBoxItem item) return;
+        ViewModel.SelectedMode = (item.Tag as string) switch
+        {
+            "semantic" => SearchMode.Semantic,
+            "keyword" => SearchMode.Keyword,
+            _ => SearchMode.Hybrid
+        };
+    }
+
+    private void OnSyntaxChipClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string token }) return;
+        var current = SearchBox.Text ?? "";
+        SearchBox.Text = string.IsNullOrEmpty(current) ? token : current.TrimEnd() + " " + token;
+        SearchBox.Focus(FocusState.Programmatic);
+        if (InnerSearchTextBox() is { } tb)
+            tb.SelectionStart = tb.Text.Length;
     }
 
     private void OnSearchTextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
@@ -652,7 +768,8 @@ public sealed partial class SearchPage : Page
     {
         try
         {
-            if (!SystemUi.AnimationsEnabled || DocumentRasterImage is not { Visibility: Visibility.Visible, Source: not null }) return;
+            var isVisible = DocumentRasterBorder?.Visibility == Visibility.Visible || DocumentRasterImage?.Visibility == Visibility.Visible;
+            if (!SystemUi.AnimationsEnabled || !isVisible || DocumentRasterImage is not { Source: not null }) return;
             Microsoft.UI.Xaml.Media.Animation.ConnectedAnimationService.GetForCurrentView().PrepareToAnimate("pageRaster", DocumentRasterImage);
         }
         catch (Exception error) { AppLog.Warn("raster handoff skipped", error); }

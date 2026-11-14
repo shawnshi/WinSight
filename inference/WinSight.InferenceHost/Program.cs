@@ -16,6 +16,10 @@ internal static class Program
             {
                 return EpQualificationChild.Run(qualifyRequestPath, qualifyResultPath);
             }
+            if (args is ["--preview-stdio"])
+            {
+                return PreviewServer.Run();
+            }
             if (args.Length > 0 && args[0] == "extract-media")
             {
                 if (args is not [_, var requestPath])
@@ -31,12 +35,16 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
                 return 0;
             }
-            if (args.Length > 0 && args[0] is "render-presentation-page" or "render-raster-preview")
+            if (args.Length > 0 && args[0] is "render-presentation-page" or "render-raster-preview" or "render-word-page" or "render-excel-page")
             {
                 if(args is not [var command,var path])throw new ArgumentException("Use command ABSOLUTE_REQUEST_JSON");
-                object result=command=="render-presentation-page"
-                    ? NativeMediaCommand.RenderPresentationPageRequestAsync(path).GetAwaiter().GetResult()
-                    : NativeMediaCommand.RenderRasterPreviewAsync(path).GetAwaiter().GetResult();
+                object result=command switch
+                {
+                    "render-presentation-page" => NativeMediaCommand.RenderPresentationPageRequestAsync(path).GetAwaiter().GetResult(),
+                    "render-word-page" => NativeMediaCommand.RenderWordPageRequestAsync(path).GetAwaiter().GetResult(),
+                    "render-excel-page" => NativeMediaCommand.RenderExcelPageRequestAsync(path).GetAwaiter().GetResult(),
+                    _ => NativeMediaCommand.RenderRasterPreviewAsync(path).GetAwaiter().GetResult()
+                };
                 Console.WriteLine(JsonSerializer.Serialize(result,new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase}));return 0;
             }
             if(args.Length>0&&args[0]=="navigate-office")
@@ -131,6 +139,7 @@ internal static class Program
 
             object? catalogInfo = null;
             string? registrationStatus = null;
+            var registrations = new List<string>();
             try
             {
                 var catalog = Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog.GetDefault();
@@ -150,9 +159,19 @@ internal static class Program
                     {
                         if (provider.ReadyState != Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyState.Ready) continue;
                         if (string.IsNullOrWhiteSpace(provider.LibraryPath)) continue;
-                        try { OrtEnv.Instance().RegisterExecutionProviderLibrary(provider.Name, provider.LibraryPath); }
-                        catch (Exception ex) when (ex.Message.Contains("already registered", StringComparison.OrdinalIgnoreCase)) { registrationStatus += $"; {provider.Name} already registered"; }
-                        catch (Exception ex) { registrationStatus += $"; register {provider.Name} failed: {ex.GetType().Name}: {ex.Message}"; }
+                        try
+                        {
+                            OrtEnv.Instance().RegisterExecutionProviderLibrary(provider.Name, provider.LibraryPath);
+                            registrations.Add(provider.Name + "=" + provider.LibraryPath);
+                        }
+                        catch (Exception ex) when (ex.Message.Contains("already registered", StringComparison.OrdinalIgnoreCase))
+                        {
+                            registrations.Add(provider.Name + "=already-registered");
+                        }
+                        catch (Exception ex)
+                        {
+                            registrations.Add(provider.Name + "=failed:" + ex.Message);
+                        }
                     }
 
                     var providers = catalog.FindAllProviders().Select(p => new
@@ -179,8 +198,11 @@ internal static class Program
             var epDevices = environment.GetEpDevices().Select(device => new
             {
                 ep = device.EpName,
+                type = device.HardwareDevice.Type.ToString(),
                 deviceType = device.HardwareDevice.Type.ToString(),
+                device_id = device.HardwareDevice.DeviceId,
                 deviceId = device.HardwareDevice.DeviceId,
+                vendor_id = device.HardwareDevice.VendorId,
                 vendorId = device.HardwareDevice.VendorId
             }).ToArray();
             var loaded = Process.GetCurrentProcess().Modules.Cast<ProcessModule>()
@@ -189,12 +211,18 @@ internal static class Program
 
             Console.WriteLine(JsonSerializer.Serialize(new
             {
-                phase = "P0", ok = true,
+                phase = "P0",
+                ok = true,
+                ort_version = environment.GetVersionString(),
                 ortVersion = environment.GetVersionString(),
+                libraries = registrations,
+                available = availableProviders,
                 availableProviders,
+                devices = epDevices,
                 epDevices,
                 loadedOrtModules = loaded,
                 catalog = catalogInfo,
+                provider_downloads_allowed = false,
                 providerDownloadsAllowed = false,
                 productionConnected = false
             }, JsonOptions));

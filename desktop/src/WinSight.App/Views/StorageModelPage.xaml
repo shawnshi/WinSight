@@ -7,34 +7,20 @@
     mc:Ignorable="d">
 
     <ScrollViewer Padding="24,16,24,24">
-        <StackPanel Spacing="24" MaxWidth="800" HorizontalAlignment="Left">
+        <StackPanel Spacing="20" MaxWidth="{StaticResource WsPageMaxWidth}" HorizontalAlignment="Left">
             <!-- Header -->
             <StackPanel Spacing="4">
                 <TextBlock Text="存储与向量模型" Style="{ThemeResource TitleTextBlockStyle}"/>
-                <TextBlock Text="本地向量数据库索引统计指标与嵌入模型执行宿主运行诊断。"
+                <TextBlock Text="本地向量数据库覆盖率、磁盘占用运维与嵌入模型执行宿主诊断。"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             </StackPanel>
 
-            <!-- Migration Preview Banner -->
-            <InfoBar IsOpen="False"
-                     Visibility="Collapsed"
-                     IsClosable="False"
-                     Severity="Informational"
-                     Title="原生预览版检索管线"
-                     Message="{x:Bind ViewModel.MigrationNotice, Mode=OneWay}"/>
-
             <!-- Storage & Index Database Card (4-KPI Metric Dashboard) -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="10"
-                    Padding="20">
+            <Border Style="{StaticResource WsCardStyle}">
                 <StackPanel Spacing="16">
                     <Grid>
                         <TextBlock Text="索引数据库状态" Style="{ThemeResource SubtitleTextBlockStyle}" VerticalAlignment="Center"/>
-                        <Border HorizontalAlignment="Right" Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"
-                                CornerRadius="6" Padding="10,4">
+                        <Border HorizontalAlignment="Right" Style="{StaticResource WsSubCardStyle}" Padding="10,4" CornerRadius="6">
                             <StackPanel Orientation="Horizontal" Spacing="6">
                                 <FontIcon Glyph="&#xE8B7;" FontSize="12" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
                                 <TextBlock Text="{x:Bind ViewModel.DatabasePath, Mode=OneWay}"
@@ -54,20 +40,14 @@
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- Tile 1: Total Files -->
-                        <Border Grid.Column="0" Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"
-                                CornerRadius="8" Padding="14,12">
+                        <Border Grid.Column="0" Style="{StaticResource WsSubCardStyle}">
                             <StackPanel Spacing="4">
                                 <TextBlock Text="已纳管文件总数" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                                 <TextBlock Text="{x:Bind ViewModel.FilesCount, Mode=OneWay}" FontSize="22" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular"/>
                             </StackPanel>
                         </Border>
 
-                        <!-- Tile 2: Indexed (Done + Partial) -->
-                        <Border Grid.Column="1" Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"
-                                CornerRadius="8" Padding="14,12">
+                        <Border Grid.Column="1" Style="{StaticResource WsSubCardStyle}">
                             <StackPanel Spacing="4">
                                 <TextBlock Text="已完成索引入库" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                                 <TextBlock Text="{x:Bind ViewModel.IndexedAndPartialCount, Mode=OneWay}" FontSize="22" FontWeight="SemiBold"
@@ -75,10 +55,7 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- Tile 3: Pending -->
-                        <Border Grid.Column="2" Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"
-                                CornerRadius="8" Padding="14,12">
+                        <Border Grid.Column="2" Style="{StaticResource WsSubCardStyle}">
                             <StackPanel Spacing="4">
                                 <TextBlock Text="待处理 / 队列中" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                                 <TextBlock Text="{x:Bind ViewModel.PendingCount, Mode=OneWay}" FontSize="22" FontWeight="SemiBold"
@@ -86,10 +63,7 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- Tile 4: Failed -->
-                        <Border Grid.Column="3" Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"
-                                CornerRadius="8" Padding="14,12">
+                        <Border Grid.Column="3" Style="{StaticResource WsSubCardStyle}">
                             <StackPanel Spacing="4">
                                 <TextBlock Text="解析失败 / 异常" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                                 <TextBlock Text="{x:Bind ViewModel.FailedCount, Mode=OneWay}" FontSize="22" FontWeight="SemiBold"
@@ -98,7 +72,7 @@
                         </Border>
                     </Grid>
 
-                    <!-- Full-Width Progress Bar & Status Detail -->
+                    <!-- Full-Width File Progress Bar & Status Detail -->
                     <StackPanel Spacing="6">
                         <ProgressBar Value="{x:Bind ComputePercent(ViewModel.IndexedAndPartialCount, ViewModel.FilesCount), Mode=OneWay}"
                                      Maximum="100" Height="8" CornerRadius="4"
@@ -112,12 +86,59 @@
                 </StackPanel>
             </Border>
 
+            <!-- Semantic Vector Coverage & Disk Maintenance Card -->
+            <Border Style="{StaticResource WsCardStyle}">
+                <StackPanel Spacing="14">
+                    <TextBlock Text="语义向量覆盖率与存储运维" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Style="{StaticResource WsSubCardStyle}">
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="向量分段覆盖率" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock Text="{x:Bind ViewModel.VectorCoverageText, Mode=OneWay}" Style="{ThemeResource BodyStrongTextBlockStyle}" Typography.NumeralAlignment="Tabular"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Column="1" Style="{StaticResource WsSubCardStyle}">
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="主数据库占用 (SQLite)" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock Text="{x:Bind ViewModel.DatabaseSizeText, Mode=OneWay}" Style="{ThemeResource BodyStrongTextBlockStyle}" Typography.NumeralAlignment="Tabular"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Column="2" Style="{StaticResource WsSubCardStyle}">
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="高清预览缓存" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock Text="{x:Bind ViewModel.PreviewCacheSizeText, Mode=OneWay}" Style="{ThemeResource BodyStrongTextBlockStyle}" Typography.NumeralAlignment="Tabular"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <ProgressBar Value="{x:Bind ViewModel.VectorCoveragePercent, Mode=OneWay}"
+                                 Maximum="100" Height="7" CornerRadius="4"/>
+
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Content="一键后台补全向量" Style="{ThemeResource AccentButtonStyle}"
+                                CornerRadius="6" Click="OnStartBackfillClick"
+                                IsEnabled="{x:Bind ViewModel.CanStartBackfill, Mode=OneWay}"/>
+                        <Button Content="停止补全" CornerRadius="6" Click="OnStopBackfillClick"
+                                Visibility="{x:Bind BoolToVisibility(ViewModel.IsBackfilling), Mode=OneWay}"/>
+                        <Button Content="清理预览缓存" CornerRadius="6" Click="OnClearCacheClick"/>
+                        <Button Content="回收数据库空闲页" CornerRadius="6" Click="OnCompactDbClick"/>
+                    </StackPanel>
+
+                    <TextBlock Text="{x:Bind ViewModel.MaintenanceStatus, Mode=OneWay}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+                </StackPanel>
+            </Border>
+
             <!-- Incremental Index Queue -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="10"
-                    Padding="20">
+            <Border Style="{StaticResource WsCardStyle}">
                 <StackPanel Spacing="12">
                     <TextBlock Text="增量索引任务队列" Style="{ThemeResource SubtitleTextBlockStyle}"/>
                     <TextBlock Text="{x:Bind ViewModel.QueueSummary, Mode=OneWay}" TextWrapping="Wrap"
@@ -141,9 +162,9 @@
                                    Style="{ThemeResource CaptionTextBlockStyle}" Margin="0,6,0,0"/>
                     </Expander>
                     <StackPanel Orientation="Horizontal" Spacing="12">
-                        <Button Content="刷新队列状态" Click="OnRefreshQueueClick"
+                        <Button Content="刷新队列状态" CornerRadius="6" Click="OnRefreshQueueClick"
                                 AutomationProperties.AutomationId="RefreshQueueStatusButton"/>
-                        <Button Content="重试全部失败文件" Click="OnRetryFailedClick"
+                        <Button Content="重试全部失败文件" CornerRadius="6" Click="OnRetryFailedClick"
                                 Style="{ThemeResource AccentButtonStyle}"
                                 AutomationProperties.AutomationId="RetryFailedFilesButton"/>
                     </StackPanel>
@@ -151,22 +172,18 @@
             </Border>
 
             <!-- Embedding Model Diagnostics Card -->
-            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="20">
+            <Border Style="{StaticResource WsCardStyle}">
                 <StackPanel Spacing="16">
                     <TextBlock Text="向量嵌入模型宿主" Style="{ThemeResource SubtitleTextBlockStyle}"/>
 
-                    <TextBlock Text="向量嵌入模型宿主提供 768 维 L2 归一化向量。点击下方按钮启动宿主并校验权重指纹。"
+                    <TextBlock Text="向量嵌入模型宿主提供 768 维 L2 归一化向量。点击下方按钮启动宿主并校验权重指纹与 NPU/GPU 执行设备。"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>
 
-                    <!-- Explicit Action Button -->
                     <StackPanel Orientation="Horizontal" Spacing="12">
                         <Button Content="探查模型与嵌入引擎"
                                 Style="{ThemeResource AccentButtonStyle}"
+                                CornerRadius="6"
                                 Click="OnInspectModelClick"
                                 IsEnabled="{x:Bind Invert(ViewModel.IsInspecting), Mode=OneWay}"/>
 
@@ -175,14 +192,12 @@
                                       VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <!-- Error Alert -->
                     <InfoBar IsOpen="{x:Bind HasError(ViewModel.InspectionError), Mode=OneWay}"
                              Severity="Error"
                              Title="模型探查错误"
                              Message="{x:Bind ViewModel.InspectionError, Mode=OneWay}"
                              IsClosable="False"/>
 
-                    <!-- Model Diagnostic Fields (Shown when inspected) -->
                     <Grid RowSpacing="10" ColumnSpacing="16"
                           Visibility="{x:Bind BoolToVisibility(ViewModel.HasEmbeddingInfo), Mode=OneWay}">
                         <Grid.RowDefinitions>
@@ -200,7 +215,7 @@
                         </Grid.ColumnDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="画像标识：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind ViewModel.ProfileId, Mode=OneWay}"/>
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind ViewModel.ProfileId, Mode=OneWay}" IsTextSelectionEnabled="True"/>
 
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="向量维度：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind ViewModel.Dimension, Mode=OneWay}"/>
@@ -220,13 +235,13 @@
                         <TextBlock Grid.Row="6" Grid.Column="0" Text="校验状态：" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <TextBlock Grid.Row="6" Grid.Column="1" Text="{x:Bind ViewModel.ValidationStatus, Mode=OneWay}"/>
                     </Grid>
+
+                    <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
                 </StackPanel>
             </Border>
-
-            <!-- Status Notice -->
-            <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
-                       Style="{ThemeResource CaptionTextBlockStyle}"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
         </StackPanel>
     </ScrollViewer>
 </Page>

@@ -134,8 +134,8 @@ public sealed class SearchItemViewModel : INotifyPropertyChanged
     public Visibility BadgeVisibility => thumbnail is null ? Visibility.Visible : Visibility.Collapsed;
 
     /// <summary>
-    /// Loads the shell thumbnail for a realized row. It is skipped for cloud placeholders (reading one would download the file)
-    /// and for formats that only have a generic icon, where the colored type badge is the better signal.
+    /// Loads the shell thumbnail for a realized row when available (e.g. photos, screenshots, video frames, or documents with embedded covers).
+    /// For formats without visual content previews, falls back to the high-contrast colored file type badge.
     /// </summary>
     public async Task EnsureThumbnailAsync()
     {
@@ -166,6 +166,7 @@ public sealed class SearchItemViewModel : INotifyPropertyChanged
             finally { ThumbnailGate.Release(); }
 
             if (data is null || token.IsCancellationRequested) { data?.Dispose(); return; }
+
             var bitmap = new BitmapImage { DecodePixelWidth = 96 };
             using (data) await bitmap.SetSourceAsync(data);
             if (!token.IsCancellationRequested) ThumbnailSource = bitmap;
@@ -293,16 +294,40 @@ public sealed class SearchItemViewModel : INotifyPropertyChanged
         {
             if (!string.IsNullOrWhiteSpace(Excerpt)) return Excerpt.Trim();
 
-            var previewHint = string.Equals(Kind, "pdf", StringComparison.OrdinalIgnoreCase) ||
-                              string.Equals(Kind, "doc", StringComparison.OrdinalIgnoreCase) ||
-                              string.Equals(Kind, "presentation", StringComparison.OrdinalIgnoreCase) ||
-                              string.Equals(Kind, "sheet", StringComparison.OrdinalIgnoreCase)
-                ? "\n\n提示：本次命中来自文件名或元数据。按空格键可打开页面大图与 OCR 文字行。"
-                : "";
+            string previewHint;
+            if (string.Equals(Kind, "pdf", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(Kind, "presentation", StringComparison.OrdinalIgnoreCase) ||
+                Path.EndsWith(".pptx", StringComparison.OrdinalIgnoreCase) ||
+                Path.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+            {
+                previewHint = "\n\n提示：本次命中来自文件名或元数据。按空格键可打开页面图与 OCR 文字行。";
+            }
+            else
+            {
+                previewHint = "\n\n提示：本次命中来自文件名或元数据。按回车键可直接打开定位到对应位置。";
+            }
 
             return $"[{FileName}]\n\n• 匹配依据: {MatchRationale}\n• 文件属性: {ListItemMetadataLine}\n• 所在目录: {DirectoryPath}{previewHint}";
         }
     }
+
+    public string PreviewButtonLabel =>
+        (string.Equals(Kind, "pdf", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(Kind, "presentation", StringComparison.OrdinalIgnoreCase) ||
+         Path.EndsWith(".pptx", StringComparison.OrdinalIgnoreCase) ||
+         Path.EndsWith(".ppt", StringComparison.OrdinalIgnoreCase) ||
+         Path.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+            ? "页图预览"
+            : "详情预览";
+
+    public string PreviewButtonToolTip =>
+        (string.Equals(Kind, "pdf", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(Kind, "presentation", StringComparison.OrdinalIgnoreCase) ||
+         Path.EndsWith(".pptx", StringComparison.OrdinalIgnoreCase) ||
+         Path.EndsWith(".ppt", StringComparison.OrdinalIgnoreCase) ||
+         Path.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+            ? "页图与 OCR 详情 (Space)"
+            : "查看文档详情与定位 (Space)";
 
     public Visibility IsImageVisibility =>
         (string.Equals(Kind, "image", StringComparison.OrdinalIgnoreCase) ||
@@ -452,7 +477,7 @@ public sealed class SearchItemViewModel : INotifyPropertyChanged
             return ext switch
             {
                 "pdf" => "\uEA90",
-                "xlsx" or "xls" or "csv" or "tsv" => "\uE80A",
+                "xlsx" or "xls" or "csv" or "tsv" => "\uF0E2", // GridView / spreadsheet table
                 "pptx" or "ppt" => "\uE786",
                 "docx" or "doc" or "rtf" or "odt" => "\uE8A5",
                 _ => Kind.ToLowerInvariant() switch

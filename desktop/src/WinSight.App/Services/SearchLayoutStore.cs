@@ -16,6 +16,7 @@ public sealed class SearchLayoutStore
     {
         public double? ListWidth { get; set; }
         public bool TipSeen { get; set; }
+        public WinSight.Core.WindowPlacement? MainWindow { get; set; }
     }
 
     private readonly string? path;
@@ -44,6 +45,12 @@ public sealed class SearchLayoutStore
     {
         get => state.TipSeen;
         set { state.TipSeen = value; Save(); }
+    }
+
+    public WinSight.Core.WindowPlacement? MainWindowPlacement
+    {
+        get => state.MainWindow;
+        set { state.MainWindow = value; Save(); }
     }
 
     /// <summary>Keeps the list wide enough to read and leaves the stage at least <paramref name="minStage"/> pixels.</summary>

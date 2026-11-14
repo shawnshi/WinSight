@@ -1,5 +1,5 @@
 ; WinSight installer for Windows 11 / Windows 10 (x64)
-; Canonical mainline Inno Setup 6 installer script.
+; Canonical mainline Inno Setup 6/7 installer script.
 ; Default installation directory: C:\Program Files\WinSight (64-bit Program Files).
 ; User data (index, settings, logs) lives under %LOCALAPPDATA%\WinSight\NativePreview\.
 ; Build via scripts/Build-NativeInstaller.ps1.
@@ -7,11 +7,27 @@
 #ifndef PayloadDir
   #error Pass /DPayloadDir=<staged app folder>; use scripts/Build-NativeInstaller.ps1.
 #endif
+#ifndef FilesInclude
+  #error Pass /DFilesInclude=<generated [Files] list>; use scripts/Build-NativeInstaller.ps1.
+#endif
+#ifndef Vendor
+  #define Vendor "all"
+#endif
+#if Vendor == "amd"
+  #define VendorLabel "AMD (Ryzen AI)"
+  #define SetupBaseName "WinSight-" + AppVersion + "-x64-amd-setup"
+#elif Vendor == "intel"
+  #define VendorLabel "Intel (OpenVINO)"
+  #define SetupBaseName "WinSight-" + AppVersion + "-x64-intel-setup"
+#else
+  #define VendorLabel "全平台通用 (Shape B)"
+  #define SetupBaseName "WinSight-" + AppVersion + "-x64-setup"
+#endif
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.1.0"
 #endif
 #ifndef NumericVersion
-  #define NumericVersion "1.0.0.0"
+  #define NumericVersion "1.1.0.0"
 #endif
 #ifndef OutputDir
   #define OutputDir "."
@@ -34,10 +50,14 @@ SetupIconFile=..\..\Resources\AppIcon\WinSight.ico
 UninstallDisplayName=WinSight
 UninstallDisplayIcon={app}\WinSight.App.exe
 OutputDir={#OutputDir}
-OutputBaseFilename=WinSight-{#AppVersion}-x64-setup
-Compression=lzma2/normal
+OutputBaseFilename={#SetupBaseName}
+; ONNX external weights compress to roughly 27-42% with LZMA (sampled), so no entry uses nocompression.
+; ultra64 implies a 64 MiB dictionary, which is also the decompression memory needed by Setup.
+Compression=lzma2/ultra64
+#if Ver < EncodeVer(7, 0, 0)
 LZMAUseSeparateProcess=yes
-LZMADictionarySize=32768
+#endif
+LZMANumBlockThreads=8
 SolidCompression=yes
 DiskSpanning=yes
 DiskSliceSize=2100000000
@@ -62,17 +82,10 @@ SignedUninstaller=yes
 Name: "desktopicon"; Description: "创建桌面快捷方式 (&Desktop shortcut)"; Flags: unchecked
 Name: "addtopath"; Description: "将 WinSight 工具添加至系统 PATH 环境变量 (&Add to PATH)"; Flags: unchecked
 
-[Files]
-Source: "{#PayloadDir}\*"; Excludes: "models\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; 通用模型配置与基础数据文件 (全平台安装)
-Source: "{#PayloadDir}\models\*"; Excludes: "RyzenAI\*,IntelOpenVINO\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
-; AMD 平台专用高熵大权重与微码 (流式归档不耗时压缩)
-Source: "{#PayloadDir}\models\RyzenAI\*.onnx_data"; DestDir: "{app}\models\RyzenAI"; Check: IsAmdCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist nocompression
-Source: "{#PayloadDir}\models\RyzenAI\*.rai"; DestDir: "{app}\models\RyzenAI"; Check: IsAmdCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist nocompression
-Source: "{#PayloadDir}\models\RyzenAI\*"; Excludes: "*.onnx_data,*.rai"; DestDir: "{app}\models\RyzenAI"; Check: IsAmdCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
-; Intel 平台专用高熵大权重 (流式归档不耗时压缩)
-Source: "{#PayloadDir}\models\IntelOpenVINO\*.onnx_data"; DestDir: "{app}\models\IntelOpenVINO"; Check: IsIntelCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist nocompression
-Source: "{#PayloadDir}\models\IntelOpenVINO\*"; Excludes: "*.onnx_data"; DestDir: "{app}\models\IntelOpenVINO"; Check: IsIntelCpu; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; Generated per vendor by Build-NativeInstaller.ps1: [InstallDelete] drops the per-host .NET runtime copies of
+; earlier self-contained releases (all hosts now share {app}\runtime), and [Files] lists the common payload
+; plus this vendor's models only; identical content is stored once (MergeDuplicateFiles keys on Source).
+#include FilesInclude
 
 [Icons]
 Name: "{autoprograms}\WinSight"; Filename: "{app}\WinSight.App.exe"
@@ -106,6 +119,39 @@ end;
 function IsIntelCpu(): Boolean;
 begin
   Result := Pos('INTEL', GetCpuVendor()) > 0;
+end;
+
+{ Each installer carries one vendor's models only; /IGNORECPUVENDOR bypasses the check for tests. }
+function HasCmdLineSwitch(const Name: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), Name) = 0 then
+      Result := True;
+end;
+
+function InitializeSetup(): Boolean;
+begin
+#if Vendor == "amd"
+  Result := IsAmdCpu();
+#elif Vendor == "intel"
+  Result := IsIntelCpu();
+#else
+  // Shape B unified release: supported on all x64 systems; models installed conditionally per CPU vendor.
+  Result := True;
+#endif
+  if not Result and HasCmdLineSwitch('/IGNORECPUVENDOR') then
+  begin
+    Log('CPU vendor check bypassed by /IGNORECPUVENDOR; detected vendor: ' + GetCpuVendor());
+    Result := True;
+  end;
+  if not Result then
+    SuppressibleMsgBox('此安装包仅适用于 {#VendorLabel} 处理器，当前处理器为：' + GetCpuVendor() + #13#10 +
+      '请下载与本机 CPU 匹配的 WinSight 安装包。' + #13#10#13#10 +
+      'This installer is built for {#VendorLabel} CPUs only. Please download the package that matches this PC.',
+      mbCriticalError, MB_OK, IDOK);
 end;
 
 procedure AddToPath();
@@ -194,7 +240,7 @@ begin
 
   if CurUninstallStep = usPostUninstall then
   begin
-    DataDir := ExpandConstant('{localappdata}\WinSight\NativePreview');
+    DataDir := ExpandConstant('{localappdata}\WinSight\Index');
     { Index, settings and logs belong to the user: preserve on silent uninstalls and ask interactively }
     if DirExists(DataDir) and not UninstallSilent then
       if MsgBox('是否同时删除 WinSight 的本地索引数据库、配置文件与日志？' + #13#10 + DataDir,

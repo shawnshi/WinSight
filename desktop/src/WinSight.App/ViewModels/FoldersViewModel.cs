@@ -15,7 +15,34 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
 
     public ObservableCollection<string> Folders { get; } = [];
     public ObservableCollection<string> Skipped { get; } = [];
+    public ObservableCollection<string> CodeFolders { get; } = [];
+    public ObservableCollection<string> CodeSkipped { get; } = [];
     public ObservableCollection<string> SkipTypes { get; } = [];
+
+    private bool isCodeScope;
+    public bool IsCodeScope
+    {
+        get => isCodeScope;
+        set
+        {
+            if (SetProperty(ref isCodeScope, value))
+            {
+                OnPropertyChanged(nameof(CurrentScopeTitle));
+                OnPropertyChanged(nameof(CurrentScopeSubtitle));
+                OnPropertyChanged(nameof(CurrentFolders));
+                OnPropertyChanged(nameof(CurrentSkipped));
+                OnPropertyChanged(nameof(ShowExtensionExclusions));
+            }
+        }
+    }
+
+    public string CurrentScopeTitle => isCodeScope ? "已授权代码仓库 (code: 隔离库)" : "已授权文档与媒体目录";
+    public string CurrentScopeSubtitle => isCodeScope
+        ? "独立存储于 code.sqlite，仅在输入 code: 前缀或代码筛选时参与检索。"
+        : "WinSight 仅对下方显式授权的目录执行全文与多模态向量检索（支持拖入文件夹）。";
+    public ObservableCollection<string> CurrentFolders => isCodeScope ? CodeFolders : Folders;
+    public ObservableCollection<string> CurrentSkipped => isCodeScope ? CodeSkipped : Skipped;
+    public bool ShowExtensionExclusions => !isCodeScope;
 
     private bool isInitialized;
     private long loadVersion;
@@ -85,7 +112,7 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
         {
             if (version != loadVersion) return;
             IsInitialized = false;
-            StatusMessage = $"Failed to load settings: {ex.Message}";
+            StatusMessage = $"加载配置失败：{ex.Message}";
         }
     }
 
@@ -96,6 +123,12 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
 
         Skipped.Clear();
         foreach (var sk in s.Skipped) Skipped.Add(sk);
+
+        CodeFolders.Clear();
+        foreach (var cf in s.CodeFolders) CodeFolders.Add(cf);
+
+        CodeSkipped.Clear();
+        foreach (var cs in s.CodeSkipped) CodeSkipped.Add(cs);
 
         SkipTypes.Clear();
         foreach (var st in s.SkipTypes) SkipTypes.Add(st);
@@ -109,7 +142,7 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
 
     public async Task<bool> ConfirmFoldersAndEnableMonitoringAsync()
     {
-        if (Folders.Count == 0 && settings.CodeFolders.Count == 0)
+        if (Folders.Count == 0 && CodeFolders.Count == 0)
         {
             StatusMessage = "无法启用后台监听：请至少添加一个搜索目录。";
             return false;
@@ -120,6 +153,8 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
             var latest = await backend.LoadSettingsAsync();
             latest.Folders = [.. Folders];
             latest.Skipped = [.. Skipped];
+            latest.CodeFolders = [.. CodeFolders];
+            latest.CodeSkipped = [.. CodeSkipped];
             latest.SkipTypes = [.. SkipTypes];
             latest.SetUp = true;
             latest.BackgroundIndexingEnabled = true;
@@ -155,19 +190,22 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
     public async Task<bool> AddFolderAsync(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) return false;
-        if (Folders.Contains(path, StringComparer.OrdinalIgnoreCase)) return false;
+        var target = isCodeScope ? CodeFolders : Folders;
+        if (target.Contains(path, StringComparer.OrdinalIgnoreCase)) return false;
 
-        Folders.Add(path);
+        target.Add(path);
         return await SaveAsync();
     }
 
     public async Task<bool> RemoveFolderAsync(string path)
     {
-        if (!Folders.Remove(path)) return false;
+        var target = isCodeScope ? CodeFolders : Folders;
+        var skippedTarget = isCodeScope ? CodeSkipped : Skipped;
+        if (!target.Remove(path)) return false;
 
         // NM-UI-09: Clean up skipped items using boundary separator check (prevents deleting C:\docs2 when removing C:\docs)
-        var toRemove = Skipped.Where(sk => FileActionPlanner.IsSameOrChildOf(sk, path)).ToList();
-        foreach (var item in toRemove) Skipped.Remove(item);
+        var toRemove = skippedTarget.Where(sk => FileActionPlanner.IsSameOrChildOf(sk, path)).ToList();
+        foreach (var item in toRemove) skippedTarget.Remove(item);
 
         return await SaveAsync();
     }
@@ -175,15 +213,17 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
     public async Task<bool> AddSkippedAsync(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) return false;
-        if (Skipped.Contains(path, StringComparer.OrdinalIgnoreCase)) return false;
+        var skippedTarget = isCodeScope ? CodeSkipped : Skipped;
+        if (skippedTarget.Contains(path, StringComparer.OrdinalIgnoreCase)) return false;
 
-        Skipped.Add(path);
+        skippedTarget.Add(path);
         return await SaveAsync();
     }
 
     public async Task<bool> RemoveSkippedAsync(string path)
     {
-        if (!Skipped.Remove(path)) return false;
+        var skippedTarget = isCodeScope ? CodeSkipped : Skipped;
+        if (!skippedTarget.Remove(path)) return false;
         return await SaveAsync();
     }
 
@@ -210,9 +250,11 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
             var latest = await backend.LoadSettingsAsync();
             latest.Folders = [.. Folders];
             latest.Skipped = [.. Skipped];
+            latest.CodeFolders = [.. CodeFolders];
+            latest.CodeSkipped = [.. CodeSkipped];
             latest.SkipTypes = [.. SkipTypes];
             latest.BackgroundIndexingEnabled = backgroundIndexingEnabled;
-            if (backgroundIndexingEnabled && (Folders.Count > 0 || latest.CodeFolders.Count > 0))
+            if (backgroundIndexingEnabled && (Folders.Count > 0 || CodeFolders.Count > 0))
             {
                 latest.SetUp = true;
             }
@@ -223,7 +265,7 @@ public sealed class FoldersViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(IsMonitoringActive));
             OnPropertyChanged(nameof(MonitoringStatusText));
             SettingsChanged?.Invoke(this, EventArgs.Empty);
-            StatusMessage = "Settings saved.";
+            StatusMessage = "目录配置已自动保存。";
             return true;
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("revision conflict", StringComparison.OrdinalIgnoreCase))

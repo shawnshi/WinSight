@@ -3,9 +3,12 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics;
+using Windows.Storage.Streams;
 using Windows.System;
 using WinRT.Interop;
+using WinSight.App.Services;
 using WinSight.App.ViewModels;
 using WinSight.Core;
 
@@ -16,6 +19,7 @@ public sealed partial class QuickSearchWindow : Window
     public QuickSearchViewModel ViewModel { get; }
     private readonly IntPtr windowHandle;
     private readonly AppWindow appWindow;
+    private CancellationTokenSource? quickPreviewCts;
     private bool isExiting;
 
     public event Action<string, string?>? OpenInFullWindowRequested;
@@ -29,9 +33,18 @@ public sealed partial class QuickSearchWindow : Window
         var windowId = Win32Interop.GetWindowIdFromWindow(windowHandle);
         appWindow = AppWindow.GetFromWindowId(windowId);
 
-        // Standard HUD specs: 800x520 per ui.md
-        appWindow.Resize(new SizeInt32(800, 520));
-        CenterOnScreen();
+        // True borderless rounded Spotlight HUD via OverlappedPresenter + DWM rounded corners
+        if (appWindow.Presenter is OverlappedPresenter presenter)
+        {
+            presenter.IsResizable = false;
+            presenter.IsMaximizable = false;
+            presenter.IsMinimizable = false;
+            presenter.SetBorderAndTitleBar(true, false);
+        }
+        NativeMethods.ApplyRoundedWindowCorners(windowHandle);
+
+        appWindow.Resize(new SizeInt32(840, 540));
+        CenterOnActiveMonitor();
 
         // NM-UI-08: Intercept close (Alt+F4 / system close) to hide rather than destroy window
         appWindow.Closing += OnAppWindowClosing;
@@ -55,25 +68,36 @@ public sealed partial class QuickSearchWindow : Window
 
     public void Quit()
     {
+        quickPreviewCts?.Cancel();
+        quickPreviewCts?.Dispose();
         isExiting = true;
         Close();
     }
 
-    private void CenterOnScreen()
+    private void CenterOnActiveMonitor()
     {
-        var displayArea = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary);
+        DisplayArea? displayArea = null;
+        if (NativeMethods.GetCursorPos(out var pt))
+        {
+            displayArea = DisplayArea.GetFromPoint(new PointInt32(pt.X, pt.Y), DisplayAreaFallback.Primary);
+        }
+        displayArea ??= DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary);
+
         if (displayArea != null)
         {
             var workArea = displayArea.WorkArea;
-            int x = workArea.X + (workArea.Width - 800) / 2;
-            int y = workArea.Y + (workArea.Height - 520) / 3; // vertically biased to upper third
+            int w = Math.Min(840, workArea.Width - 32);
+            int h = Math.Min(540, workArea.Height - 32);
+            appWindow.Resize(new SizeInt32(w, h));
+            int x = workArea.X + (workArea.Width - w) / 2;
+            int y = workArea.Y + (workArea.Height - h) / 3; // vertically biased to upper third
             appWindow.Move(new PointInt32(x, y));
         }
     }
 
     public void ShowAndFocus()
     {
-        CenterOnScreen();
+        CenterOnActiveMonitor();
         appWindow.Show();
         Activate();
         SearchBox.Focus(FocusState.Programmatic);
@@ -82,19 +106,14 @@ public sealed partial class QuickSearchWindow : Window
 
     public void HidePanel()
     {
+        quickPreviewCts?.Cancel();
         appWindow.Hide();
     }
 
     public void TogglePanel()
     {
-        if (appWindow.IsVisible)
-        {
-            HidePanel();
-        }
-        else
-        {
-            ShowAndFocus();
-        }
+        if (appWindow.IsVisible) HidePanel();
+        else ShowAndFocus();
     }
 
     public void ApplyTheme(string theme)
@@ -114,7 +133,6 @@ public sealed partial class QuickSearchWindow : Window
     {
         if (args.WindowActivationState == WindowActivationState.Deactivated)
         {
-            // Auto-hide when focus is lost
             HidePanel();
         }
     }
@@ -166,23 +184,19 @@ public sealed partial class QuickSearchWindow : Window
             bool shiftHeld = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
             if (shiftHeld)
             {
-                // Ctrl+Shift+C: copy full file path
-                _ = ViewModel.CopyCurrentAsync();
-            }
-            else
-            {
-                // Ctrl+C: copy excerpt if present, otherwise copy full path
+                // Ctrl+Shift+C: copy excerpt text
                 if (!string.IsNullOrEmpty(ViewModel.SelectedItem?.Excerpt))
                 {
                     var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
                     dataPackage.SetText(ViewModel.SelectedItem.Excerpt);
                     Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
-                    ViewModel.StatusText = "已复制摘要到剪贴板";
+                    ViewModel.StatusText = "已复制命中摘要到剪贴板";
                 }
-                else
-                {
-                    _ = ViewModel.CopyCurrentAsync();
-                }
+            }
+            else
+            {
+                // Ctrl+C: consistent with SearchPage — copy full file path
+                _ = ViewModel.CopyCurrentAsync();
             }
             e.Handled = true;
         }
@@ -217,6 +231,70 @@ public sealed partial class QuickSearchWindow : Window
         Bindings.Update();
         SearchPage.ApplyQueryHighlights(QuickCanvasExcerptBlock, ViewModel.Query);
         SearchPage.ApplyQueryHighlights(QuickCodeExcerptBlock, ViewModel.Query);
+        _ = UpdateQuickPreviewAsync(ViewModel.SelectedItem);
+    }
+
+    private async Task UpdateQuickPreviewAsync(SearchItemViewModel? selected)
+    {
+        quickPreviewCts?.Cancel();
+        quickPreviewCts?.Dispose();
+        quickPreviewCts = new CancellationTokenSource();
+        var ct = quickPreviewCts.Token;
+
+        if (QuickDocumentRasterImage != null)
+        {
+            QuickDocumentRasterImage.Source = null;
+            QuickDocumentRasterImage.Visibility = Visibility.Collapsed;
+        }
+        if (QuickExcerptScroll != null) QuickExcerptScroll.Visibility = Visibility.Visible;
+        if (QuickHeroImage != null) QuickHeroImage.Source = null;
+
+        if (selected is null) return;
+
+        if (selected.IsImageVisibility == Visibility.Visible && File.Exists(selected.Path))
+        {
+            try
+            {
+                var bmp = new BitmapImage { DecodePixelWidth = 640 };
+                bmp.UriSource = new Uri(selected.Path);
+                if (QuickHeroImage != null) QuickHeroImage.Source = bmp;
+            }
+            catch { }
+            return;
+        }
+
+        if (selected.IsDocumentVisibility == Visibility.Visible && QuickDocumentRasterImage != null)
+        {
+            ISourcePreview? preview = null;
+            try
+            {
+                await Task.Delay(140, ct);
+                preview = await ViewModel.PreviewAsync(selected, ct);
+                if (ct.IsCancellationRequested) return;
+                if (preview.SourceCurrent && preview.RasterPath is { } rasterPath && File.Exists(rasterPath))
+                {
+                    var bitmap = new BitmapImage();
+                    await using (var file = new FileStream(rasterPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        using IRandomAccessStream stream = file.AsRandomAccessStream();
+                        await bitmap.SetSourceAsync(stream);
+                    }
+                    if (ct.IsCancellationRequested) return;
+                    QuickDocumentRasterImage.Source = bitmap;
+                    QuickDocumentRasterImage.Visibility = Visibility.Visible;
+                    if (QuickExcerptScroll != null) QuickExcerptScroll.Visibility = Visibility.Collapsed;
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch { }
+            finally
+            {
+                if (preview is not null)
+                {
+                    try { await preview.DisposeAsync(); } catch { }
+                }
+            }
+        }
     }
 
     private async void OnQuickOpenHeroClick(object sender, RoutedEventArgs e)
@@ -231,23 +309,15 @@ public sealed partial class QuickSearchWindow : Window
         HidePanel();
     }
 
+    public Visibility BoolToVisibility(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
     public Visibility SelectedToEmptyVisibility(object? item) => item == null ? Visibility.Visible : Visibility.Collapsed;
     public Visibility SelectedToDetailVisibility(object? item) => item != null ? Visibility.Visible : Visibility.Collapsed;
 
-    private void OnFilterClick(object sender, RoutedEventArgs e)
+    private void OnKindSelectorChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
     {
-        if (sender is Button btn && btn.Tag is string tag)
+        if (ViewModel is null) return;
+        if (sender.SelectedItem?.Tag is string tag)
         {
-            var defaultStyle = (Style)Application.Current.Resources["DefaultButtonStyle"];
-            var accentStyle = (Style)Application.Current.Resources["AccentButtonStyle"];
-
-            FilterAllBtn.Style = tag == "all" ? accentStyle : defaultStyle;
-            FilterDocBtn.Style = tag == "doc" ? accentStyle : defaultStyle;
-            FilterPdfBtn.Style = tag == "pdf" ? accentStyle : defaultStyle;
-            FilterImgBtn.Style = tag == "image" ? accentStyle : defaultStyle;
-            FilterVideoBtn.Style = tag == "video" ? accentStyle : defaultStyle;
-            FilterCodeBtn.Style = tag == "code" ? accentStyle : defaultStyle;
-
             ViewModel.SelectedKind = tag == "all" ? null : tag;
         }
     }
@@ -256,5 +326,12 @@ public sealed partial class QuickSearchWindow : Window
     {
         HidePanel();
         OpenInFullWindowRequested?.Invoke(ViewModel.Query, ViewModel.SelectedKind);
+    }
+
+    private void OnResultsContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+    {
+        if (args.Item is not SearchItemViewModel item) return;
+        if (args.InRecycleQueue) { item.CancelThumbnail(); return; }
+        _ = item.EnsureThumbnailAsync();
     }
 }

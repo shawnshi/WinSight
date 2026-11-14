@@ -15,6 +15,7 @@ namespace WinSight.InferenceHost;
 internal static partial class NativeMediaCommand
 {
     private const long MaxInputBytes = 32L * 1024 * 1024;
+    private const long MaxPreviewInputBytes = 256L * 1024 * 1024;
     private const int MaxRequestBytes = 64 * 1024;
 
     internal static Task<MediaDecodeResult> RunRequestFileAsync(string requestPath,

@@ -11,7 +11,7 @@ param(
     [string]$ArtifactRoot,
     [ValidateRange(1,160)][int]$DeadlineSeconds = 150,
     [switch]$AppOnlyPreview,
-    # Optional helper hosts (each adds about 150-180 MiB because it is self-contained with its own ONNX Runtime):
+    # Optional helper hosts (each adds its own ONNX Runtime and host-specific assemblies; the .NET runtime is shared in app\runtime):
     #  - Windows ML host: an alternative embedding host (ORT 1.27). When app\inference\winml\WinSight.WinMlHost.exe exists it is used
     #    instead of the default inference host and enables the device probe in Settings.
     #  - Foundry host: never embeds; it only lists and registers execution providers (app\foundry\WinSight.FoundryHost.exe).
@@ -302,6 +302,15 @@ $logs = Join-Path $stage 'logs'
 New-Item -ItemType Directory -Path $logs | Out-Null
 Push-Location $desktop
 try {
+    # Every host is published framework-dependent and shares one private .NET runtime in app/runtime.
+    # AppHostRelativeDotNet makes each apphost look only at that app-relative runtime (never a global .NET).
+    # Host-specific dependencies (ONNX Runtime 1.31 vs Windows ML's ORT, Windows App SDK pieces) stay isolated
+    # in each host's own directory, so the on-disk layout and every launch path are unchanged.
+    $runtimeRoot = Join-Path $stage 'app/runtime'
+    function Get-SharedRuntimeArgs([string]$HostOutput) {
+        $relative = [IO.Path]::GetRelativePath($HostOutput, $runtimeRoot)
+        @('--runtime', 'win-x64', '--self-contained', 'false', "-p:AppHostRelativeDotNet=$relative")
+    }
     $projects = @(
         @{ Project = 'src/WinSight.App/WinSight.App.csproj'; Output = 'app'; Log = 'app' },
         @{ Project = 'src/WinSight.Cli/WinSight.Cli.csproj'; Output = 'app'; Log = 'cli' },
@@ -310,7 +319,7 @@ try {
     )
     foreach ($item in $projects) {
         $out = Join-Path $stage $item.Output
-        & dotnet publish $item.Project --configuration $Configuration --runtime win-x64 --self-contained true `
+        & dotnet publish $item.Project --configuration $Configuration @(Get-SharedRuntimeArgs $out) `
             -p:WindowsAppSDKSelfContained=true -p:PublishSingleFile=false --output $out *> (Join-Path $logs "$($item.Log).publish.log")
         if ($LASTEXITCODE -ne 0) { throw "Publish failed for $($item.Project). See stage logs; stage is incomplete." }
     }
@@ -318,30 +327,48 @@ try {
     # Core inference host
     $inference = Join-Path $stage 'app/inference'
     & dotnet publish (Join-Path $root 'inference/WinSight.InferenceHost/WinSight.InferenceHost.csproj') `
-        --configuration $Configuration --runtime win-x64 --self-contained true --output $inference *> (Join-Path $logs 'inference.publish.log')
+        --configuration $Configuration @(Get-SharedRuntimeArgs $inference) --output $inference *> (Join-Path $logs 'inference.publish.log')
     if ($LASTEXITCODE -ne 0) { throw 'Inference publish failed; stage is incomplete.' }
 
     # OCR host
     $ocrOut = Join-Path $inference 'ocr'
-    $ocrArgs = @('--configuration', $Configuration, '--runtime', 'win-x64', '--self-contained', 'true', '--output', $ocrOut)
+    $ocrArgs = @('--configuration', $Configuration) + @(Get-SharedRuntimeArgs $ocrOut) + @('--output', $ocrOut)
     if ($OcrModelDirectory) { $ocrArgs += "-p:OcrModelRoot=$OcrModelDirectory" }
     else { $ocrArgs += "-p:RequireOcrModels=false" }
     & dotnet publish (Join-Path $root 'inference/WinSight.OcrHost/WinSight.OcrHost.csproj') @ocrArgs *> (Join-Path $logs 'ocr.publish.log')
     if ($LASTEXITCODE -ne 0) { throw 'Isolated OCR publish failed; stage is incomplete.' }
 
-    # Windows ML host (for NPU/hardware device probing)
-    $winmlOut = Join-Path $inference 'winml'
-    & dotnet publish (Join-Path $root 'inference/WinSight.WinMlHost/WinSight.WinMlHost.csproj') `
-        --configuration $Configuration --runtime win-x64 --self-contained true --output $winmlOut *> (Join-Path $logs 'winml.publish.log')
-    if ($LASTEXITCODE -ne 0) { throw 'WinML host publish failed; stage is incomplete.' }
-
     # Optional Foundry Local host (retired from default release payload to save 126MB)
     if ($IncludeFoundryHost) {
         $foundryOut = Join-Path $stage 'app/foundry'
         & dotnet publish (Join-Path $root 'inference/WinSight.FoundryHost/WinSight.FoundryHost.csproj') `
-            --configuration $Configuration --runtime win-x64 --self-contained true --output $foundryOut *> (Join-Path $logs 'foundry.publish.log')
+            --configuration $Configuration @(Get-SharedRuntimeArgs $foundryOut) --output $foundryOut *> (Join-Path $logs 'foundry.publish.log')
         if ($LASTEXITCODE -ne 0) { throw 'Foundry host publish failed; stage is incomplete.' }
     }
+
+    # Shared private runtime: exactly the single Microsoft.NETCore.App version all hosts request (RollForward=Disable).
+    $frameworkVersions = @(Get-ChildItem -LiteralPath (Join-Path $stage 'app') -Recurse -Filter '*.runtimeconfig.json' -File | ForEach-Object {
+        $options = (Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json).runtimeOptions
+        if ($options.PSObject.Properties['includedFrameworks']) { throw "Host was published self-contained: $($_.FullName)" }
+        $frameworks = @(@($options.PSObject.Properties['framework'].Value) + @($options.PSObject.Properties['frameworks'].Value) | Where-Object { $_ })
+        if ($frameworks.Count -ne 1 -or $frameworks[0].name -ne 'Microsoft.NETCore.App') {
+            throw "Host must depend on Microsoft.NETCore.App only: $($_.FullName)"
+        }
+        $frameworks[0].version
+    } | Sort-Object -Unique)
+    if ($frameworkVersions.Count -ne 1) { throw "Hosts request different .NET runtime versions: $($frameworkVersions -join ', ')" }
+    $fxVersion = $frameworkVersions[0]
+    $runtimeLine = & dotnet --list-runtimes | Where-Object { $_ -like "Microsoft.NETCore.App $fxVersion [[]*" } | Select-Object -First 1
+    if (-not $runtimeLine) { throw "The build machine has no Microsoft.NETCore.App $fxVersion runtime to bundle." }
+    $sharedFramework = Join-Path ($runtimeLine -replace '^.*\[(.+)\]\s*$', '$1') $fxVersion
+    $dotnetRoot = Split-Path (Split-Path (Split-Path $sharedFramework -Parent) -Parent) -Parent
+    $hostFxr = Join-Path $dotnetRoot "host/fxr/$fxVersion/hostfxr.dll"
+    if (-not (Test-Path -LiteralPath (Join-Path $sharedFramework 'coreclr.dll') -PathType Leaf) -or -not (Test-Path -LiteralPath $hostFxr -PathType Leaf)) {
+        throw "Incomplete .NET $fxVersion install under $dotnetRoot (needs shared framework and host/fxr)."
+    }
+    New-Item -ItemType Directory -Path (Join-Path $runtimeRoot 'shared/Microsoft.NETCore.App'), (Join-Path $runtimeRoot "host/fxr/$fxVersion") -Force | Out-Null
+    Copy-Item -LiteralPath $sharedFramework -Destination (Join-Path $runtimeRoot "shared/Microsoft.NETCore.App/$fxVersion") -Recurse
+    Copy-Item -LiteralPath $hostFxr -Destination (Join-Path $runtimeRoot "host/fxr/$fxVersion")
 
     if ($OcrModelDirectory -and $ocrModelManifest) {
         foreach ($pin in $ocrModelManifest.files) {
@@ -398,24 +425,34 @@ try {
     # Layer 1 + Layer 2 Payload Slimming:
     # 1. Remove unused language satellite folders (keep zh-CN, zh-TW, en-US)
     $appRoot = Join-Path $stage 'app'
-    $keepDirs = @('zh-cn', 'zh-tw', 'en-us', 'assets', 'bridge', 'foundry', 'inference', 'licenses', 'microsoft.ui.xaml', 'models', 'runtimes', 'views')
+    $keepDirs = @('zh-cn', 'zh-tw', 'en-us', 'assets', 'bridge', 'foundry', 'inference', 'licenses', 'microsoft.ui.xaml', 'models', 'runtime', 'runtimes', 'views')
     Get-ChildItem -LiteralPath $appRoot -Directory | Where-Object { $keepDirs -notcontains $_.Name.ToLowerInvariant() } | ForEach-Object {
         Remove-Item -LiteralPath $_.FullName -Recurse -Force
     }
 
-    # 2. Remove debug symbols (.pdb) and diagnostic dump/debugger libraries across all directories
+    # 2. Remove debug symbols (.pdb), MSVC import libraries (.lib), diagnostic dump/debugger libraries,
+    #    and model build tooling (*.py, README.md) that the C# inference host never loads
     $diagNames = @('mscordbi.dll', 'mscordaccore.dll', 'microsoft.diasymreader.native.amd64.dll', 'createdump.exe')
+    $modelsPrefix = (Join-Path $appRoot 'models').ToLowerInvariant() + [IO.Path]::DirectorySeparatorChar
     Get-ChildItem -LiteralPath $appRoot -Recurse -File | Where-Object {
         $n = $_.Name.ToLowerInvariant()
-        $n.EndsWith('.pdb') -or ($diagNames -contains $n) -or $n.StartsWith('mscordaccore_amd64_')
+        $n.EndsWith('.pdb') -or $n.EndsWith('.lib') -or ($diagNames -contains $n) -or $n.StartsWith('mscordaccore_amd64_') -or
+            ($_.FullName.ToLowerInvariant().StartsWith($modelsPrefix) -and ($n.EndsWith('.py') -or $n -eq 'readme.md'))
     } | ForEach-Object {
         Remove-Item -LiteralPath $_.FullName -Force
     }
 
-    # 3. Remove unused in-process ONNX/DirectML from root app/ (WinSight.App uses isolated child hosts)
-    foreach ($unusedRootFile in @('onnxruntime.dll', 'DirectML.dll', 'onnxruntime_providers_shared.dll')) {
-        $p = Join-Path $appRoot $unusedRootFile
-        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+    # 3. Remove unused in-process AI, ML, Search, ONNX and DirectML libraries from root app/
+    #    (WinSight.App is pure WinUI; inference and indexing run in isolated child hosts)
+    $unusedAppPatterns = @(
+        'onnxruntime*.dll', 'DirectML.dll', 'Microsoft.ML.OnnxRuntime.dll',
+        'Microsoft.Windows.AI.*.dll', 'Microsoft.Windows.Search*.dll',
+        'Microsoft.Asg.SemanticIndex.*.dll'
+    )
+    foreach ($pat in $unusedAppPatterns) {
+        Get-ChildItem -LiteralPath $appRoot -File -Filter $pat | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Force
+        }
     }
 
     # 4. Remove unused WinRT desktop projections (Microsoft.Windows.SDK.NET.dll, WinRT.Runtime.dll) from pure console hosts
@@ -426,10 +463,9 @@ try {
         }
     }
 
-    # 5. Remove unused DirectML.dll from CPU-only inference/ and foundry/ hosts (DirectML GPU runs in inference/winml/)
-    foreach ($sub in @('inference', 'foundry')) {
-        $p = Join-Path (Join-Path $appRoot $sub) 'DirectML.dll'
-        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+    # 5. Remove unused DirectML.dll from optional foundry/ host (DirectML GPU runs in inference/)
+    if (Test-Path -LiteralPath (Join-Path $appRoot 'foundry/DirectML.dll')) {
+        Remove-Item -LiteralPath (Join-Path $appRoot 'foundry/DirectML.dll') -Force
     }
 
     # 6. Synchronize *.deps.json manifests so hostfxr only validates retained files
@@ -465,12 +501,19 @@ try {
         $json | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $depsFile -Encoding utf8
     }
 
+    # 7. Smoke-test the slimmed shared runtime: a broken layout makes the apphost exit before managed code runs.
+    & (Join-Path $appRoot 'winsight-native.exe') --help *> (Join-Path $logs 'smoke.cli.log')
+    if ($LASTEXITCODE -ne 0) { throw "Shared runtime smoke test failed for winsight-native.exe (exit $LASTEXITCODE); see logs/smoke.cli.log." }
+    & (Join-Path $appRoot 'inference/WinSight.InferenceHost.exe') environment *> (Join-Path $logs 'smoke.inference.log')
+    if ($LASTEXITCODE -ne 0) { throw "Shared runtime smoke test failed for WinSight.InferenceHost.exe (exit $LASTEXITCODE); see logs/smoke.inference.log." }
+
     $files = @(Get-ChildItem $stage -Recurse -File | Where-Object { $_.FullName -notlike "$logs*" } | ForEach-Object {
         @{ path = [IO.Path]::GetRelativePath($stage, $_.FullName).Replace('\', '/'); bytes = $_.Length;
            sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
     })
     [pscustomobject]@{
-        schema = 1; product = 'WinSight NativePreview'; runtime = 'win-x64'; selfContained = $true;
+        schema = 1; product = 'WinSight NativePreview'; runtime = 'win-x64'; selfContained = $false;
+        sharedRuntime = [pscustomobject]@{ path = 'app/runtime'; framework = 'Microsoft.NETCore.App'; version = $fxVersion };
         appOnlyPreview = [bool]$AppOnlyPreview; releaseApproved = $false;
         pending = @('Full behavior and model parity', 'Independent review', 'License and vulnerability gate',
             'Installer compilation and clean-machine install/upgrade/uninstall/recovery'); files = $files

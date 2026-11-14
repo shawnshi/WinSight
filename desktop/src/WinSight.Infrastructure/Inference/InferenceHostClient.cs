@@ -65,6 +65,20 @@ public sealed class InferenceHostClient : IEmbeddingService
         return info;
     }, cancellationToken, start: true, interactive: true);
 
+    public async Task TrimIdleSessionsAsync(CancellationToken cancellationToken = default)
+    {
+        if (session is null || disposed != 0) return;
+        try
+        {
+            await ExecuteAsync(async token =>
+            {
+                using var reply = await ExchangeAsync(new { id = ++nextId, op = "trim" }, nextId, token);
+                return 0;
+            }, cancellationToken, start: false, interactive: false).ConfigureAwait(false);
+        }
+        catch { }
+    }
+
     public Task<IReadOnlyList<EmbeddingResult>> EmbedAsync(IReadOnlyList<EmbeddingInput> inputs, CancellationToken cancellationToken = default) =>
         EmbedCoreAsync(inputs, interactive: false, cancellationToken);
 

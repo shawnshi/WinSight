@@ -279,7 +279,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             await backend.SaveSettingsAsync(latest);
             settings = latest;
             if (backgroundEditRevision == input.BackgroundRevision) backgroundIndexingTouched = false;
-            StatusMessage = "Settings successfully saved.";
+            StatusMessage = "设置已自动保存。";
             return true;
         }
         catch (Exception error)

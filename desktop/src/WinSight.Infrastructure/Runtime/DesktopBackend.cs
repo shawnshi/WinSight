@@ -144,6 +144,10 @@ public async Task SaveSettingsAsync(AppSettings updated, CancellationToken cance
                     sqlite.TrimMemory();
                 }
             }
+            if (embeddings is InferenceHostClient hostClient)
+            {
+                try { await hostClient.TrimIdleSessionsAsync(cancellationToken).ConfigureAwait(false); } catch { }
+            }
         }
         finally { lifecycle.Release(); }
     }

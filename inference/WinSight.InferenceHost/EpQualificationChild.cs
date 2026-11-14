@@ -281,6 +281,11 @@ internal static class EpQualificationChild
                         if (string.IsNullOrWhiteSpace(provider.LibraryPath)) continue;
                         try { OrtEnv.Instance().RegisterExecutionProviderLibrary(provider.Name, provider.LibraryPath); }
                         catch (Exception inner) when (inner.Message.Contains("already registered", StringComparison.OrdinalIgnoreCase)) { }
+                        catch (Exception inner) when (inner.Message.Contains("Access is denied", StringComparison.OrdinalIgnoreCase) ||
+                                                      (inner.InnerException?.Message.Contains("Access is denied", StringComparison.OrdinalIgnoreCase) ?? false))
+                        {
+                            childCatalogNote += $"; {provider.Name} managed in WindowsApps container";
+                        }
                         catch (Exception inner) { childCatalogNote += $"; {provider.Name} register failed: {inner.GetType().Name}"; }
                     }
                 }

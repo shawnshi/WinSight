@@ -14,10 +14,10 @@ WinSight 是面向 Windows 11 的本地多模态文件检索项目，用关键�
 
 
 
-> **当前状态（2026-11）：v1.0.0 正式里程碑，运行在 .NET 11 预览运行时上。** 全链路多模态文档检索、PDF/PPT 逐页视觉渲染、RapidOCR 几何定位、旧版 Office 格式（.doc/.xls/.ppt）隔离抽取与只读来源跳转均已稳定合入主线。桌面主控制台采用 Windows 11 原生 Mica Alt 沉浸式标题栏，快捷搜索 HUD 浮窗采用 DesktopAcrylic 亚克力材质与 800×520 双栏即时预览；全界面已完成规范简体中文本地化。全新演进架构全面打通双芯片平台自适应异构加速：AMD Ryzen AI 平台由 AIE 硬件微码（.rai）驱动 NPU 视觉特征提取与 DirectML GPU 极速融合；Intel 平台由 OpenVINO / DirectML 驱动紧凑型 INT8 文本与多模态模型。采用 Inno Setup 7 标准交付完整形态 B 安装包，自动感知 CPU 架构（AuthenticAMD vs GenuineIntel）实现零磁盘浪费的按需条件安装。GitHub CI 自动化工作流已全量覆盖核心测试套件。
+> **当前状态（2026-11）：v1.1.0 正式里程碑，运行在 .NET 11 预览运行时上。** 全链路多模态文档检索、PDF/PPT/Word/Excel 持久化温态栅格预览与页面步进、RapidOCR 交互式标定框点击复制、旧版 Office 格式（.doc/.xls/.ppt）隔离抽取与只读来源跳转均已稳定合入主线。桌面主控制台采用 Windows 11 原生 Mica Alt + `LeftCompact` 紧凑导航与统一 Fluent 2 设计系统，支持页面状态保活与窗口坐标记忆；快捷搜索 HUD 浮窗采用无边框圆角 DesktopAcrylic 亚克力材质，按鼠标所在显示器自适应居中弹出。后端引擎已全面升级为 **分块 Int8 标量量化向量池 (`CompactVectorIndex` + `Vector256` SIMD 点积)** 与 **SQLite WAL 读写双连接分离**（活跃检索内存降低 76%+，热检索耗时降至 500–900 ms），并在双芯片平台上实现自适应异构加速：AMD Ryzen AI 平台由 AIE 硬件微码（.rai）驱动 NPU 视觉特征提取与 DirectML GPU 极速融合，Intel 平台由 OpenVINO / DirectML 驱动紧凑型模型。采用 Inno Setup 7 标准交付完整形态 B 安装包，自动感知 CPU 架构（AuthenticAMD vs GenuineIntel）实现零磁盘浪费的按需条件安装。
 
-> **预览运行时与已知限制。** 本版本构建于 .NET 11 RC（精确 SDK `11.0.100-rc.2`，`RollForward=Disable`）：在 .NET 11 正式版发布并完成升级验证之前，请按预览版使用；`docs/native-migration/status.json` 的 `releaseApproved` 仍为 `false`。
-> - **规模**：检索是内存向量暴力扫描，实测约 2 万段 32 ms、10 万段 155 ms（含全部通道）；设置页会在接近 8 万向量段时提示。更大语料需要 ANN/分片。
+> **预览运行时与已知限制。** 本版本构建于 .NET 11 RC（`desktop/global.json` 锚定 `11.0.100-rc.2.26504.105`，`rollForward: latestFeature`）：在 .NET 11 正式版发布并完成升级验证之前，请按预览版使用；`docs/native-migration/status.json` 的 `releaseApproved` 仍为 `false`。
+> - **规模与内存**：向量引擎采用 4096 槽位分块 Int8 标量量化紧凑池（每段仅 ~796 字节，支持 `Vector256` SIMD 内积）+ 按需 SQLite 主键回表水合（`HydrateSemanticHitsAsync`），并配备推理宿主多模态图闲置 5 分钟自动卸载与内存压力联动回收；针对超大语料提供 `winsight-native backfill` CLI 命令及桌面端“一键后台补全向量”入口。
 > - **文档格式**：`.docx/.xlsx/.pptx/.odt/.rtf/.pdf/.txt/.csv/.html` 直接抽取正文；非 UTF-8 文本会按字节结构识别 GBK/GB18030。旧版 `.doc/.xls/.ppt`（及 `.dot/.xlt/.pot/.pps`）由隔离的推理宿主进程解析：只取正文、表格单元格与幻灯片/备注文字，加密文件会被跳过并说明原因。WPS 专有格式 `.wps/.et/.dps` 暂不抽取，仅可按文件名检索。
 > - **MCP 桥**：只读且不加载嵌入模型，`mode=hybrid` 与 `keyword` 同为词法检索；`index_directory` 需要先在应用的 MCP 控制台创建维护授权。返回的文件内容一律是不可信数据。
 > - **USN 追赶**：需要卷读取权限；无权限或日志不可用时回退到 FileSystemWatcher + 定期对账，实际状态见“存储与模型”页的 `USN` 字段。
@@ -30,10 +30,10 @@ WinSight 是面向 Windows 11 的本地多模态文件检索项目，用关键�
 * **解决什么问题**：文件名无法完全概括文档主旨，传统关键词匹配无法命中语义相近的表达或图片中的文字。WinSight 将正文提取、OCR 文字、位置单元与 768 维向量嵌入纳入统一的混合检索链路。
 * **用户形态**：
 
-  * **WinUI 3 桌面主控制台**：多标签页管理、沉浸式卡片化配置、存储与队列监控、OCR 框高亮来源预览。
-  * **HUD 快捷搜索栏 (`QuickSearchWindow`)**：全局热键秒级呼出，800×520 双栏分治，光标悬浮即时呈现右侧全文高亮上下文。
-  * **返回 JSON 的原生 CLI (`winsight-native.exe`)**：支持脚本化配置、全量/增量建库、单次检索与脱敏诊断。
-  * **本地 Agent MCP 桥接器 (`winsight-mcp.exe`)**：随应用内置提供，支持标准 Stdio 管道与环回 HTTP，采用单向异步信箱（Mailbox）机制防止外部 AI Agent 越权写坏库。
+  * **WinUI 3 桌面主控制台**：`LeftCompact` 紧凑导航 + `Ctrl+1..5` 全局切页且页面状态全程保活；支持检索模式切换（混合/语义/关键词）、可点击语法过滤胶囊、文档页内翻页、`SourcePreviewPane` 滚轮缩放与 OCR 蓝框点击复制；目录管理支持文档/代码仓库 (`code:`) 双视图与文件夹拖拽授权；存储页集成向量覆盖率进度、一键后台补全、缓存清理与数据库空闲页回收；设置页支持开关即改即存、快捷键录制器与原生 24 小时制 `TimePicker`。
+  * **HUD 快捷搜索栏 (`QuickSearchWindow`)**：无边框圆角 Acrylic Spotlight 悬浮框，自动在鼠标所在显示器弹出；支持图片与文档栅格预览，`Ctrl+C` 复制完整路径、`Ctrl+Shift+C` 复制摘要，与主窗口快捷键心智完全统一。
+  * **返回 JSON 的原生 CLI (`winsight-native.exe`)**：支持脚本化配置、全量/增量建库、单次检索、后台原位向量补全 (`backfill`) 与脱敏诊断。
+  * **本地 Agent MCP 桥接器 (`winsight-mcp.exe`)**：随应用内置提供，支持标准 Stdio 管道与环回 HTTP，控制台支持一键导出 Claude Desktop / Cursor / Windsurf / VS Code & Pi 客户端配置并内置桥接器健康探针。
 * **纯正本地与隐私承诺**：默认不全盘遍历扫描；不向任何云端上传个人文件或检索词；不包含用户行为遥测。
 
 \---
@@ -42,12 +42,12 @@ WinSight 是面向 Windows 11 的本地多模态文件检索项目，用关键�
 
 |能力|当前范围与实现机制|
 |-|-|
-|**文档与代码提取**|支持 DOCX 段落/表格、PPTX 幻灯片/正文/备注、XLSX 工作表/单元格上下文；另有纯文本、PDF 文本、HTML 与独立代码文件索引。扫描 PDF 逐页执行 WIC 渲染与 OCR 行框标定（上限 32 页/180 秒）；PPT 支持基于 Office 进程的只读来源定位。|
+|**文档与代码提取**|支持 DOCX 段落/表格、PPTX 幻灯片/正文/备注、XLSX 工作表/单元格上下文；另有纯文本、PDF 文本、HTML 与独立代码文件索引。扫描 PDF 逐页执行 WIC 渲染与 OCR 行框标定（上限 32 页/180 秒）；内置持久化 `--preview-stdio` 预热预览服务与 SHA-256 磁盘缓存（200 文件 / 150 MB LRU），实现 Word/Excel/PPT/PDF 秒级高清栅格渲染与只读来源定位。|
 |**图片与多模态**|基于 Windows Imaging Component (WIC) 硬件加速解码与双三次采样；独立进程加载 RapidOCR (PaddleOCR ONNX) 执行文本检测与识别；提取 EXIF 白名单元数据，杜绝个人隐私泄露。|
 |**音视频片段**|原生音频 16kHz PCM 采样（30 秒窗口、5 秒步进跳跃）与视频关键帧采样嵌入；定位为片段检索，不作为离线语音全量转录服务。|
 |**混合检索与排序**|中文简繁归一化（FormKC）、中英混排、精确编号与字段过滤。双路 FTS：`fts`（porter + unicode61 处理拉丁词/路径）与 `fts_seg`（基于 Rust jieba-rs 的中文分词倒排与真实 BM25 词频）。融合层结合文件名、目录与语义通道按位置单元执行 RRF 融合打分。|
 |**增量与后台索引**|SQLite 级持久任务队列（`index_tasks`），支持任务去重、原子替换与崩溃断点续跑。NTFS USN Journal 增量追赶离线变更；四类并发预算（交互查询/新文件/历史补建/复杂解析）当前只作状态估算展示；后台索引的实际闸门是时间段与“仅接电源”设置（默认开启），用户查询在推理批次之间优先于后台索引。|
-|**命令行工具**|`configure`、`status`、`index`、`search`、`model-info`、`diagnostics`；支持绝对路径 `--data-dir` 隔离。|
+|**命令行工具**|`configure`、`status`、`index`、`search`、`backfill`、`model-info`、`diagnostics`；支持绝对路径 `--data-dir` 隔离。|
 |**平台支持**|Windows 11 x64（最低运行版本 Windows 11 21H2 Build 22000）；模型计算以 CPU (SIMD AVX2) 和 DirectML/NPU 为主。|
 
 \---
@@ -81,7 +81,7 @@ WinSight/
 ```
 
 * **高聚合拆解**：`DesktopBackend` 拆分为生命周期、索引管线、混合检索、硬件探测与运维调度 5 个单一职责的分部文件，消解了单文件上帝类。
-* **进程树殉爆保护**：所有推理与 OCR 子进程均绑定 Windows Job Object（`KILL_ON_JOB_CLOSE`），并在 `BelowNormal` 优先级下运行，前台 UI 永不卡顿，父进程崩溃时子进程驱动级自动销毁。
+* **进程树殉爆保护**：所有推理、OCR 与 DCOM 唤醒的 Office 自动化子进程（`WINWORD` / `EXCEL` / `POWERPNT`）均绑定 Windows Job Object（`KILL_ON_JOB_CLOSE`），并在 `BelowNormal` 优先级下运行，前台 UI 永不卡顿，父进程退出或异常终止时子进程驱动级自动回收；预览工作区具备启动孤儿目录自动清扫机制。
 * **并发互斥安全**：引入 `IndexRunLock` 独占文件锁，在 App、CLI 和后台定时轮询任务之间建立跨进程互斥栅栏，防止 SQLite 数据库多写争用。
 
 \---
@@ -95,8 +95,8 @@ WinSight/
 |**运行时与 SDK**|**.NET 11 (C# latest)**；桌面端与推理宿主统一面向 `net11.0-windows10.0.26100.0`，最低支持平台统一为 Windows 11 RTM (`10.0.22000.0`)。|
 |**桌面 UI**|**Windows App SDK 2.5.1 (WinUI 3)**；原生 Mica Alt 与 DesktopAcrylic 材质合成，手写轻量 MVVM（零反射开销）。|
 |**向量嵌入模型**|**EmbeddingGemma-2 ONNX (q4 量化)**；768 维单向量空间多模态对齐（文本/图片/音频），内存常驻仅 \~175 MB。|
-|**向量检索引擎**|内存连续 float32 配合 **SIMD 硬件加速 (`System.Numerics.Vector<float>`) 内联点积**，10 万向量点积耗时 \~15 ms。|
-|**词法与倒排检索**|**Microsoft.Data.Sqlite 10.0.13** (WAL 模式) + **FTS5**；`fts` 负责拉丁词/精确标识符，`fts_seg` 负责中文分词与真实 BM25 词频计算。|
+|**向量检索引擎**|分块紧凑 Int8 标量量化内存向量池（`CompactVectorIndex`）配合 **`System.Runtime.Intrinsics.Vector256` / `Vector128` SIMD Int8 内积加速**，内存占用较全精度缩减约 76%+，配合按需回表水合仅提取 Top-K 命中上下文。|
+|**词法与倒排检索**|**Microsoft.Data.Sqlite 10.0.13** (WAL 模式，**`ReadWrite` / `ReadOnly` 双连接读写分离** + `PRAGMA busy_timeout=5000`) + **FTS5**；`fts` 负责拉丁词/精确标识符，`fts_seg` 负责中文分词与真实 BM25 词频计算。|
 |**双原生分词库**|**Rust CDylib 原生库**：`winsight_segmenter.dll` (jieba-rs 0.11.0) + `winsight_tokenizer.dll` (HuggingFace tokenizers rev `3012770`)。|
 |**多媒体与图像解码**|**Windows Imaging Component (WIC COM ABI)** 硬件加速解码与方向旋转，Windows.Data.Pdf 页面矢量渲染。|
 |**OCR 文字识别**|**`RapidOcrNet.WinSight 4.2.0-winsight.1`**；隔离进程加载 PaddleOCR ONNX 权重，内存完全独立。|
@@ -144,12 +144,10 @@ WinSight/
 ### 1\. 终端用户安装使用
 
 * **现成安装包直接安装**：
-可以直接运行仓库中已编译打包好的完整安装包：[**`releases/WinSight-1.0.0-x64-setup.exe`**](releases/WinSight-1.0.0-x64-setup.exe)（全模态完整安装包形态 B，主安装程序 `WinSight-1.0.0-x64-setup.exe` 配合 `setup-*.bin` 数据分卷）。自动探测底层 CPU 芯片平台（AMD Ryzen AI vs Intel Core Ultra / OpenVINO），根据硬件环境**仅解压安装目标平台所需的最优模型与微码**，非目标平台文件完全跳过，实现真正的开箱即用且零磁盘冗余。
+可以直接运行仓库中已编译打包好的完整安装包：[**`releases/WinSight-1.1.0-x64-setup.exe`**](releases/WinSight-1.1.0-x64-setup.exe)（全模态完整安装包形态 B，主安装程序 `WinSight-1.1.0-x64-setup.exe` 配合 `WinSight-1.1.0-x64-setup-1.bin` 单一数据卷，经跨宿主共享私有运行时、重复模型去重与固态流压缩优化后，分发体积由 5.48 GB 骤降至 1.21 GB）。自动探测底层 CPU 芯片平台（AMD Ryzen AI vs Intel Core Ultra / OpenVINO），根据硬件环境**仅解压安装目标平台所需的最优模型与微码**，非目标平台文件完全跳过，实现真正的开箱即用且零磁盘冗余。
 * **分卷校验和**：
-  * 主程序：`5f0aaea768c45e67247a188388762e1ca9681dd8e789872bab1076901e1d2469  WinSight-1.0.0-x64-setup.exe`
-  * 数据卷 1：`43a861993a89f1bc0ecf857c721090f75080fc97133f94e456ad06371f16fb46  WinSight-1.0.0-x64-setup-1.bin`
-  * 数据卷 2：`47412f6b806bf36f6194edb5ec1f744ec4989975a060817cc6cd6de7e61bf130  WinSight-1.0.0-x64-setup-2.bin`
-  * 数据卷 3：`83e2c497e2fb72f6a048b08a77a48fecaa0083798a7cdb21a00954f6cee31f81  WinSight-1.0.0-x64-setup-3.bin`
+  * 主程序：`f72d9a72ad33bc0982fed384943965f0d1367d0e5d45ef331d4a3fa93be14d4b  WinSight-1.1.0-x64-setup.exe`
+  * 数据卷 1：`f249ec9a4604ef9f4b9c3cf71ef00d608a883a4319c1534e368eaa4f2e43860d  WinSight-1.1.0-x64-setup-1.bin`
 * **标准安装路径**：双击运行安装向导，默认安装至 **`C:\Program Files\WinSight`**。
 * **安装包特性与可选任务**：
 
@@ -213,7 +211,10 @@ winsight-native index --data-dir "C:\MyData" --root "C:\Documents"
 # 4. 执行多模态混合检索
 winsight-native search --data-dir "C:\MyData" --query "2026年政府采购方案" --mode hybrid --limit 10
 
-# 5. 导出脱敏的系统诊断包（供故障排查）
+# 5. 对历史未嵌入文本片段执行原位向量补全（支持中断续传）
+winsight-native backfill --data-dir "C:\MyData"
+
+# 6. 导出脱敏的系统诊断包（供故障排查）
 winsight-native diagnostics --data-dir "C:\MyData" --out "C:\MyData\diag.zip"
 ```
 

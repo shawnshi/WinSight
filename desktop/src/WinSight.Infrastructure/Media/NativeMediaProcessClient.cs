@@ -95,6 +95,18 @@ public sealed class NativeMediaProcessClient : IAsyncDisposable
             request=request with{SourcePath=MediaTaskFiles.LocalPath(request.SourcePath)};
             return MediaTaskFiles.CreatePresentationPage(hostPath,workspacePath,request);
         },(files,payload,ct)=>NativePresentationLease.ParsePage(payload,request,files,ct),token);
+    public Task<NativeWordPageLease> RenderWordPageAsync(NativeWordPageRequest request, CancellationToken token = default) =>
+        ExecuteAsync(NativeMediaOperation.RenderWordPage, () => { ArgumentNullException.ThrowIfNull(request); request.Validate(); }, () =>
+        {
+            request = request with { SourcePath = MediaTaskFiles.LocalPath(request.SourcePath) };
+            return MediaTaskFiles.CreateWordPage(hostPath, workspacePath, request);
+        }, (files, payload, ct) => NativeWordPageLease.Parse(payload, request, files, ct), token);
+    public Task<NativeExcelPageLease> RenderExcelPageAsync(NativeExcelPageRequest request, CancellationToken token = default) =>
+        ExecuteAsync(NativeMediaOperation.RenderExcelPage, () => { ArgumentNullException.ThrowIfNull(request); request.Validate(); }, () =>
+        {
+            request = request with { SourcePath = MediaTaskFiles.LocalPath(request.SourcePath) };
+            return MediaTaskFiles.CreateExcelPage(hostPath, workspacePath, request);
+        }, (files, payload, ct) => NativeExcelPageLease.Parse(payload, request, files, ct), token);
     public Task<NativeRasterPreviewLease> RenderRasterPreviewAsync(NativeRasterPreviewRequest request,CancellationToken token=default) =>
         ExecuteAsync(NativeMediaOperation.RenderRasterPreview,()=>{ArgumentNullException.ThrowIfNull(request);request.Validate();},()=>
         {

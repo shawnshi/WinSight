@@ -28,18 +28,6 @@
         <XamlUICommand x:Key="CopyExcerptCommand" Label="复制命中文本" Description="复制命中段落的文本" ExecuteRequested="OnCopyExcerptCommand">
             <XamlUICommand.IconSource><FontIconSource Glyph="&#xE8C8;"/></XamlUICommand.IconSource>
         </XamlUICommand>
-        <Style x:Key="KeyCapBorder" TargetType="Border">
-            <Setter Property="Background" Value="{ThemeResource ControlAltFillColorSecondaryBrush}"/>
-            <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="4"/>
-            <Setter Property="Padding" Value="5,1"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
-        </Style>
-        <Style x:Key="KeyCapText" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}">
-            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-        </Style>
     </Page.Resources>
 
     <Page.KeyboardAccelerators>
@@ -47,14 +35,14 @@
         <KeyboardAccelerator Key="F" Modifiers="Control" Invoked="OnFocusSearchAccelerator"/>
     </Page.KeyboardAccelerators>
 
-    <Grid Padding="24,16,24,24" RowSpacing="16">
+    <Grid Padding="24,12,24,8" RowSpacing="8">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        <StackPanel Spacing="10">
+        <StackPanel Spacing="4">
             <AutoSuggestBox x:Name="SearchBox"
                             PlaceholderText="输入自然语言描述、精确单号，或以 code: 搜索代码；type:pdf 可限定类型"
                             QueryIcon="Find"
@@ -67,20 +55,34 @@
                             QuerySubmitted="OnQuerySubmitted"
                             GotFocus="OnSearchBoxGotFocus"
                             PreviewKeyDown="OnSearchBoxKeyDown"/>
-            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
-                          HorizontalScrollMode="Auto" VerticalScrollMode="Disabled">
-            <SelectorBar x:Name="KindSelector" SelectionChanged="OnKindSelectorChanged"
-                         AutomationProperties.Name="文件类型筛选">
-                <SelectorBarItem Text="全部" Tag="all" IsSelected="True"/>
-                <SelectorBarItem Text="文档" Tag="doc"/>
-                <SelectorBarItem Text="PDF" Tag="pdf"/>
-                <SelectorBarItem Text="图片" Tag="image"/>
-                <SelectorBarItem Text="截图" Tag="screenshot"/>
-                <SelectorBarItem Text="音频" Tag="audio"/>
-                <SelectorBarItem Text="视频" Tag="video"/>
-                <SelectorBarItem Text="代码" Tag="code"/>
-            </SelectorBar>
-            </ScrollViewer>
+            <Grid ColumnSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ScrollViewer Grid.Column="0" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                              HorizontalScrollMode="Auto" VerticalScrollMode="Disabled">
+                    <SelectorBar x:Name="KindSelector" SelectionChanged="OnKindSelectorChanged"
+                                 AutomationProperties.Name="文件类型筛选">
+                        <SelectorBarItem Text="全部" Tag="all" IsSelected="True"/>
+                        <SelectorBarItem Text="文档" Tag="doc"/>
+                        <SelectorBarItem Text="PDF" Tag="pdf"/>
+                        <SelectorBarItem Text="图片" Tag="image"/>
+                        <SelectorBarItem Text="截图" Tag="screenshot"/>
+                        <SelectorBarItem Text="音频" Tag="audio"/>
+                        <SelectorBarItem Text="视频" Tag="video"/>
+                        <SelectorBarItem Text="代码" Tag="code"/>
+                    </SelectorBar>
+                </ScrollViewer>
+                <ComboBox x:Name="ModeComboBox" Grid.Column="1" VerticalAlignment="Center"
+                          SelectedIndex="0" SelectionChanged="OnModeSelectionChanged"
+                          ToolTipService.ToolTip="切换检索模式：混合（关键词+语义）、纯语义向量或纯关键词"
+                          AutomationProperties.Name="检索模式">
+                    <ComboBoxItem Content="混合检索" Tag="hybrid"/>
+                    <ComboBoxItem Content="仅语义" Tag="semantic"/>
+                    <ComboBoxItem Content="仅关键词" Tag="keyword"/>
+                </ComboBox>
+            </Grid>
         </StackPanel>
         <InfoBar x:Name="SearchNotice" Grid.Row="1"
                  IsOpen="{x:Bind ViewModel.HasNotice, Mode=OneWay}"
@@ -108,6 +110,17 @@
                         <Button Content="医院数字化转型规划" Tag="医院数字化转型规划" Click="OnExampleChipClick" CornerRadius="16" Padding="14,5"/>
                         <Button Content="PRJ-2026-001" Tag="PRJ-2026-001" Click="OnExampleChipClick" CornerRadius="16" Padding="14,5"/>
                         <Button Content="code: RefreshToken" Tag="code: RefreshToken" Click="OnExampleChipClick" CornerRadius="16" Padding="14,5"/>
+                    </StackPanel>
+                    <StackPanel Spacing="6" Margin="0,6,0,0" HorizontalAlignment="Center">
+                        <TextBlock Text="快捷过滤语法（点击插入）" Style="{ThemeResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center"/>
+                        <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                            <Button Content="folder1:" Tag="folder1:" Click="OnSyntaxChipClick" CornerRadius="12" Padding="10,3" FontSize="12"/>
+                            <Button Content="type:pdf" Tag="type:pdf " Click="OnSyntaxChipClick" CornerRadius="12" Padding="10,3" FontSize="12"/>
+                            <Button Content="sheet:" Tag="sheet:" Click="OnSyntaxChipClick" CornerRadius="12" Padding="10,3" FontSize="12"/>
+                            <Button Content="amount:" Tag="amount:" Click="OnSyntaxChipClick" CornerRadius="12" Padding="10,3" FontSize="12"/>
+                            <Button Content="date:" Tag="date:" Click="OnSyntaxChipClick" CornerRadius="12" Padding="10,3" FontSize="12"/>
+                        </StackPanel>
                     </StackPanel>
                     <StackPanel Spacing="4" Margin="0,12,0,0"
                                 Visibility="{x:Bind VisibleIfAny(ViewModel.History.Items.Count), Mode=OneWay}">
@@ -241,11 +254,6 @@
                                                                Typography.NumeralAlignment="Tabular"/>
                                                 </Border>
                                             </Grid>
-                                            <TextBlock Text="{x:Bind ParentFolderLabel}"
-                                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                       Visibility="{x:Bind PrimaryRowVisibility}"
-                                                       MaxLines="1" TextTrimming="CharacterEllipsis"/>
                                             <TextBlock Text="{x:Bind ListMetaCompact}"
                                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
@@ -267,14 +275,14 @@
 
                                         <!-- Subtle Quick-Inspect Trigger (also used by UIA Harness) -->
                                         <Button Grid.Column="2"
-                                                ToolTipService.ToolTip="页图与 OCR 详情 (Space)"
+                                                ToolTipService.ToolTip="交互大图与 OCR 详情 (Space)"
                                                 AutomationProperties.Name="Preview source"
                                                 Click="OnPreviewItemClick"
                                                 Background="Transparent" BorderThickness="0"
-                                                MinWidth="28" Height="28" Padding="4"
-                                                VerticalAlignment="Center" Opacity="0.65"
+                                                MinWidth="26" Height="26" Padding="3"
+                                                VerticalAlignment="Center" Opacity="0.45"
                                                 Tag="{x:Bind}">
-                                            <FontIcon Glyph="&#xE8A5;" FontSize="13"/>
+                                            <FontIcon Glyph="&#xE8A5;" FontSize="12"/>
                                         </Button>
                                     </Grid>
                                 </DataTemplate>
@@ -306,9 +314,11 @@
                                             Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
                                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                                             BorderThickness="1" CornerRadius="10"
-                                            MinHeight="220" MaxHeight="320" Padding="8">
+                                            MinHeight="240" MaxHeight="520" Padding="8">
                                         <Grid>
-                                            <Image x:Name="HeroPreviewImage" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            <Image x:Name="HeroPreviewImage" Stretch="Uniform"
+                                                   MinHeight="220" MaxHeight="480"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                             <Border Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
                                                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                                                     BorderThickness="1" CornerRadius="10" Padding="10,3"
@@ -327,39 +337,43 @@
                                             Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}"
                                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                                             BorderThickness="1" CornerRadius="10"
-                                            MinHeight="220" MaxHeight="320" Padding="24,18">
+                                            MinHeight="220" MaxHeight="340" Padding="20,16">
                                         <Grid RowSpacing="10">
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="*"/>
                                             </Grid.RowDefinitions>
-                                            <!-- Simulated Document Header Bar -->
+                                            <!-- Simulated Document Header Bar with In-Place Page Stepper -->
                                             <Border Grid.Row="0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" Padding="0,0,0,8">
-                                                <Grid>
-                                                    <TextBlock Text="{x:Bind ViewModel.SelectedItem.FileName, Mode=OneWay, FallbackValue=''}"
+                                                <Grid ColumnSpacing="8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{x:Bind ViewModel.SelectedItem.FileName, Mode=OneWay, FallbackValue=''}"
                                                                Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold"
                                                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                                               MaxLines="1" TextTrimming="CharacterEllipsis"
-                                                               Margin="0,0,130,0"/>
-                                                    <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Spacing="8">
-                                                        <TextBlock Text="{x:Bind ViewModel.SelectedItem.LocationDisplay, Mode=OneWay, FallbackValue=''}"
-                                                                   Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold"
-                                                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
-                                                                   VerticalAlignment="Center"/>
-                                                        <Button Click="OnPreviewSelectedClick"
-                                                                Background="Transparent" BorderThickness="0"
-                                                                Padding="4,2" MinWidth="0" MinHeight="0"
-                                                                ToolTipService.ToolTip="页图与 OCR 详情 (Space)">
-                                                            <StackPanel Orientation="Horizontal" Spacing="4">
-                                                                <FontIcon Glyph="&#xE8A5;" FontSize="11"/>
-                                                                <TextBlock Text="页图预览" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
-                                                            </StackPanel>
+                                                               MaxLines="1" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                                    <StackPanel x:Name="HeroPageStepper" Grid.Column="1" Orientation="Horizontal" Spacing="4" Visibility="Collapsed" VerticalAlignment="Center">
+                                                        <Button x:Name="HeroPrevPageBtn" Click="OnHeroPrevPageClick" Padding="5,2" MinWidth="24" MinHeight="22" CornerRadius="4" ToolTipService.ToolTip="上一页">
+                                                            <FontIcon Glyph="&#xE76B;" FontSize="10"/>
+                                                        </Button>
+                                                        <TextBlock x:Name="HeroPageText" Text="1 / 1" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold"
+                                                                   VerticalAlignment="Center" Typography.NumeralAlignment="Tabular" Margin="2,0"/>
+                                                        <Button x:Name="HeroNextPageBtn" Click="OnHeroNextPageClick" Padding="5,2" MinWidth="24" MinHeight="22" CornerRadius="4" ToolTipService.ToolTip="下一页">
+                                                            <FontIcon Glyph="&#xE76C;" FontSize="10"/>
                                                         </Button>
                                                     </StackPanel>
+                                                    <TextBlock Grid.Column="2"
+                                                               Text="{x:Bind ViewModel.SelectedItem.LocationDisplay, Mode=OneWay, FallbackValue=''}"
+                                                               Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold"
+                                                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                                               VerticalAlignment="Center"/>
                                                 </Grid>
                                             </Border>
                                             <Grid Grid.Row="1">
-                                                <ScrollViewer x:Name="DocumentExcerptScroll" VerticalScrollBarVisibility="Auto">
+                                                <ScrollViewer x:Name="DocumentExcerptScroll" MaxHeight="280" VerticalScrollBarVisibility="Auto">
                                                     <TextBlock x:Name="CanvasExcerptBlock"
                                                                Text="{x:Bind ViewModel.SelectedItem.CanvasExcerptText, Mode=OneWay, FallbackValue=''}"
                                                                TextWrapping="Wrap"
@@ -368,13 +382,25 @@
                                                                Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                                                                Margin="0,0,0,28"/>
                                                 </ScrollViewer>
-                                                <Image x:Name="DocumentRasterImage"
-                                                       Stretch="Uniform"
-                                                       HorizontalAlignment="Center"
-                                                       VerticalAlignment="Center"
-                                                       Visibility="Collapsed"
-                                                       Tapped="OnDocumentRasterImageTapped"
-                                                       ToolTipService.ToolTip="点击打开大图与 OCR 标定 (Space)"/>
+                                                <Border x:Name="DocumentRasterBorder" CornerRadius="6"
+                                                        Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                                                        Visibility="Collapsed">
+                                                    <ScrollViewer x:Name="DocumentRasterScroll"
+                                                                  MaxHeight="640"
+                                                                  VerticalScrollBarVisibility="Auto"
+                                                                  HorizontalScrollBarVisibility="Auto"
+                                                                  ZoomMode="Enabled"
+                                                                  MinZoomFactor="0.5"
+                                                                  MaxZoomFactor="3.0"
+                                                                  SizeChanged="OnDocumentRasterScrollSizeChanged">
+                                                        <Image x:Name="DocumentRasterImage"
+                                                               Stretch="Uniform"
+                                                               HorizontalAlignment="Center"
+                                                               VerticalAlignment="Top"
+                                                               Tapped="OnDocumentRasterImageTapped"
+                                                               ToolTipService.ToolTip="点击打开大图与 OCR 标定 (Space)；支持 Ctrl+滚轮缩放"/>
+                                                    </ScrollViewer>
+                                                </Border>
                                             </Grid>
                                             <!-- Floating Bottom-Left Page Pill (p. 4) -->
                                             <Border Grid.Row="1" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
@@ -385,6 +411,19 @@
                                                 <TextBlock Text="{x:Bind ViewModel.SelectedItem.CompactBadgeText, Mode=OneWay, FallbackValue=''}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold"
                                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                            </Border>
+                                            <!-- Subtle Bottom-Right Rendering Pill -->
+                                            <Border x:Name="PreviewLoadingPill" Grid.Row="1"
+                                                    Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                    BorderThickness="1" CornerRadius="10" Padding="10,4"
+                                                    HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                                    Visibility="Collapsed">
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <ProgressRing IsActive="True" Width="12" Height="12"/>
+                                                    <TextBlock Text="正在渲染高清预览…" Style="{ThemeResource CaptionTextBlockStyle}"
+                                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                                </StackPanel>
                                             </Border>
                                         </Grid>
                                     </Border>
@@ -449,8 +488,8 @@
                                     <CommandBar x:Name="ActionBar" Grid.Column="1" Background="Transparent" DefaultLabelPosition="Right"
                                                 HorizontalAlignment="Left" IsOpen="False"
                                                 AutomationProperties.Name="文件操作">
-                                        <AppBarButton Command="{StaticResource RevealCommand}" CommandParameter="{x:Bind ViewModel.SelectedItem, Mode=OneWay}"/>
                                         <AppBarButton Command="{StaticResource PreviewCommand}" CommandParameter="{x:Bind ViewModel.SelectedItem, Mode=OneWay}"/>
+                                        <AppBarButton Command="{StaticResource RevealCommand}" CommandParameter="{x:Bind ViewModel.SelectedItem, Mode=OneWay}"/>
                                         <AppBarButton Command="{StaticResource CopyPathCommand}" CommandParameter="{x:Bind ViewModel.SelectedItem, Mode=OneWay}"/>
                                         <CommandBar.SecondaryCommands>
                                             <AppBarButton Command="{StaticResource CopyExcerptCommand}" CommandParameter="{x:Bind ViewModel.SelectedItem, Mode=OneWay}"/>
@@ -465,7 +504,7 @@
         </SplitView>
 
         <!-- DigUp-style Footer Bar (Left: Results Count, Right: Inline Keycap Shortcuts) -->
-        <Grid Grid.Row="3">
+        <Grid Grid.Row="3" Margin="0,2,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
@@ -476,26 +515,26 @@
             <ScrollViewer x:Name="FooterHintsHost" Grid.Column="1" VerticalAlignment="Center" HorizontalScrollBarVisibility="Hidden" HorizontalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" VerticalScrollMode="Disabled" IsTabStop="False">
             <StackPanel x:Name="FooterHints" Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
                 <StackPanel Orientation="Horizontal" Spacing="4">
-                    <Border Style="{StaticResource KeyCapBorder}"><TextBlock Style="{StaticResource KeyCapText}" Text="↵"/></Border>
+                    <Border Style="{StaticResource WsKeyCapBorder}"><TextBlock Style="{StaticResource WsKeyCapText}" Text="↵"/></Border>
                     <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" Margin="2,0,0,0" Text="打开并定位"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="4">
-                    <Border Style="{StaticResource KeyCapBorder}"><TextBlock Style="{StaticResource KeyCapText}" Text="Ctrl"/></Border>
-                    <Border Style="{StaticResource KeyCapBorder}"><TextBlock Style="{StaticResource KeyCapText}" Text="↵"/></Border>
+                    <Border Style="{StaticResource WsKeyCapBorder}"><TextBlock Style="{StaticResource WsKeyCapText}" Text="Ctrl"/></Border>
+                    <Border Style="{StaticResource WsKeyCapBorder}"><TextBlock Style="{StaticResource WsKeyCapText}" Text="↵"/></Border>
                     <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" Margin="2,0,0,0" Text="在资源管理器中显示"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="4">
-                    <Border Style="{StaticResource KeyCapBorder}"><TextBlock Style="{StaticResource KeyCapText}" Text="Space"/></Border>
-                    <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" Margin="2,0,0,0" Text="页面预览"/>
+                    <Border Style="{StaticResource WsKeyCapBorder}"><TextBlock Style="{StaticResource WsKeyCapText}" Text="Space"/></Border>
+                    <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" Margin="2,0,0,0" Text="交互大图/OCR"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="4">
-                    <Border Style="{StaticResource KeyCapBorder}"><TextBlock Style="{StaticResource KeyCapText}" Text="Ctrl"/></Border>
-                    <Border Style="{StaticResource KeyCapBorder}"><TextBlock Style="{StaticResource KeyCapText}" Text="C"/></Border>
+                    <Border Style="{StaticResource WsKeyCapBorder}"><TextBlock Style="{StaticResource WsKeyCapText}" Text="Ctrl"/></Border>
+                    <Border Style="{StaticResource WsKeyCapBorder}"><TextBlock Style="{StaticResource WsKeyCapText}" Text="C"/></Border>
                     <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" Margin="2,0,0,0" Text="复制路径"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="4">
-                    <Border Style="{StaticResource KeyCapBorder}"><TextBlock Style="{StaticResource KeyCapText}" Text="Ctrl"/></Border>
-                    <Border Style="{StaticResource KeyCapBorder}"><TextBlock Style="{StaticResource KeyCapText}" Text="K"/></Border>
+                    <Border Style="{StaticResource WsKeyCapBorder}"><TextBlock Style="{StaticResource WsKeyCapText}" Text="Ctrl"/></Border>
+                    <Border Style="{StaticResource WsKeyCapBorder}"><TextBlock Style="{StaticResource WsKeyCapText}" Text="K"/></Border>
                     <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" Margin="2,0,0,0" Text="回到搜索框"/>
                 </StackPanel>
             </StackPanel>

@@ -15,9 +15,9 @@ internal static class PowerPointPolicy
     {
         get
         {
-            var processes = Process.GetProcessesByName("POWERPNT");
-            try { return processes.Length != 0; }
-            finally { foreach (var process in processes) process.Dispose(); }
+            // Do not block rendering simply because the user has an existing PowerPoint session open.
+            // Concurrency is safely coordinated via AutomationMutex and WithWindow=msoFalse.
+            return false;
         }
     }
     internal static string? InstalledPath()
@@ -57,8 +57,9 @@ internal static class PowerPointPolicy
             Marshal.DestroyStructure<TrustFile>(ptr); Marshal.FreeHGlobal(ptr);
         }
     }
-    internal static void ValidatePackage(Stream source, CancellationToken token) => ValidateOfficePackage(source,"ppt/presentation.xml",token);
-    internal static void ValidateOfficePackage(Stream source,string expectedMainPart,CancellationToken token)
+    internal static void ValidatePackage(Stream source, CancellationToken token) => ValidateOfficePackage(source,"ppt/presentation.xml",token, strictContent: true);
+    internal static void ValidateInteractivePackage(Stream source, CancellationToken token) => ValidateOfficePackage(source,"ppt/presentation.xml",token, strictContent: false);
+    internal static void ValidateOfficePackage(Stream source,string expectedMainPart,CancellationToken token, bool strictContent = true)
     {
         long old = source.Position; source.Position = 0;
         try
@@ -73,10 +74,12 @@ internal static class PowerPointPolicy
                     || name.Split('/').Any(p=>p is "." or "..") || !names.Add(name))
                     throw new InvalidDataException("Ambiguous PowerPoint package entry.");
                 expanded=checked(expanded+entry.Length);
-                if (expanded > 64L*1024*1024) throw new InvalidDataException("PowerPoint package expansion bound exceeded.");
-                if (low.Contains("vba") || low.Contains("activex") || low.Contains("/embeddings/") || low.StartsWith("customui/") || low.EndsWith(".svg"))
-                    throw new NotSupportedException("Active/embedded/SVG content is not supported by the safe PowerPoint render policy.");
+                if (strictContent && expanded > 256L*1024*1024) throw new InvalidDataException("PowerPoint package expansion bound exceeded.");
+                if (low.Contains("vbaproject.bin")) throw new NotSupportedException("Macro-enabled PowerPoint package is not rendered.");
+                if (strictContent && (low.Contains("vba") || low.Contains("activex") || low.Contains("/embeddings/") || low.StartsWith("customui/")))
+                    throw new NotSupportedException("Active/embedded content is not supported by the safe PowerPoint render policy.");
                 if (!low.EndsWith(".xml") && !low.EndsWith(".rels")) continue;
+                if (!strictContent && low != "[content_types].xml") continue;
                 if (entry.Length > 8L*1024*1024) throw new InvalidDataException("PowerPoint XML part bound exceeded.");
                 using var input=entry.Open();
                 using var reader=XmlReader.Create(input,new XmlReaderSettings { DtdProcessing=DtdProcessing.Prohibit,XmlResolver=null,MaxCharactersInDocument=8L*1024*1024 });
@@ -85,8 +88,8 @@ internal static class PowerPointPolicy
                     token.ThrowIfCancellationRequested();
                     if(++nodes>1000000 || reader.Depth>128) throw new InvalidDataException("PowerPoint XML structure bound exceeded.");
                     if(reader.NodeType!=XmlNodeType.Element) continue;
-                    if(reader.LocalName is "oleObj" or "control") throw new NotSupportedException("Active PowerPoint object is not rendered.");
-                    if(reader.LocalName=="Relationship" && string.Equals(reader.GetAttribute("TargetMode"),"External",StringComparison.OrdinalIgnoreCase))
+                    if(strictContent && reader.LocalName is "oleObj" or "control") throw new NotSupportedException("Active PowerPoint object is not rendered.");
+                    if(strictContent && reader.LocalName=="Relationship" && string.Equals(reader.GetAttribute("TargetMode"),"External",StringComparison.OrdinalIgnoreCase))
                         throw new NotSupportedException("External PowerPoint dependencies are not opened for rendering.");
                     var content=reader.GetAttribute("ContentType");
                     if(content is not null && (content.Contains("macroEnabled",StringComparison.OrdinalIgnoreCase) || content.Contains("vbaProject",StringComparison.OrdinalIgnoreCase)))

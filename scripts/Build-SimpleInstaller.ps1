@@ -1,11 +1,12 @@
 #requires -Version 7.0
 <#
 .SYNOPSIS
-Builds the per-user WinSight installer (alias for Build-NativeInstaller.ps1).
+Builds the per-machine WinSight installers (alias for Build-NativeInstaller.ps1).
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$StageDirectory,
+    [ValidateSet('all', 'amd', 'intel')][string[]]$Vendor = @('all'),
     [string]$OutputDirectory,
     [string]$CompilerPath,
     [string]$CertificateThumbprint,

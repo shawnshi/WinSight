@@ -1,6 +1,6 @@
 namespace WinSight.Infrastructure.Media;
 
-public sealed record NativePdfPageRequest(string SourcePath, int PageNumber, int MaxEdge = 1600)
+public sealed record NativePdfPageRequest(string SourcePath, int PageNumber, int MaxEdge = 2400)
 {
     internal void Validate()
     {

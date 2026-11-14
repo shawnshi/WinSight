@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media;
 using WinSight.App.Services;
 using WinSight.Core;
 
@@ -12,7 +14,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private AppSettings settings;
     private EngineStatus? status;
     private bool isIndexingActive;
-    private string statusMessage = "Ready";
+    private string statusMessage = "就绪";
     private CancellationTokenSource? activeIndexCts;
     private readonly CancellationTokenSource lifetime = new();
     private bool isPauseControlBusy;
@@ -42,10 +44,28 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             _ => UiText.RetryIndexingStatus
         };
 
+    public Brush StatusDotBrush
+    {
+        get
+        {
+            var key = IndexingState switch
+            {
+                IndexingControlState.Running => "SystemFillColorSuccessBrush",
+                IndexingControlState.Pausing => "SystemFillColorCautionBrush",
+                IndexingControlState.Paused => "TextFillColorTertiaryBrush",
+                _ => "SystemFillColorCriticalBrush"
+            };
+            if (Application.Current?.Resources.TryGetValue(key, out var res) == true && res is Brush b)
+                return b;
+            return new SolidColorBrush(Microsoft.UI.Colors.LimeGreen);
+        }
+    }
+
     private void NotifyIndexingControl()
     {
         OnPropertyChanged(nameof(IndexingState));
         OnPropertyChanged(nameof(IndexingStateText));
+        OnPropertyChanged(nameof(StatusDotBrush));
         OnPropertyChanged(nameof(IsPauseControlBusy));
         OnPropertyChanged(nameof(CanToggleIndexingPause));
         OnPropertyChanged(nameof(CanIndexNow));
@@ -278,7 +298,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             // Never pass Code=true on doc roots!
             if (settings.Folders.Count > 0)
             {
-                StatusMessage = "Indexing documents; keep PowerPoint closed until this manual run finishes.";
+                StatusMessage = "正在索引文档，建议保持 PowerPoint 处于空闲状态…";
                 var docRequest = new IndexRequest(
                     Roots: settings.Folders,
                     Excluded: settings.Skipped,

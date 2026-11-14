@@ -15,6 +15,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
     private readonly string? dataDir;
     private string query = string.Empty;
     private string? selectedKind;
+    private SearchMode selectedMode = SearchMode.Hybrid;
     private int selectedIndex = -1;
     private bool isLoading;
     private bool hasNotice;
@@ -56,6 +57,18 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
             }
 
             if (SetProperty(ref selectedKind, normalized))
+            {
+                TriggerSearch();
+            }
+        }
+    }
+
+    public SearchMode SelectedMode
+    {
+        get => selectedMode;
+        set
+        {
+            if (SetProperty(ref selectedMode, value))
             {
                 TriggerSearch();
             }
@@ -174,41 +187,53 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         {
             if (searchDebounce > TimeSpan.Zero) await Task.Delay(searchDebounce, ct);
 
-            // Phase 1: lexical index only. It never touches the embedding host, so the first rows appear in tens of milliseconds
-            // even while the semantic pass is queued behind indexing or a cold model start.
+            // Phase 1: lexical index only (skipped in pure Semantic mode).
             SearchResponse? fast = null;
-            try
+            if (selectedMode != SearchMode.Semantic)
             {
-                fast = await backend.SearchAsync(new SearchRequest(q, Limit: 60, Mode: SearchMode.Keyword, Kind: kind, MinScore: 0.25), ct);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // The hybrid pass below reports the real failure; a keyword fault alone must not blank the page.
-            }
-            if (IsStale(seq, ct)) return;
+                try
+                {
+                    fast = await backend.SearchAsync(new SearchRequest(q, Limit: 60, Mode: SearchMode.Keyword, Kind: kind, MinScore: 0.25), ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // The hybrid pass below reports the real failure; a keyword fault alone must not blank the page.
+                }
+                if (IsStale(seq, ct)) return;
 
-            if (fast is { Hits.Count: > 0 })
-            {
-                firstMs = fast.Elapsed.TotalMilliseconds;
-                ApplyHits(fast.Hits, preserveSelection: false);
-                keywordShown = true;
-                SetNotice(fast.Notice);
-                StatusText = UiText.KeywordPhase(fast.Hits.Count);
-            }
-            else
-            {
-                if (fast is not null) firstMs = fast.Elapsed.TotalMilliseconds;
-                // Never leave the previous query's rows on screen while a different query is still being resolved.
-                if (Hits.Count > 0) ApplyHits(Array.Empty<SearchHit>(), preserveSelection: false);
-                ViewState = SearchViewState.Searching;
-                StatusText = UiText.KeywordPhase(0);
+                if (fast is { Hits.Count: > 0 })
+                {
+                    firstMs = fast.Elapsed.TotalMilliseconds;
+                    ApplyHits(fast.Hits, preserveSelection: false);
+                    keywordShown = true;
+                    SetNotice(fast.Notice);
+                    StatusText = selectedMode == SearchMode.Keyword
+                        ? UiText.Completed(fast.Hits.Count, FileCount(fast.Hits), firstMs, firstMs, keywordOnly: true)
+                        : UiText.KeywordPhase(fast.Hits.Count);
+                }
+                else
+                {
+                    if (fast is not null) firstMs = fast.Elapsed.TotalMilliseconds;
+                    // Never leave the previous query's rows on screen while a different query is still being resolved.
+                    if (Hits.Count > 0) ApplyHits(Array.Empty<SearchHit>(), preserveSelection: false);
+                    ViewState = SearchViewState.Searching;
+                    StatusText = selectedMode == SearchMode.Keyword ? UiText.Searching : UiText.KeywordPhase(0);
+                }
+
+                if (selectedMode == SearchMode.Keyword)
+                {
+                    if (fast is { Hits.Count: 0 } or null)
+                        StatusText = UiText.NoResult;
+                    ViewState = Hits.Count == 0 ? SearchViewState.NoResults : SearchViewState.Results;
+                    return;
+                }
             }
 
-            // Phase 2: full hybrid ranking replaces the provisional list; the user's selection survives when the row is still present.
+            // Phase 2: hybrid or pure semantic ranking replaces the provisional list.
             SearchResponse full;
             try
             {
-                full = await backend.SearchAsync(new SearchRequest(q, Limit: 60, Mode: SearchMode.Hybrid, Kind: kind, MinScore: 0.25), ct);
+                full = await backend.SearchAsync(new SearchRequest(q, Limit: 60, Mode: selectedMode, Kind: kind, MinScore: 0.25), ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException && keywordShown)
             {
@@ -462,6 +487,8 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
 
     public Task<ISourcePreview> PreviewAsync(SearchItemViewModel item,CancellationToken token=default) =>
         backend.PreviewSourceAsync(item.Hit,item.Kind.Equals("code",StringComparison.OrdinalIgnoreCase),token);
+    public Task<ISourcePreview> PreviewPageAsync(SearchItemViewModel item, int pageNumber, CancellationToken token = default) =>
+        backend.PreviewSourcePageAsync(item.Hit, pageNumber, item.Kind.Equals("code", StringComparison.OrdinalIgnoreCase), token);
     public Task<SourceNavigationResult> NavigateAsync(SearchItemViewModel item,CancellationToken token=default) =>
         backend.NavigateSourceAsync(item.Hit,item.Kind.Equals("code",StringComparison.OrdinalIgnoreCase),token);
 

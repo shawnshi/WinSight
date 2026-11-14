@@ -53,6 +53,10 @@ internal static class StdioServer
                     {
                         case "quit": Emit(new { id, ok = true }); return 0;
                         case "info": Emit(new { id, ok = true, info = Info(engine, loadSeconds, textOnly), capabilities, protocol = 1 }); break;
+                        case "trim":
+                            int evicted = engine.TrimIdle(TimeSpan.FromSeconds(10));
+                            Emit(new { id, ok = true, evicted });
+                            break;
                         case "text": EmbedBatch(engine, request, id, "text"); break;
                         case "image" or "audio":
                             if (textOnly) throw new ArgumentException("Media operations are disabled in text-only mode");
@@ -132,7 +136,8 @@ internal static class StdioServer
         if (operation == "text") return engine.EmbedText(input);
         if (operation == "image")
         {
-            var image = MediaPreprocessor.LoadImage(input, budget);
+            int effectiveBudget = engine.IsModernPlatform ? Math.Min(budget, 140) : budget;
+            var image = MediaPreprocessor.LoadImage(input, effectiveBudget);
             var validPatches = image.Positions.Where((value, index) => index % 2 == 0 && value >= 0).Count();
             var features = engine.EncodeVision(image.Pixels, image.Positions, image.PatchCount);
             if (validPatches <= 0 || validPatches % 9 != 0 || features.Length != validPatches / 9 * 512)

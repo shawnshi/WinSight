@@ -22,6 +22,7 @@ internal sealed class DocumentSearchQuery
     internal IReadOnlyList<SearchField> Filters { get; }
     internal string[] Literals { get; }
     internal bool HasFilters => Filters.Count != 0;
+    internal bool HasSegmentLevelFilters => Literals.Length > 0 || Filters.Any(f => f.Name is not ("name" or "folder" or "folder1" or "folder2" or "folder3"));
     internal DocumentSearchQuery(string input, IReadOnlyList<SearchField>? filters)
     {
         var list = new List<SearchField>();

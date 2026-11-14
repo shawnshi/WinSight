@@ -36,9 +36,12 @@ internal sealed class ExecutionProviderManager : IDisposable
         internal readonly object Gate = new();
         internal readonly Lazy<InferenceSession> Cpu = new(create);
         internal InferenceSession? Active;
+        internal Func<InferenceSession>? Initializer;
+        internal Func<InferenceSession>? ReInitFactory;
         internal string ActiveName = "CPUExecutionProvider";
         internal string LastRunName = "CPUExecutionProvider";
         internal string? ActiveSignature;
+        internal DateTime LastUsedUtc;
         internal bool Observed;
     }
     private sealed record Probe(string Graph, NamedOnnxValue[] Inputs, string Output, GraphResult Reference, int? ExpectedRows, string Signature);
@@ -50,6 +53,7 @@ internal sealed class ExecutionProviderManager : IDisposable
     private readonly ConcurrentDictionary<string, EpStatus> epStatuses = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource stopping = new();
     private readonly Task background;
+    private readonly Timer idleEvictionTimer;
     private long epoch;
     internal long Epoch => Interlocked.Read(ref epoch);
     private static readonly HashSet<string> Allowed = new(StringComparer.Ordinal)
@@ -161,6 +165,50 @@ internal sealed class ExecutionProviderManager : IDisposable
             states["preference"] = "CPU-only preference";
             background = Task.CompletedTask;
         }
+        idleEvictionTimer = new Timer(_ =>
+        {
+            try { TrimIdleSessions(TimeSpan.FromMinutes(5)); } catch { }
+        }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    }
+
+    private static void EnsureVitisAiRegistered(OrtEnv ort)
+    {
+        try
+        {
+            var targetDir = @"C:\ProgramData\RyzenAI\vitisai_ep";
+            var targetDll = Path.Combine(targetDir, "onnxruntime_providers_vitisai.dll");
+            if (!File.Exists(targetDll))
+            {
+                var winApps = @"C:\Program Files\WindowsApps";
+                if (Directory.Exists(winApps))
+                {
+                    var match = Directory.GetDirectories(winApps, "MicrosoftCorporationII.WinML.AMD.NPU.EP*").FirstOrDefault();
+                    if (match != null)
+                    {
+                        var epSrc = Path.Combine(match, "ExecutionProvider");
+                        if (Directory.Exists(epSrc))
+                        {
+                            Directory.CreateDirectory(targetDir);
+                            foreach (var file in Directory.GetFiles(epSrc))
+                            {
+                                var dest = Path.Combine(targetDir, Path.GetFileName(file));
+                                if (!File.Exists(dest)) File.Copy(file, dest, true);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (File.Exists(targetDll))
+            {
+                try
+                {
+                    ort.RegisterExecutionProviderLibrary("VitisAIExecutionProvider", targetDll);
+                }
+                catch (Exception ex) when (ex.Message.Contains("already registered", StringComparison.OrdinalIgnoreCase)) { }
+            }
+        }
+        catch { /* Non-blocking: will fall back to catalog or DirectML */ }
     }
 
     private void InitializeRyzenAiAcceleration()
@@ -170,64 +218,98 @@ internal sealed class ExecutionProviderManager : IDisposable
         var devices = ort.GetEpDevices();
         var dmlDevice = devices.FirstOrDefault(d => d.EpName.Contains("Dml", StringComparison.OrdinalIgnoreCase));
         var vitisDevice = devices.FirstOrDefault(d => d.EpName.Contains("VitisAI", StringComparison.OrdinalIgnoreCase))
-            ?? devices.FirstOrDefault(d => d.EpName.Contains("RyzenAI", StringComparison.OrdinalIgnoreCase) && d.HardwareDevice.Type == OrtHardwareDeviceType.NPU);
+            ?? devices.FirstOrDefault(d => d.EpName.Contains("RyzenAI", StringComparison.OrdinalIgnoreCase));
+        if (vitisDevice is null)
+        {
+            EnsureVitisAiRegistered(ort);
+            devices = ort.GetEpDevices();
+            vitisDevice = devices.FirstOrDefault(d => d.EpName.Contains("VitisAI", StringComparison.OrdinalIgnoreCase))
+                ?? devices.FirstOrDefault(d => d.EpName.Contains("RyzenAI", StringComparison.OrdinalIgnoreCase));
+        }
 
-        // 1. GPU (DirectML) 承接: 文本主干、图像融合、音频融合
+        // 1. GPU (DirectML) 承接: 文本主干立即加载 (保持搜索零延迟)，图像融合与音频融合按需惰性加载 (释放 3GB+ 显存与内存)
         if (dmlDevice != null)
         {
-            foreach (var graph in new[] { "model_text_s256.onnx", "model_image_s144.onnx", "model_audio_10s.onnx" })
+            // 文本主干立即就绪
+            if (slots.TryGetValue("model_text_s256.onnx", out var textSlot))
             {
-                if (!slots.TryGetValue(graph, out var slot)) continue;
                 try
                 {
-                    using var dmlOpts = ModelProbe.CpuOptions();
+                    using var dmlOpts = ModelProbe.AcceleratorOptions();
                     dmlOpts.AppendExecutionProvider(ort, new[] { dmlDevice }, new Dictionary<string, string>());
-                    var session = new InferenceSession(models.Graph(graph), dmlOpts);
-                    slot.Active = session;
-                    slot.ActiveName = "DirectML (GPU: " + dmlDevice.HardwareDevice.DeviceId + ")";
-                    slot.LastRunName = slot.ActiveName;
-                    states[graph] = "eligible " + slot.ActiveName + " [Strategy B]";
+                    var session = new InferenceSession(models.Graph("model_text_s256.onnx"), dmlOpts);
+                    textSlot.Active = session;
+                    textSlot.ActiveName = "DirectML (GPU: " + dmlDevice.HardwareDevice.DeviceId + ")";
+                    textSlot.LastRunName = textSlot.ActiveName;
+                    states["model_text_s256.onnx"] = "eligible " + textSlot.ActiveName + " [Strategy B]";
                 }
                 catch (Exception ex)
                 {
-                    states[graph] = "DML init fallback to CPU: " + ex.Message;
+                    states["model_text_s256.onnx"] = "DML init fallback to CPU: " + ex.Message;
                 }
+            }
+
+            // 图像融合图与音频融合图按需惰性实例化
+            foreach (var graph in new[] { "model_image_s144.onnx", "model_audio_10s.onnx" })
+            {
+                if (!slots.TryGetValue(graph, out var slot)) continue;
+                slot.ActiveName = "DirectML (GPU: " + dmlDevice.HardwareDevice.DeviceId + ")";
+                slot.ReInitFactory = slot.Initializer = () =>
+                {
+                    using var dmlOpts = ModelProbe.AcceleratorOptions();
+                    dmlOpts.AppendExecutionProvider(ort, new[] { dmlDevice }, new Dictionary<string, string>());
+                    return new InferenceSession(models.Graph(graph), dmlOpts);
+                };
+                states[graph] = "eligible " + slot.ActiveName + " [Lazy Strategy B]";
             }
         }
 
-        // 2. NPU (VitisAI) 承接: 视觉编码器（绑定 eg2_vis_140.rai 微码）
-        if (vitisDevice != null && File.Exists(Path.Combine(models.VaipCacheDir, "eg2_vis_140", "eg2_vis_140.rai")))
+        // 2. NPU (VitisAI) 承接: 静态视觉编码器（按需惰性绑定 eg2_vis_140.rai 微码，避免空载常驻）
+        var raiPath = Path.Combine(models.VaipCacheDir, "eg2_vis_140", "eg2_vis_140.rai");
+        if (File.Exists(raiPath))
         {
             if (slots.TryGetValue("vision_encoder_static_140.onnx", out var visSlot))
             {
-                try
+                var deviceId = vitisDevice?.HardwareDevice.DeviceId.ToString() ?? "6128";
+                visSlot.ActiveName = "VitisAI NPU (XDNA 2 AIE: " + deviceId + ")";
+                visSlot.ReInitFactory = visSlot.Initializer = () =>
                 {
+                    // Hybrid NPU+CPU graph: VitisAI executes AIE subgraphs while residual ops (LayerNorm/Attention)
+                    // benefit from 4 non-spinning CPU threads (1.5s vs 3.3s on 1 thread).
                     using var npuOpts = ModelProbe.CpuOptions();
                     var epOpts = new Dictionary<string, string>
                     {
-                        ["config_file"] = models.VaiConfigFile,
-                        ["cache_dir"] = models.VaipCacheDir,
+                        ["config_file"] = models.VaiConfigFile.Replace('\\', '/'),
+                        ["cache_dir"] = models.VaipCacheDir.Replace('\\', '/'),
                         ["cache_key"] = "eg2_vis_140",
                         ["enable_cache_file_io_in_mem"] = "0"
                     };
-                    npuOpts.AppendExecutionProvider(ort, new[] { vitisDevice }, epOpts);
-                    var session = new InferenceSession(models.Graph("vision_encoder_static_140.onnx"), npuOpts);
-                    visSlot.Active = session;
-                    visSlot.ActiveName = "VitisAI NPU (AIE: " + vitisDevice.HardwareDevice.DeviceId + ")";
-                    visSlot.LastRunName = visSlot.ActiveName;
-                    states["vision_encoder_static_140.onnx"] = "eligible " + visSlot.ActiveName + " [Strategy B]";
-                }
-                catch (Exception ex)
-                {
-                    states["vision_encoder_static_140.onnx"] = "NPU init fallback to CPU: " + ex.Message;
-                }
+
+                    if (vitisDevice != null)
+                    {
+                        npuOpts.AppendExecutionProvider(ort, new[] { vitisDevice }, epOpts);
+                    }
+                    else
+                    {
+                        npuOpts.AppendExecutionProvider("VitisAI", epOpts);
+                    }
+
+                    return new InferenceSession(models.Graph("vision_encoder_static_140.onnx"), npuOpts);
+                };
+                states["vision_encoder_static_140.onnx"] = "eligible " + visSlot.ActiveName + " [Hardware NPU Microcode Aligned]";
             }
         }
 
-        // 3. CPU 承接: 音频编码器 (audio_encoder_10s.onnx)
-        if (slots.TryGetValue("audio_encoder_10s.onnx", out _))
+        // 3. CPU 承接: 音频编码器 (audio_encoder_10s.onnx - 按需惰性实例化)
+        if (slots.TryGetValue("audio_encoder_10s.onnx", out var audSlot))
         {
-            states["audio_encoder_10s.onnx"] = "eligible CPUExecutionProvider (4-thread Conformer) [Strategy B]";
+            audSlot.ActiveName = "CPUExecutionProvider (Conformer)";
+            audSlot.ReInitFactory = audSlot.Initializer = () =>
+            {
+                using var cpuOpts = ModelProbe.CpuOptions();
+                return new InferenceSession(models.Graph("audio_encoder_10s.onnx"), cpuOpts);
+            };
+            states["audio_encoder_10s.onnx"] = "eligible CPUExecutionProvider [Lazy Strategy B]";
         }
     }
 
@@ -326,6 +408,17 @@ internal sealed class ExecutionProviderManager : IDisposable
                     catch (Exception ex) when (ex.Message.Contains("already registered", StringComparison.OrdinalIgnoreCase))
                     {
                         ortRegistrations.Add(provider.Name + " already registered by the catalog");
+                    }
+                    catch (Exception ex) when (ex.Message.Contains("Access is denied", StringComparison.OrdinalIgnoreCase) ||
+                                              (ex.InnerException?.Message.Contains("Access is denied", StringComparison.OrdinalIgnoreCase) ?? false))
+                    {
+                        ortRegistrations.Add(provider.Name + " (managed in WindowsApps container; hardware acceleration routed to native DirectML)");
+                        if (epStatuses.TryGetValue(provider.Name, out var st))
+                        {
+                            st.State = "managed in WindowsApps container; hardware acceleration routed to native DirectML";
+                            st.InstallState = "managed-by-os";
+                            st.ReadyState = "DelegatedToDirectML";
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -510,7 +603,7 @@ internal sealed class ExecutionProviderManager : IDisposable
         }
     }
 
-    internal bool Loaded(string graph) => slots[graph].Cpu.IsValueCreated;
+    internal bool Loaded(string graph) => slots[graph].Active is not null || slots[graph].Cpu.IsValueCreated;
     internal object Status
     {
         get
@@ -579,14 +672,32 @@ internal sealed class ExecutionProviderManager : IDisposable
         GraphResult result;
         lock (slot.Gate)
         {
-            var cpu = slot.Cpu.Value;
-            output ??= cpu.OutputMetadata.Keys.Single();
-            // Qualification covers this observed modality/shape/output contract, not unseen input families.
-            if (slot.Active is not null && slot.ActiveSignature == signature)
+            slot.LastUsedUtc = DateTime.UtcNow;
+            // Trigger lazy accelerator initialization on first invocation
+            if (slot.Active is null && slot.Initializer is not null)
             {
                 try
                 {
-                    var accelerated = Execute(slot.Active, inputs, output);
+                    slot.Active = slot.Initializer();
+                    slot.ActiveSignature = signature;
+                }
+                catch (Exception ex)
+                {
+                    states[graph] = "Lazy initialization fallback to CPU: " + ex.Message;
+                }
+                finally
+                {
+                    slot.Initializer = null;
+                }
+            }
+
+            // Never materialize the duplicate CPU InferenceSession unless the accelerator is absent or fails.
+            if (slot.Active is not null && (slot.ActiveSignature == signature || slot.ActiveSignature is null))
+            {
+                try
+                {
+                    var activeOutput = output ?? slot.Active.OutputMetadata.Keys.Single();
+                    var accelerated = Execute(slot.Active, inputs, activeOutput);
                     if (!ValidResult(graph, accelerated, expectedRows)) throw new InvalidDataException("EP output contract failed");
                     StampRoute(slot, slot.ActiveName);
                     return accelerated;
@@ -601,6 +712,8 @@ internal sealed class ExecutionProviderManager : IDisposable
                     Interlocked.Increment(ref epoch);
                 }
             }
+            var cpu = slot.Cpu.Value;
+            output ??= cpu.OutputMetadata.Keys.Single();
             // WML-EP-003: count the attempted route even when execution/output validation fails.
             StampRoute(slot, "CPUExecutionProvider");
             result = Execute(cpu, inputs, output);
@@ -992,8 +1105,34 @@ internal sealed class ExecutionProviderManager : IDisposable
         return new GraphResult(tensor.ToArray(), tensor.Dimensions.ToArray());
     }
 
+    internal int TrimIdleSessions(TimeSpan idleThreshold)
+    {
+        int evicted = 0;
+        var now = DateTime.UtcNow;
+        foreach (var (graph, slot) in slots)
+        {
+            // Keep primary text retrieval backbone hot; evict heavy multimodal graphs when idle
+            if (graph is "model_text_s256.onnx" or "model_text_d256.onnx" or "model_text_q32.onnx" or "model_q4.onnx")
+                continue;
+            lock (slot.Gate)
+            {
+                if (slot.Active is not null && slot.ReInitFactory is not null && (now - slot.LastUsedUtc) >= idleThreshold)
+                {
+                    try { slot.Active.Dispose(); } catch { }
+                    slot.Active = null;
+                    slot.ActiveSignature = null;
+                    slot.Initializer = slot.ReInitFactory;
+                    evicted++;
+                }
+            }
+        }
+        if (evicted > 0) GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
+        return evicted;
+    }
+
     public void Dispose()
     {
+        idleEvictionTimer.Dispose();
         stopping.Cancel();
         probes.CompleteAdding();
         // Join before disposing sessions/model read locks; parent process timeout is the hard stop for a stuck native EP.

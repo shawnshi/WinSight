@@ -233,6 +233,22 @@ public Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default
                 while (await timer.WaitForNextTickAsync(lifetimeStop.Token).ConfigureAwait(false))
                 {
                     if (stopping != 0 || indexing.State != IndexingControlState.Running || indexing.HasWork) continue;
+
+                    // Idle page reclamation: reclaim unused pages from deleted/reindexed files
+                    try
+                    {
+                        var repos = await GetRepositoriesAsync(lifetimeStop.Token).ConfigureAwait(false);
+                        foreach (var repo in repos)
+                        {
+                            if (repo is SqliteIndexRepository sqliteRepo)
+                            {
+                                var reclaimed = await sqliteRepo.IncrementalVacuumAsync(500, lifetimeStop.Token).ConfigureAwait(false);
+                                if (reclaimed > 0) AppLog.Info($"Idle maintenance reclaimed {reclaimed} database pages.");
+                            }
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException) { }
+
                     if (MaintenanceJobStore.ReadGrant(dataDirectory) is null) continue;
                     var inbox = JobStore.Inbox;
                     if (!Directory.Exists(inbox) || Directory.GetFiles(inbox, "*.json").Length == 0) continue;
@@ -247,4 +263,128 @@ public Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default
             }
         });
     }
+
+    /// <summary>
+    /// Performs in-place embedding backfill for legacy text-only segments without re-parsing files from disk.
+    /// Uses the active inference accelerator (DirectML GPU or NPU) to generate embeddings at maximum speed.
+    /// </summary>
+    public async Task<int> BackfillMissingEmbeddingsAsync(
+        int maxSegments = 0,
+        IProgress<(int Processed, int Remaining)>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var repo = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];
+        var service = GetEmbeddings();
+        var info = await service.GetInfoAsync(cancellationToken).ConfigureAwait(false);
+        if (info == null || !info.Capabilities.Contains("text", StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Embedding service is not available or does not support text.");
+
+        const int batchSize = 32;
+        int totalProcessed = 0;
+        int queryLimit = maxSegments > 0 ? Math.Min(maxSegments, 256) : 256;
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var segments = await repo.ReadPendingEmbeddingSegmentsAsync(queryLimit, cancellationToken).ConfigureAwait(false);
+            if (segments.Count == 0) break;
+
+            foreach (var chunk in segments.Chunk(batchSize))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var inputs = chunk.Select(s => new EmbeddingInput(
+                    "text",
+                    $"title: {s.Title} | text: {(s.Kind == "page" ? ContentExtractor.Prefix(s.Excerpt, 1000) : s.Excerpt)}"
+                )).ToArray();
+
+                var results = await service.EmbedAsync(inputs, cancellationToken).ConfigureAwait(false);
+                var updates = new List<SegmentVectorUpdate>();
+                for (int i = 0; i < chunk.Length; i++)
+                {
+                    if (results[i].Vector is { } vec)
+                    {
+                        updates.Add(new SegmentVectorUpdate(chunk[i].Id, chunk[i].FileId, vec));
+                    }
+                }
+
+                if (updates.Count > 0)
+                {
+                    await repo.SaveBackfilledVectorsAsync(updates, cancellationToken).ConfigureAwait(false);
+                    totalProcessed += updates.Count;
+                    progress?.Report((totalProcessed, -1));
+                }
+            }
+
+            if (maxSegments > 0 && totalProcessed >= maxSegments) break;
+        }
+
+        return totalProcessed;
+    }
+
+    public async Task<StorageMetrics?> GetStorageMetricsAsync(CancellationToken cancellationToken = default)
+    {
+        var dbPath = Path.Combine(IndexDirectory, "index.sqlite");
+        long dbBytes = File.Exists(dbPath) ? new FileInfo(dbPath).Length : 0;
+        var repo = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];
+        long totalSegs = 0, embeddedSegs = 0;
+        if (repo is SqliteIndexRepository sqliteRepo)
+        {
+            (totalSegs, embeddedSegs) = await sqliteRepo.GetSegmentVectorCountsAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            embeddedSegs = await repo.CountVectorsAsync(cancellationToken).ConfigureAwait(false);
+            totalSegs = embeddedSegs;
+        }
+
+        string cacheDir = Path.Combine(dataDirectory, "source-preview", "cache");
+        long cacheBytes = 0;
+        int cacheFiles = 0;
+        if (Directory.Exists(cacheDir))
+        {
+            foreach (var f in new DirectoryInfo(cacheDir).EnumerateFiles("*.png"))
+            {
+                cacheFiles++;
+                cacheBytes += f.Length;
+            }
+        }
+        return new StorageMetrics(dbBytes, totalSegs, embeddedSegs, cacheBytes, cacheFiles);
+    }
+
+    public Task<int> RunVectorBackfillAsync(int maxSegments = 0, IProgress<(int Processed, int Remaining)>? progress = null, CancellationToken cancellationToken = default) =>
+        BackfillMissingEmbeddingsAsync(maxSegments, progress, cancellationToken);
+
+    public Task<int> ClearPreviewCacheAsync(CancellationToken cancellationToken = default)
+    {
+        RasterLruCache.Clear();
+        string cacheDir = Path.Combine(dataDirectory, "source-preview", "cache");
+        int deleted = 0;
+        if (Directory.Exists(cacheDir))
+        {
+            foreach (var file in Directory.EnumerateFiles(cacheDir, "*.png"))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try { File.Delete(file); deleted++; } catch { }
+            }
+        }
+        return Task.FromResult(deleted);
+    }
+
+    public async Task<int> CompactDatabaseAsync(CancellationToken cancellationToken = default)
+    {
+        var repos = await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false);
+        int reclaimed = 0;
+        foreach (var repo in repos)
+        {
+            if (repo is SqliteIndexRepository sqliteRepo)
+                reclaimed += await sqliteRepo.IncrementalVacuumAsync(2000, cancellationToken).ConfigureAwait(false);
+        }
+        return reclaimed;
+    }
+
+    public async Task<int> CountFolderFilesAsync(string root, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(root)) return 0;
+        return await CountIndexedFilesAsync(root, cancellationToken).ConfigureAwait(false);
+    }
 }
+

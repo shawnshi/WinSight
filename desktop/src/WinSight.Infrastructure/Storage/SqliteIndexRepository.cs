@@ -17,13 +17,18 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     private static readonly JsonSerializerOptions MetadataJson = new() { PropertyNameCaseInsensitive = true };
     private const string Tokenizer = "porter unicode61 remove_diacritics 2 categories 'L* N* Co M*'";
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly SemaphoreSlim readGate = new(1, 1);
+    private readonly object vectorCacheSync = new();
     private readonly Action<IndexInitializationStage>? initializationCheckpoint;
     private SqliteConnection? connection;
-    private (long Version, IReadOnlyList<IndexedFile> Files)? vectorCache;
+    private SqliteConnection? readConnection;
+    private (long ReadVersion, long ConnVersion, CompactVectorIndex Index)? vectorCache;
     private readonly HashSet<string> dirtyVectorPaths = new(StringComparer.Ordinal);
+    private long vectorWriteSeq;
     private bool writable;
     private bool disposed;
     public string DatabasePath { get; }
+    public bool UseInt8Quantization { get; set; }
 
     public SqliteIndexRepository(string databasePath) : this(databasePath, null) { }
 
@@ -81,8 +86,12 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             }
             ct.ThrowIfCancellationRequested();
             connection = db;
+            if (writable)
+            {
+                readConnection = Open(DatabasePath, SqliteOpenMode.ReadOnly);
+            }
         }
-        catch { db.Dispose(); throw; }
+        catch { db.Dispose(); readConnection?.Dispose(); readConnection = null; throw; }
     }
 
     private void CreateAndPublishDatabase(CancellationToken ct)
@@ -97,7 +106,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         {
             using (var staged = Open(stagingPath, SqliteOpenMode.ReadWrite))
             {
-                Execute(staged, null, "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+                Execute(staged, null, "PRAGMA page_size=8192; PRAGMA auto_vacuum=INCREMENTAL; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
                 using (var tx = staged.BeginTransaction(deferred: false))
                 {
                     Execute(staged, tx, Schema);
@@ -150,9 +159,9 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             try
             {
                 if (mode != SqliteOpenMode.ReadOnly)
-                    Execute(db, null, "PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-65536; PRAGMA mmap_size=268435456;");
+                    Execute(db, null, "PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-65536; PRAGMA mmap_size=268435456;");
                 else
-                    Execute(db, null, "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-65536; PRAGMA mmap_size=268435456;");
+                    Execute(db, null, "PRAGMA busy_timeout=5000; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-32768; PRAGMA mmap_size=268435456;");
             }
             catch (SqliteException) { }
             // Query-only collation: Windows ordinal path casing without changing the on-disk tokenizer or indexes.
@@ -248,11 +257,38 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         finally { gate.Release(); }
     }
 
+    private async Task<T> RunReadAsync<T>(Func<T> action, CancellationToken ct)
+    {
+        if (connection is null)
+        {
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try { ObjectDisposedException.ThrowIf(disposed, this); InitializeCore(ct); }
+            finally { gate.Release(); }
+        }
+        await readGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            return await Task.Run(() => { ct.ThrowIfCancellationRequested(); return action(); }, ct).ConfigureAwait(false);
+        }
+        finally { readGate.Release(); }
+    }
+
     private T Read<T>(CancellationToken ct, Func<SqliteConnection, SqliteTransaction, T> action)
     {
         InitializeCore(ct);
         using var tx = connection!.BeginTransaction(deferred: true);
         var result = action(connection, tx);
+        ct.ThrowIfCancellationRequested();
+        tx.Commit();
+        return result;
+    }
+
+    private T ReadOnReader<T>(CancellationToken ct, Func<SqliteConnection, SqliteTransaction, T> action)
+    {
+        var db = readConnection ?? connection!;
+        using var tx = db.BeginTransaction(deferred: true);
+        var result = action(db, tx);
         ct.ThrowIfCancellationRequested();
         tx.Commit();
         return result;
@@ -273,34 +309,68 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         tx.Commit();
         // Queue/USN bookkeeping does not change vectors, and a file write only dirties that file: patching one file
         // is far cheaper than re-decoding every vector in the index after each background commit.
-        switch (effect)
+        lock (vectorCacheSync)
         {
-            case VectorEffect.None: break;
-            case VectorEffect.Files when vectorCache is not null:
-                foreach (var path in touchedPaths) if (!string.IsNullOrEmpty(path)) dirtyVectorPaths.Add(path);
-                break;
-            case VectorEffect.Files: break;
-            default: vectorCache = null; dirtyVectorPaths.Clear(); break;
+            switch (effect)
+            {
+                case VectorEffect.None: break;
+                case VectorEffect.Files when vectorCache is not null:
+                    vectorWriteSeq++;
+                    foreach (var path in touchedPaths) if (!string.IsNullOrEmpty(path)) dirtyVectorPaths.Add(path);
+                    break;
+                case VectorEffect.Files: break;
+                default:
+                    vectorWriteSeq++;
+                    vectorCache = null;
+                    dirtyVectorPaths.Clear();
+                    break;
+            }
         }
     }
 
     public Task<IReadOnlyList<IndexedFile>> ReadFilesAsync(CancellationToken cancellationToken = default) =>
-        RunAsync(() => Read(cancellationToken, (db, tx) => ReadFiles(db, tx, true, cancellationToken)), cancellationToken);
+        RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) => ReadFiles(db, tx, true, cancellationToken)), cancellationToken);
 
     public Task<IReadOnlyList<IndexedFile>> ReadFileHeadersAsync(CancellationToken cancellationToken = default) =>
-        RunAsync(() => Read(cancellationToken, (db, tx) => (IReadOnlyList<IndexedFile>)ReadHeaders(db, tx, cancellationToken, includeInfo: false)), cancellationToken);
+        RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) => (IReadOnlyList<IndexedFile>)ReadHeaders(db, tx, cancellationToken, includeInfo: false)), cancellationToken);
 
     public Task<IReadOnlyList<IndexedFile>> ReadFileHeadersByPathsAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(paths);
         if (paths.Count == 0) return Task.FromResult<IReadOnlyList<IndexedFile>>([]);
-        return RunAsync(() => Read(cancellationToken, (db, tx) => (IReadOnlyList<IndexedFile>)ReadHeaders(db, tx, cancellationToken, includeInfo: false, paths: paths)), cancellationToken);
+        return RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) => (IReadOnlyList<IndexedFile>)ReadHeaders(db, tx, cancellationToken, includeInfo: false, paths: paths)), cancellationToken);
     }
 
     public Task<IndexedFile?> GetFileAsync(string path, CancellationToken cancellationToken = default)
     {
         ValidatePath(path);
-        return RunAsync(() => Read(cancellationToken, (db, tx) => ReadFiles(db, tx, true, cancellationToken, path).SingleOrDefault()), cancellationToken);
+        return RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) => ReadFiles(db, tx, true, cancellationToken, path).SingleOrDefault()), cancellationToken);
+    }
+
+    private static List<IndexedFile> ReadHeadersWithRootInfo(SqliteConnection db, SqliteTransaction tx, CancellationToken ct, IReadOnlyCollection<string>? paths = null)
+    {
+        var files = new List<IndexedFile>();
+        var rootJsonCache = new Dictionary<string, string>(StringComparer.Ordinal);
+        string scope = paths != null ? " WHERE path IN (SELECT value FROM json_each($paths))" : "";
+        using var cmd = Command(db, tx, "SELECT id,path,kind,size,mtime,state,detail,json_extract(info,'$.indexRoot') FROM files" + scope + " ORDER BY id",
+            ("$paths", paths == null ? null : JsonSerializer.Serialize(paths)));
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            string? rootVal = Text(reader, 7);
+            string? tinyInfo = null;
+            if (!string.IsNullOrEmpty(rootVal))
+            {
+                if (!rootJsonCache.TryGetValue(rootVal, out tinyInfo))
+                {
+                    tinyInfo = JsonSerializer.Serialize(new { indexRoot = rootVal });
+                    rootJsonCache[rootVal] = tinyInfo;
+                }
+            }
+            files.Add(new IndexedFile(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3), reader.GetDouble(4), reader.GetString(5), Text(reader, 6), tinyInfo, Array.Empty<IndexSegment>()));
+        }
+        return files;
     }
 
     private static List<IndexedFile> ReadHeaders(SqliteConnection db, SqliteTransaction tx, CancellationToken ct,
@@ -385,10 +455,11 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         int last = slash.LastIndexOf('/');
         AddSegment(db, tx, id, new IndexSegment("name", "none", null, null, null), last < 0 ? slash : slash[(last + 1)..], last < 0 ? "" : slash[..last].Replace('/', ' '));
         var anchors = new Dictionary<long, SourceAnchor>();
+        bool int8 = string.Equals(Scalar(db, tx, "SELECT value FROM meta WHERE key='vector_encoding'") as string, "int8", StringComparison.OrdinalIgnoreCase);
         foreach (var segment in file.Segments.Where(s => s.Kind != "name"))
         {
             ct.ThrowIfCancellationRequested();
-            var segmentId = AddSegment(db, tx, id, segment, "", segment.Excerpt);
+            var segmentId = AddSegment(db, tx, id, segment, "", segment.Excerpt, int8);
             if (segment.Source is { } source) anchors.Add(segmentId, source);
         }
         if (anchors.Count != 0 || file.Info?.Contains("_sourceAnchorsV1", StringComparison.Ordinal) == true)
@@ -400,11 +471,11 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         }
     }
 
-    private static long AddSegment(SqliteConnection db, SqliteTransaction tx, long id, IndexSegment segment, string name, string? body)
+    private static long AddSegment(SqliteConnection db, SqliteTransaction tx, long id, IndexSegment segment, string name, string? body, bool int8Quantized = false)
     {
         Execute(db, tx, "INSERT INTO segments(file,kind,modality,loc,loc_end,excerpt,vec) VALUES($file,$kind,$modality,$loc,$end,$excerpt,$vec)",
             ("$file", id), ("$kind", segment.Kind), ("$modality", segment.Vector == null ? "none" : segment.Modality), ("$loc", segment.Location),
-            ("$end", segment.LocationEnd), ("$excerpt", segment.Excerpt), ("$vec", segment.Vector == null ? null : Encode(segment.Vector)));
+            ("$end", segment.LocationEnd), ("$excerpt", segment.Excerpt), ("$vec", segment.Vector == null ? null : Encode(segment.Vector, int8Quantized)));
         long segmentId = Convert.ToInt64(Scalar(db, tx, "SELECT last_insert_rowid()"));
         if (name.Length == 0 && string.IsNullOrEmpty(body)) return segmentId;
         string normalized = SearchText.Normalize(body ?? "");
@@ -545,7 +616,15 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     }
 
     public Task<long> CountVectorsAsync(CancellationToken cancellationToken = default) =>
-        RunAsync(() => Read(cancellationToken, (db, tx) => Convert.ToInt64(Scalar(db, tx, "SELECT COUNT(*) FROM segments WHERE vec IS NOT NULL") ?? 0L)), cancellationToken);
+        RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) => Convert.ToInt64(Scalar(db, tx, "SELECT COUNT(*) FROM segments WHERE vec IS NOT NULL") ?? 0L)), cancellationToken);
+
+    internal Task<(long TotalSegments, long EmbeddedSegments)> GetSegmentVectorCountsAsync(CancellationToken cancellationToken = default) =>
+        RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) =>
+        {
+            long total = Convert.ToInt64(Scalar(db, tx, "SELECT COUNT(*) FROM segments WHERE kind IN ('chunk', 'page', 'cells') AND length(trim(coalesce(excerpt,''))) > 0") ?? 0L);
+            long embedded = Convert.ToInt64(Scalar(db, tx, "SELECT COUNT(*) FROM segments WHERE vec IS NOT NULL") ?? 0L);
+            return (total, embedded);
+        }), cancellationToken);
 
     /// <summary>Aggregated failure reasons (no paths) so the UI can explain why files did not index.</summary>
     public Task<IReadOnlyList<string>> ReadFailureSummaryAsync(int limit, CancellationToken cancellationToken = default)
@@ -567,7 +646,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
 
     public Task<IReadOnlyList<IndexTask>> ReadDueTasksAsync(int limit, CancellationToken cancellationToken = default)
     {
-        return RunAsync(() => Read(cancellationToken, (db, tx) =>
+        return RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) =>
         {
             var list = new List<IndexTask>();
             var now = DateTimeOffset.UtcNow.ToString("O");
@@ -601,7 +680,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     public Task<IndexTask?> GetTaskAsync(string path, CancellationToken cancellationToken = default)
     {
         ValidatePath(path);
-        return RunAsync(() => Read(cancellationToken, (db, tx) =>
+        return RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) =>
         {
             using var cmd = Command(db, tx, """
                 SELECT path, root, code, kind, tombstone, state, attempts, due_utc, seen_utc, reason
@@ -769,9 +848,9 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     public Task<(string JournalId, string NextUsn, DateTimeOffset ReconcileUtc)?> GetUsnCheckpointAsync(string volumeSerial, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(volumeSerial);
-        return RunAsync(() =>
+        return RunReadAsync(() =>
         {
-            return Read(cancellationToken, (db, tx) =>
+            return ReadOnReader(cancellationToken, (db, tx) =>
             {
                 using var cmd = Command(db, tx, "SELECT journal_id, next_usn, reconcile_utc FROM usn_checkpoints WHERE volume_serial=$serial", ("$serial", volumeSerial));
                 using var reader = cmd.ExecuteReader();
@@ -790,7 +869,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     public Task<string?> GetMetaAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        return RunAsync(() => Read(cancellationToken, (db, tx) => Scalar(db, tx, "SELECT value FROM meta WHERE key=$key", ("$key", key)) as string), cancellationToken);
+        return RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) => Scalar(db, tx, "SELECT value FROM meta WHERE key=$key", ("$key", key)) as string), cancellationToken);
     }
 
     public Task SetMetaAsync(string key, string value, CancellationToken cancellationToken = default)
@@ -834,7 +913,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         }, cancellationToken);
     }
 
-    public Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default) => RunAsync(() => Read(cancellationToken, (db, tx) =>
+    public Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken = default) => RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) =>
     {
         int total = 0, done = 0, pending = 0, partial = 0, failed = 0;
         using var cmd = Command(db, tx, "SELECT state,count(*) FROM files GROUP BY state");
@@ -865,15 +944,19 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     public Task<IReadOnlyList<KeywordMatch>> KeywordSearchAsync(string query, int limit, CancellationToken cancellationToken = default)
     {
         ValidateQuery(query, limit);
-        return RunAsync(() => Read(cancellationToken, (db, tx) => (IReadOnlyList<KeywordMatch>)FindWords(db, tx, query, null, null, limit, cancellationToken, fileResults: true)
+        return RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) => (IReadOnlyList<KeywordMatch>)FindWords(db, tx, query, null, null, limit, cancellationToken, fileResults: true)
             .Select(w => new KeywordMatch(w.FileId, w.Rank)).ToArray()), cancellationToken);
     }
 
     /// <summary>Releases in-memory decoded vectors and returns unneeded SQLite cache pages under system memory pressure.</summary>
     public void TrimMemory()
     {
-        vectorCache = null;
-        dirtyVectorPaths.Clear();
+        lock (vectorCacheSync)
+        {
+            vectorWriteSeq++;
+            vectorCache = null;
+            dirtyVectorPaths.Clear();
+        }
         try
         {
             if (connection != null && !disposed)
@@ -882,62 +965,351 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 cmd.CommandText = "PRAGMA shrink_memory;";
                 cmd.ExecuteNonQuery();
             }
+            if (readConnection != null && !disposed)
+            {
+                using var cmd = readConnection.CreateCommand();
+                cmd.CommandText = "PRAGMA shrink_memory;";
+                cmd.ExecuteNonQuery();
+            }
         }
         catch { }
     }
 
-    /// <summary>
-    /// Re-reads only the files touched since the cache was built and splices them into the cached list, so a background
-    /// commit costs one file's vectors instead of the whole index. Runs inside the caller's read snapshot.
-    /// </summary>
-    private IReadOnlyList<IndexedFile> PatchVectorCache(SqliteConnection db, SqliteTransaction tx, IReadOnlyList<IndexedFile> cached, CancellationToken ct)
+    private static string ComputeUnitString(SourceAnchor? anchor, string kind, double? loc, double? locEnd)
     {
-        var dirty = new HashSet<string>(dirtyVectorPaths, StringComparer.Ordinal);
-        if (dirty.Count == 0) return cached;
-        var refreshed = ReadFiles(db, tx, true, ct, vectorSegmentsOnly: true, paths: dirty);
-        var refreshedIds = refreshed.Select(f => f.Id).ToHashSet();
-        return cached.Where(f => !dirty.Contains(f.Path) && !refreshedIds.Contains(f.Id)).Concat(refreshed).OrderBy(f => f.Id).ToArray();
+        if (anchor is not null)
+        {
+            var l = anchor.Location;
+            return l.Type is "text" or "image"
+                ? "file"
+                : $"{l.Type}:{l.Page}:{l.Paragraph}:{l.Sheet}:{l.Range}:{l.Part}";
+        }
+        return kind is "name" or "chunk"
+            ? "file"
+            : $"{kind}:{loc}:{locEnd}";
     }
 
-    internal Task<SearchSnapshot> ReadSearchSnapshotAsync(string query, string? kind, string? root, bool vectors, bool words, int limit, CancellationToken ct,
+    private static CompactVectorIndex BuildCompactVectorIndex(SqliteConnection db, SqliteTransaction tx, CancellationToken ct, IReadOnlyCollection<string>? onlyPaths = null)
+    {
+        var headerList = ReadHeadersWithRootInfo(db, tx, ct, paths: onlyPaths);
+        var headerDict = new Dictionary<long, IndexedFile>(headerList.Count);
+        foreach (var h in headerList) headerDict[h.Id] = h;
+        var index = new CompactVectorIndex(headerDict);
+        AppendCompactVectors(db, tx, index, ct, onlyPaths);
+        return index;
+    }
+
+    private static Dictionary<long, (string Channel, ulong UnitHash)> ReadAnchorUnitsOnly(string info)
+    {
+        var map = new Dictionary<long, (string Channel, ulong UnitHash)>();
+        using var doc = JsonDocument.Parse(info);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object) return map;
+        if (!doc.RootElement.TryGetProperty("_sourceAnchorsV1", out var anchors) || anchors.ValueKind != JsonValueKind.Object) return map;
+        foreach (var prop in anchors.EnumerateObject())
+        {
+            if (!long.TryParse(prop.Name, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long segId) || segId <= 0)
+                continue;
+            var el = prop.Value;
+            if (el.ValueKind != JsonValueKind.Object) continue;
+            string channel = Prop(el, "Channel", "channel", out var chEl) && chEl.ValueKind == JsonValueKind.String ? chEl.GetString()! : "body";
+            ulong unitHash;
+            if (Prop(el, "Location", "location", out var locEl) && locEl.ValueKind == JsonValueKind.Object)
+            {
+                string type = Prop(locEl, "Type", "type", out var tEl) && tEl.ValueKind == JsonValueKind.String ? tEl.GetString()! : "";
+                if (type is "text" or "image")
+                {
+                    unitHash = CompactVectorIndex.ComputeUnitHash("file");
+                }
+                else
+                {
+                    int? page = Prop(locEl, "Page", "page", out var pEl) && pEl.ValueKind == JsonValueKind.Number && pEl.TryGetInt32(out var pv) ? pv : null;
+                    int? para = Prop(locEl, "Paragraph", "paragraph", out var prEl) && prEl.ValueKind == JsonValueKind.Number && prEl.TryGetInt32(out var prv) ? prv : null;
+                    string? sheet = Prop(locEl, "Sheet", "sheet", out var sEl) && sEl.ValueKind == JsonValueKind.String ? sEl.GetString() : null;
+                    string? range = Prop(locEl, "Range", "range", out var rEl) && rEl.ValueKind == JsonValueKind.String ? rEl.GetString() : null;
+                    string? part = Prop(locEl, "Part", "part", out var ptEl) && ptEl.ValueKind == JsonValueKind.String ? ptEl.GetString() : null;
+                    unitHash = CompactVectorIndex.ComputeUnitHash($"{type}:{page}:{para}:{sheet}:{range}:{part}");
+                }
+            }
+            else
+            {
+                unitHash = CompactVectorIndex.ComputeUnitHash("file");
+            }
+            map[segId] = (channel, unitHash);
+        }
+        return map;
+    }
+
+    private static void AppendCompactVectors(SqliteConnection db, SqliteTransaction tx, CompactVectorIndex index, CancellationToken ct, IReadOnlyCollection<string>? paths = null)
+    {
+        var anchorUnits = new Dictionary<long, (string Channel, ulong UnitHash)>();
+        if (paths is null)
+        {
+            using var infoCmd = Command(db, tx,
+                "SELECT info FROM files WHERE info IS NOT NULL AND instr(info, '_sourceAnchorsV1') > 0 " +
+                "AND id IN (SELECT DISTINCT file FROM segments WHERE vec IS NOT NULL)");
+            using var infoRows = infoCmd.ExecuteReader();
+            while (infoRows.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                string info = infoRows.GetString(0);
+                foreach (var kv in ReadAnchorUnitsOnly(info))
+                    anchorUnits[kv.Key] = kv.Value;
+            }
+        }
+        else
+        {
+            using var infoCmd = Command(db, tx,
+                "SELECT info FROM files WHERE info IS NOT NULL AND instr(info, '_sourceAnchorsV1') > 0 AND path IN (SELECT value FROM json_each($paths))",
+                ("$paths", JsonSerializer.Serialize(paths)));
+            using var infoRows = infoCmd.ExecuteReader();
+            while (infoRows.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                string info = infoRows.GetString(0);
+                foreach (var kv in ReadAnchorUnitsOnly(info))
+                    anchorUnits[kv.Key] = kv.Value;
+            }
+        }
+
+        string sql = paths is null
+            ? "SELECT id, file, kind, modality, loc, loc_end, vec FROM segments WHERE vec IS NOT NULL"
+            : "SELECT s.id, s.file, s.kind, s.modality, s.loc, s.loc_end, s.vec FROM segments s JOIN files f ON f.id = s.file WHERE s.vec IS NOT NULL AND f.path IN (SELECT value FROM json_each($paths))";
+        using var cmd = Command(db, tx, sql, ("$paths", paths == null ? null : JsonSerializer.Serialize(paths)));
+        using var rows = cmd.ExecuteReader();
+        float[] scratch = new float[CompactVectorIndex.Dimension];
+        sbyte[] quantized = new sbyte[CompactVectorIndex.Dimension];
+        while (rows.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            long segId = rows.GetInt64(0);
+            long fileId = rows.GetInt64(1);
+            string kind = rows.GetString(2);
+            string modality = rows.GetString(3);
+            double? loc = Number(rows, 4);
+            double? locEnd = Number(rows, 5);
+            byte[] blob = (byte[])rows.GetValue(6);
+            CompactVectorIndex.QuantizeFromBlob(blob, scratch, quantized, out float scale);
+            string channel;
+            ulong unitHash;
+            if (anchorUnits.TryGetValue(segId, out var anchored))
+            {
+                channel = anchored.Channel;
+                unitHash = anchored.UnitHash;
+            }
+            else
+            {
+                channel = modality == "image" ? "page-visual" : modality;
+                string unit = kind is "name" or "chunk" ? "file" : $"{kind}:{loc}:{locEnd}";
+                unitHash = CompactVectorIndex.ComputeUnitHash(unit);
+            }
+            byte channelId = index.InternChannel(channel);
+            index.Add(segId, fileId, unitHash, channelId, quantized, scale);
+        }
+    }
+
+    private static CompactVectorIndex PatchCompactVectorIndex(SqliteConnection db, SqliteTransaction tx, CompactVectorIndex cached, IReadOnlyCollection<string> dirty, CancellationToken ct)
+    {
+        if (dirty.Count == 0) return cached;
+        foreach (var path in dirty) cached.MarkFileRemoved(path);
+        var refreshedHeaders = ReadHeadersWithRootInfo(db, tx, ct, paths: dirty);
+        foreach (var h in refreshedHeaders) cached.UpsertHeader(h);
+        if (refreshedHeaders.Count > 0)
+            AppendCompactVectors(db, tx, cached, ct, dirty);
+        return cached.NeedsCompaction ? cached.Compact() : cached;
+    }
+
+    private long TryGetConnDataVersion()
+    {
+        if (connection is null) return -1;
+        if (!gate.Wait(50)) return -2;
+        try
+        {
+            if (disposed || connection is null) return -1;
+            return Convert.ToInt64(Scalar(connection, null, "PRAGMA data_version"));
+        }
+        catch { return -2; }
+        finally { gate.Release(); }
+    }
+
+    internal Task<CompactSearchSnapshot> ReadCompactSearchSnapshotAsync(string query, string? kind, string? root, bool vectors, bool words, int limit, CancellationToken ct,
         Func<string, bool>? authorize = null, Func<string, string?, long, bool>? matchesSource = null,
-        bool allHeaders = false) => RunAsync(() => Read(ct, (db, tx) =>
+        bool allHeaders = false, bool includeHeaderInfo = false, bool needsSourceAnchors = true) => RunReadAsync(() => ReadOnReader(ct, (db, tx) =>
     {
         long before = Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version"));
         var profile = Scalar(db, tx, "SELECT value FROM meta WHERE key='profile_id'") as string;
         long version = Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version"));
-        var matches = words ? FindWords(db, tx, query, kind, root, Math.Max(100, limit), ct, authorize, matchesSource) : [];
-        IReadOnlyList<IndexedFile> files;
+        var matches = words ? FindWords(db, tx, query, kind, root, Math.Max(100, limit), ct, authorize, matchesSource, needsSourceAnchors: needsSourceAnchors) : [];
+        CompactVectorIndex? compactIndex = null;
+        IReadOnlyDictionary<long, IndexedFile> headers;
         if (vectors)
         {
-            // The profile read pins the WAL snapshot. Never label an older snapshot with a concurrent writer's newer version.
-            if (vectorCache is { } cached && (cached.Version == version || dirtyVectorPaths.Count != 0))
+            (long ReadVersion, long ConnVersion, CompactVectorIndex Index)? cachedSnapshot;
+            string[] dirtySnapshot;
+            long seqBefore;
+            lock (vectorCacheSync)
             {
-                files = cached.Files;
-                if (dirtyVectorPaths.Count != 0)
-                {
-                    files = PatchVectorCache(db, tx, cached.Files, ct);
-                    dirtyVectorPaths.Clear();
-                }
-                vectorCache = (version, files);
+                cachedSnapshot = vectorCache;
+                dirtySnapshot = dirtyVectorPaths.ToArray();
+                seqBefore = vectorWriteSeq;
+            }
+
+            long connVersion = cachedSnapshot?.ConnVersion ?? -1;
+            if (cachedSnapshot is { } cached && cached.ReadVersion == version && dirtySnapshot.Length == 0)
+            {
+                compactIndex = cached.Index;
+            }
+            else if (cachedSnapshot is { } cachedDirty && dirtySnapshot.Length != 0)
+            {
+                compactIndex = PatchCompactVectorIndex(db, tx, cachedDirty.Index, dirtySnapshot, ct);
+                long currentConn = TryGetConnDataVersion();
+                if (currentConn >= 0) connVersion = currentConn;
+            }
+            else if (cachedSnapshot is { } cachedCheck && dirtySnapshot.Length == 0 && (connVersion = TryGetConnDataVersion()) >= 0 && connVersion == cachedCheck.ConnVersion)
+            {
+                // Local VectorEffect.None writes (index_tasks / usn_checkpoints) bump readConnection's data_version
+                // without changing connection's external data_version; skip full vector rebuild.
+                compactIndex = cachedCheck.Index;
             }
             else
             {
-                files = ReadFiles(db, tx, true, ct, vectorSegmentsOnly: true);
-                vectorCache = (version, files);
-                dirtyVectorPaths.Clear();
+                connVersion = TryGetConnDataVersion();
+                compactIndex = BuildCompactVectorIndex(db, tx, ct);
             }
+
+            lock (vectorCacheSync)
+            {
+                if (vectorWriteSeq == seqBefore)
+                {
+                    vectorCache = (version, connVersion, compactIndex);
+                    dirtyVectorPaths.Clear();
+                }
+                else
+                {
+                    foreach (var p in dirtySnapshot) dirtyVectorPaths.Remove(p);
+                    if (vectorCache is not null) vectorCache = (version, connVersion, compactIndex);
+                }
+            }
+            headers = compactIndex.Files;
         }
-        else if (allHeaders && matchesSource == null && before == version && vectorCache is { } vCached && vCached.Version == version && dirtyVectorPaths.Count == 0)
+        else if (allHeaders && !includeHeaderInfo && matchesSource == null && before == version && vectorCache is { } vCached && vCached.ReadVersion == version && dirtyVectorPaths.Count == 0)
         {
-            files = vCached.Files;
+            headers = vCached.Index.Files;
         }
-        else files = ReadHeaders(db, tx, ct, ids: allHeaders ? null : matches.Select(w => w.FileId).ToArray(), includeInfo: matchesSource != null);
-        return new SearchSnapshot(files, matches, profile);
+        else
+        {
+            var list = includeHeaderInfo && !needsSourceAnchors
+                ? ReadHeadersWithRootInfo(db, tx, ct)
+                : ReadHeaders(db, tx, ct, ids: allHeaders ? null : matches.Select(w => w.FileId).ToArray(), includeInfo: includeHeaderInfo || (matchesSource != null && needsSourceAnchors));
+            var dict = new Dictionary<long, IndexedFile>(list.Count);
+            foreach (var f in list) dict[f.Id] = f;
+            headers = dict;
+        }
+        return new CompactSearchSnapshot(headers, compactIndex, matches, profile);
     }), ct);
 
+    internal Task<Dictionary<long, (IndexedFile File, IndexSegment Segment)>> HydrateSemanticHitsAsync(IReadOnlyList<long> segmentIds, CancellationToken ct)
+    {
+        if (segmentIds.Count == 0) return Task.FromResult(new Dictionary<long, (IndexedFile, IndexSegment)>());
+        return RunReadAsync(() => ReadOnReader(ct, (db, tx) =>
+        {
+            var idSet = segmentIds.ToHashSet();
+            var idsJson = JsonSerializer.Serialize(segmentIds);
+            var result = new Dictionary<long, (IndexedFile, IndexSegment)>(segmentIds.Count);
+            var fileCache = new Dictionary<long, (IndexedFile File, IReadOnlyDictionary<long, SourceAnchor> Anchors)>();
+            using var cmd = Command(db, tx,
+                "SELECT s.id, s.file, s.kind, s.modality, s.loc, s.loc_end, s.excerpt, f.path, f.kind, f.size, f.mtime, f.state, f.detail, f.info " +
+                "FROM segments s JOIN files f ON f.id = s.file WHERE s.id IN (SELECT value FROM json_each($ids))",
+                ("$ids", idsJson));
+            using var rows = cmd.ExecuteReader();
+            while (rows.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                long segId = rows.GetInt64(0);
+                long fileId = rows.GetInt64(1);
+                if (!fileCache.TryGetValue(fileId, out var fc))
+                {
+                    string? info = Text(rows, 13);
+                    var f = new IndexedFile(fileId, rows.GetString(7), rows.GetString(8), rows.GetInt64(9), rows.GetDouble(10), rows.GetString(11), Text(rows, 12), info, Array.Empty<IndexSegment>());
+                    fc = (f, ReadAnchors(info, idSet));
+                    fileCache[fileId] = fc;
+                }
+                var seg = new IndexSegment(rows.GetString(2), rows.GetString(3), Number(rows, 4), Number(rows, 5), Text(rows, 6), Source: fc.Anchors.GetValueOrDefault(segId));
+                result[segId] = (fc.File, seg);
+            }
+            return result;
+        }), ct);
+    }
+
+    internal Task<HashSet<long>> FilterVectorSegmentsAsync(IReadOnlyDictionary<long, IndexedFile> scopedFiles, DocumentSearchQuery plan, CancellationToken ct)
+    {
+        if (scopedFiles.Count == 0) return Task.FromResult(new HashSet<long>());
+        return RunReadAsync(() => ReadOnReader(ct, (db, tx) =>
+        {
+            var allowed = new HashSet<long>();
+            var anchorsCache = new Dictionary<long, IReadOnlyDictionary<long, SourceAnchor>>();
+            bool needAnchorInfo = plan.Filters.Any(f => f.Name is not ("name" or "folder" or "folder1" or "folder2" or "folder3")) || plan.Literals.Length > 0;
+            if (needAnchorInfo)
+            {
+                using var infoCmd = Command(db, tx,
+                    "SELECT id, info FROM files WHERE info IS NOT NULL AND instr(info, '_sourceAnchorsV1') > 0 " +
+                    "AND id IN (SELECT DISTINCT file FROM segments WHERE vec IS NOT NULL)");
+                using var infoRows = infoCmd.ExecuteReader();
+                while (infoRows.Read())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    long fid = infoRows.GetInt64(0);
+                    if (!scopedFiles.ContainsKey(fid)) continue;
+                    anchorsCache[fid] = ReadAnchors(infoRows.GetString(1));
+                }
+            }
+
+            using var cmd = Command(db, tx, "SELECT id, file, excerpt FROM segments WHERE vec IS NOT NULL");
+            using var rows = cmd.ExecuteReader();
+            while (rows.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                long segId = rows.GetInt64(0);
+                long fid = rows.GetInt64(1);
+                if (!scopedFiles.TryGetValue(fid, out var file)) continue;
+                string? excerpt = Text(rows, 2);
+                SourceAnchor? source = anchorsCache.TryGetValue(fid, out var map) ? map.GetValueOrDefault(segId) : null;
+                if (plan.Matches(file.Path, file.Info, source, excerpt))
+                    allowed.Add(segId);
+            }
+            return allowed;
+        }), ct);
+    }
+
+    internal Task<IReadOnlyList<IndexedFile>> ReadFilteredVectorFilesAsync(IReadOnlyList<long> fileIds, CancellationToken ct)
+    {
+        if (fileIds.Count == 0) return Task.FromResult<IReadOnlyList<IndexedFile>>([]);
+        return RunReadAsync(() => ReadOnReader(ct, (db, tx) =>
+        {
+            var idsJson = JsonSerializer.Serialize(fileIds);
+            var list = ReadHeaders(db, tx, ct, ids: fileIds, includeInfo: true);
+            if (list.Count == 0) return (IReadOnlyList<IndexedFile>)list;
+            var byId = list.ToDictionary(f => f.Id);
+            var anchors = new Dictionary<long, IReadOnlyDictionary<long, SourceAnchor>>();
+            using var cmd = Command(db, tx,
+                "SELECT s.file, s.kind, s.modality, s.loc, s.loc_end, s.excerpt, s.vec, s.id " +
+                "FROM segments s WHERE s.vec IS NOT NULL AND s.file IN (SELECT value FROM json_each($ids)) ORDER BY s.id",
+                ("$ids", idsJson));
+            using var rows = cmd.ExecuteReader();
+            while (rows.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                long fileId = rows.GetInt64(0);
+                if (!byId.TryGetValue(fileId, out var file)) continue;
+                if (!anchors.TryGetValue(fileId, out var fileAnchors))
+                    anchors[fileId] = fileAnchors = ReadAnchors(file.Info);
+                ((List<IndexSegment>)file.Segments).Add(Segment(rows, 1, true) with { Source = fileAnchors.GetValueOrDefault(rows.GetInt64(7)) });
+            }
+            return (IReadOnlyList<IndexedFile>)list;
+        }), ct);
+    }
+
     private static IReadOnlyList<WordEvidence> FindWords(SqliteConnection db, SqliteTransaction tx, string query, string? kind, string? root, int limit, CancellationToken ct,
-        Func<string, bool>? authorize = null, Func<string, string?, long, bool>? matchesSource = null, bool fileResults = false)
+        Func<string, bool>? authorize = null, Func<string, string?, long, bool>? matchesSource = null, bool fileResults = false, bool needsSourceAnchors = true)
     {
         bool code = query.StartsWith("code:", StringComparison.OrdinalIgnoreCase);
         if (code) query = query[5..].Trim();
@@ -966,7 +1338,9 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         var inSegmented = new HashSet<long>();
         var sources = new Dictionary<long, IReadOnlyDictionary<long, SourceAnchor>>();
         bool needInfo = matchesSource != null;
-        string infoCol = needInfo ? "f.info" : "NULL";
+        bool needAnchors = needInfo && needsSourceAnchors;
+        string infoCol = needAnchors ? "f.info" : needInfo ? "json_extract(f.info,'$.indexRoot')" : "NULL";
+        var rootJsonCache = needInfo && !needAnchors ? new Dictionary<string, string>(StringComparer.Ordinal) : null;
         bool hasCovering = !needInfo && Scalar(db, tx, "SELECT 1 FROM sqlite_master WHERE type='index' AND name='ix_segments_meta'") != null;
         string segJoinHint = hasCovering ? " INDEXED BY ix_segments_meta" : "";
         string fileJoinHint = hasCovering ? " INDEXED BY ix_files_meta" : "";
@@ -977,11 +1351,21 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 ct.ThrowIfCancellationRequested();
                 long file = rows.GetInt64(0), segment = rows.GetInt64(1), mask = rows.GetInt64(8);
                 var path = rows.GetString(3);
-                if (authorize != null && !authorize(path) || matchesSource != null && !matchesSource(path, Text(rows, 4), segment)) continue;
-                SourceAnchor? source = null;
-                if (needInfo)
+                string? rawInfo = Text(rows, 4);
+                string? rowInfo = rawInfo;
+                if (rootJsonCache is not null && !string.IsNullOrEmpty(rawInfo))
                 {
-                    if (!sources.TryGetValue(file, out var anchors)) sources[file] = anchors = ReadAnchors(Text(rows, 4));
+                    if (!rootJsonCache.TryGetValue(rawInfo, out rowInfo))
+                    {
+                        rowInfo = JsonSerializer.Serialize(new { indexRoot = rawInfo });
+                        rootJsonCache[rawInfo] = rowInfo;
+                    }
+                }
+                if (authorize != null && !authorize(path) || matchesSource != null && !matchesSource(path, rowInfo, segment)) continue;
+                SourceAnchor? source = null;
+                if (needAnchors)
+                {
+                    if (!sources.TryGetValue(file, out var anchors)) sources[file] = anchors = ReadAnchors(rawInfo);
                     source = anchors.GetValueOrDefault(segment);
                 }
                 var key = (file, SearchText.ComputeSourceUnit(new(rows.GetString(5), "none", Number(rows, 6), Number(rows, 7), null, Source: source)));
@@ -1205,8 +1589,9 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         }
     }
 
-    private static byte[] Encode(float[] vector)
+    private static byte[] Encode(float[] vector, bool int8Quantized = false)
     {
+        if (int8Quantized) return VectorContract.QuantizeInt8(vector);
         VectorContract.Validate(vector);
         var bytes = new byte[VectorContract.Dimension * 2];
         if (BitConverter.IsLittleEndian)
@@ -1223,20 +1608,62 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
 
     private static float[] Decode(byte[] bytes)
     {
-        if (bytes.Length != VectorContract.Dimension * 2) throw new InvalidDataException("Vector blob must contain 768 little-endian float16 values.");
-        var vector = new float[VectorContract.Dimension];
-        if (BitConverter.IsLittleEndian)
+        if (bytes.Length == VectorContract.Int8ByteCount)
         {
-            var src = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, Half>(bytes.AsSpan());
-            for (int i = 0; i < vector.Length; i++) vector[i] = (float)src[i];
+            return VectorContract.DequantizeInt8(bytes);
         }
-        else
+        if (bytes.Length == VectorContract.Dimension)
         {
-            for (int i = 0; i < vector.Length; i++) vector[i] = (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(i * 2)));
+            // Fixed-scale 1/127f scalar fallback
+            var raw = new float[VectorContract.Dimension];
+            double normSq = 0;
+            const float inv127 = 1.0f / 127.0f;
+            for (int i = 0; i < VectorContract.Dimension; i++)
+            {
+                sbyte q = (sbyte)bytes[i];
+                float val = q * inv127;
+                raw[i] = val;
+                normSq += (double)val * val;
+            }
+            if (normSq > 1e-12)
+            {
+                float invNorm = (float)(1.0 / Math.Sqrt(normSq));
+                for (int i = 0; i < VectorContract.Dimension; i++) raw[i] *= invNorm;
+            }
+            VectorContract.Validate(raw);
+            return raw;
         }
-        VectorContract.Validate(vector);
-        return vector;
+        if (bytes.Length == VectorContract.Dimension * 2)
+        {
+            var vector = new float[VectorContract.Dimension];
+            if (BitConverter.IsLittleEndian)
+            {
+                var src = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, Half>(bytes.AsSpan());
+                for (int i = 0; i < vector.Length; i++) vector[i] = (float)src[i];
+            }
+            else
+            {
+                for (int i = 0; i < vector.Length; i++) vector[i] = (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(i * 2)));
+            }
+            VectorContract.Validate(vector);
+            return vector;
+        }
+        throw new InvalidDataException($"Vector blob must contain 768 float16 values ({VectorContract.Dimension * 2} bytes) or int8 quantized values ({VectorContract.Int8ByteCount} bytes).");
     }
+
+    /// <summary>Reclaims unused database pages created by deleted segments or files during idle periods.</summary>
+    public Task<int> IncrementalVacuumAsync(int maxPages = 500, CancellationToken cancellationToken = default) =>
+        RunAsync(() =>
+        {
+            if (!writable || connection == null) return 0;
+            var autoVacuum = Convert.ToInt64(Scalar(connection, null, "PRAGMA auto_vacuum"));
+            if (autoVacuum != 2) return 0; // 2 = INCREMENTAL
+            var freelistCount = Convert.ToInt64(Scalar(connection, null, "PRAGMA freelist_count"));
+            if (freelistCount <= 0) return 0;
+            Execute(connection, null, $"PRAGMA incremental_vacuum({Math.Clamp(maxPages, 1, 5000)});");
+            var after = Convert.ToInt64(Scalar(connection, null, "PRAGMA freelist_count"));
+            return (int)(freelistCount - after);
+        }, cancellationToken);
 
     private static IndexSegment Segment(SqliteDataReader row, int start, bool vector) => new(row.GetString(start), row.GetString(start + 1),
         Number(row, start + 2), Number(row, start + 3), Text(row, start + 4), vector && !row.IsDBNull(start + 5) ? Decode((byte[])row.GetValue(start + 5)) : null);
@@ -1253,11 +1680,98 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     private static object? Scalar(SqliteConnection db, SqliteTransaction? tx, string sql, params (string Key, object? Value)[] args)
     { using var cmd = Command(db, tx, sql, args); var value = cmd.ExecuteScalar(); return value is DBNull ? null : value; }
 
+    public Task<IReadOnlyList<PendingEmbeddingSegment>> ReadPendingEmbeddingSegmentsAsync(int limit, CancellationToken cancellationToken = default) =>
+        RunReadAsync(() =>
+        {
+            return ReadOnReader(cancellationToken, (db, tx) =>
+            {
+                using var cmd = Command(db, tx, """
+                    SELECT s.id, s.file, f.path, s.excerpt, s.kind
+                    FROM segments s
+                    JOIN files f ON s.file = f.id
+                    WHERE s.vec IS NULL 
+                      AND s.excerpt IS NOT NULL 
+                      AND length(trim(s.excerpt)) > 0
+                      AND s.kind IN ('chunk', 'page', 'cells')
+                    ORDER BY s.id
+                    LIMIT $limit
+                    """, ("$limit", limit));
+                using var r = cmd.ExecuteReader();
+                var list = new List<PendingEmbeddingSegment>();
+                while (r.Read())
+                {
+                    long id = r.GetInt64(0);
+                    long fileId = r.GetInt64(1);
+                    string path = r.GetString(2);
+                    string excerpt = r.GetString(3);
+                    string kind = r.GetString(4);
+                    string title = Path.GetFileNameWithoutExtension(path);
+                    list.Add(new PendingEmbeddingSegment(id, fileId, path, title, excerpt, kind));
+                }
+                return (IReadOnlyList<PendingEmbeddingSegment>)list;
+            });
+        }, cancellationToken);
+
+    public Task<int> SaveBackfilledVectorsAsync(IReadOnlyList<SegmentVectorUpdate> updates, CancellationToken cancellationToken = default)
+    {
+        if (updates.Count == 0) return Task.FromResult(0);
+        return RunAsync(() =>
+        {
+            Write(cancellationToken, (db, tx) =>
+            {
+                bool int8 = string.Equals(Scalar(db, tx, "SELECT value FROM meta WHERE key='vector_encoding'") as string, "int8", StringComparison.OrdinalIgnoreCase);
+                using var cmd = Command(db, tx, "UPDATE segments SET vec=$vec, modality='text' WHERE id=$id", ("$vec", (object)DBNull.Value), ("$id", 0L));
+                var vecParam = cmd.Parameters["$vec"];
+                var idParam = cmd.Parameters["$id"];
+
+                var affectedFiles = new HashSet<long>();
+                foreach (var u in updates)
+                {
+                    vecParam.Value = Encode(u.Vector, int8);
+                    idParam.Value = u.Id;
+                    cmd.ExecuteNonQuery();
+                    affectedFiles.Add(u.FileId);
+                }
+
+                // Check and promote files to 'done' if all eligible text chunks now have vectors
+                foreach (var fileId in affectedFiles)
+                {
+                    long remaining = Convert.ToInt64(Scalar(db, tx,
+                        "SELECT COUNT(*) FROM segments WHERE file=$file AND vec IS NULL AND kind IN ('chunk', 'page', 'cells') AND length(trim(coalesce(excerpt,''))) > 0",
+                        ("$file", fileId)));
+                    if (remaining == 0)
+                    {
+                        Execute(db, tx, "UPDATE files SET state='done', detail=NULL WHERE id=$file AND state='partial'", ("$file", fileId));
+                    }
+                }
+            }, VectorEffect.All);
+            return updates.Count;
+        }, cancellationToken);
+    }
+
     public async ValueTask DisposeAsync()
     {
         await gate.WaitAsync().ConfigureAwait(false);
-        try { if (disposed) return; disposed = true; vectorCache = null; connection?.Dispose(); connection = null; }
-        finally { gate.Release(); }
+        await readGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (disposed) return;
+            disposed = true;
+            lock (vectorCacheSync)
+            {
+                vectorCache = null;
+                dirtyVectorPaths.Clear();
+            }
+            readConnection?.Dispose();
+            readConnection = null;
+            connection?.Dispose();
+            connection = null;
+        }
+        finally
+        {
+            readGate.Release();
+            gate.Release();
+        }
     }
 
 
@@ -1286,3 +1800,8 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
 internal enum IndexInitializationStage { SchemaCreated, BeforePublish }
 internal sealed record WordEvidence(long FileId, double Rank, double Coverage, IndexSegment Segment, string? Snippet, bool ExactLiteralsVerified = false, bool Segmented = false);
 internal sealed record SearchSnapshot(IReadOnlyList<IndexedFile> Files, IReadOnlyList<WordEvidence> Words, string? Profile);
+internal sealed record CompactSearchSnapshot(
+    IReadOnlyDictionary<long, IndexedFile> Headers,
+    CompactVectorIndex? Vectors,
+    IReadOnlyList<WordEvidence> Words,
+    string? Profile);

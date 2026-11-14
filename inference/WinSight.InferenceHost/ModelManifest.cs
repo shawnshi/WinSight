@@ -131,8 +131,20 @@ internal sealed class ModelManifest : IDisposable
 
             if (IsRyzenAI)
             {
-                VaiConfigFile = Path.Combine(File.Exists(Path.Combine(PlatformDir, "vai_ep_config.json")) ? PlatformDir : Root, "vai_ep_config.json");
-                VaipCacheDir = Path.Combine(Directory.Exists(Path.Combine(PlatformDir, "vaip_cache")) ? PlatformDir : Root, "vaip_cache");
+                // Prefer the standard system ProgramData location (C:\ProgramData\RyzenAI\vaip_cache) which avoids spaces and driver parser issues
+                const string systemProgramDataCache = @"C:\ProgramData\RyzenAI\vaip_cache";
+                if (Directory.Exists(systemProgramDataCache) && File.Exists(Path.Combine(systemProgramDataCache, "eg2_vis_140", "eg2_vis_140.rai")))
+                {
+                    VaipCacheDir = systemProgramDataCache;
+                    VaiConfigFile = File.Exists(Path.Combine(systemProgramDataCache, "vai_ep_config.json"))
+                        ? Path.Combine(systemProgramDataCache, "vai_ep_config.json")
+                        : (File.Exists(Path.Combine(PlatformDir, "vai_ep_config.json")) ? Path.Combine(PlatformDir, "vai_ep_config.json") : Path.Combine(Root, "vai_ep_config.json"));
+                }
+                else
+                {
+                    VaiConfigFile = Path.Combine(File.Exists(Path.Combine(PlatformDir, "vai_ep_config.json")) ? PlatformDir : Root, "vai_ep_config.json");
+                    VaipCacheDir = Path.Combine(Directory.Exists(Path.Combine(PlatformDir, "vaip_cache")) ? PlatformDir : Root, "vaip_cache");
+                }
             }
             return;
         }

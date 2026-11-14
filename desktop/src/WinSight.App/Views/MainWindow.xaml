@@ -12,62 +12,55 @@
     </Window.SystemBackdrop>
 
     <Grid x:Name="RootGrid" Background="Transparent">
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator Key="Number1" Modifiers="Control" Invoked="OnNavShortcutAccelerator"/>
+            <KeyboardAccelerator Key="Number2" Modifiers="Control" Invoked="OnNavShortcutAccelerator"/>
+            <KeyboardAccelerator Key="Number3" Modifiers="Control" Invoked="OnNavShortcutAccelerator"/>
+            <KeyboardAccelerator Key="Number4" Modifiers="Control" Invoked="OnNavShortcutAccelerator"/>
+            <KeyboardAccelerator Key="Number5" Modifiers="Control" Invoked="OnNavShortcutAccelerator"/>
+        </Grid.KeyboardAccelerators>
         <Grid.RowDefinitions>
-            <RowDefinition Height="32"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="36"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- Custom TitleBar drag region -->
-        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="Transparent" Padding="12,0,0,0">
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="Transparent" Padding="14,0,0,0">
             <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                 <Image Source="ms-appx:///Assets/WinSight.png" Width="16" Height="16" AutomationProperties.Name="WinSight logo"/>
                 <TextBlock Text="WinSight 智寻" Style="{ThemeResource CaptionTextBlockStyle}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                <TextBlock Text="· 本地多模态智能检索" Style="{ThemeResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center"/>
             </StackPanel>
         </Grid>
 
-        <!-- Preview status is informational; runtime failures are reported separately. -->
-        <InfoBar Grid.Row="1"
-                 IsOpen="False"
-                 Visibility="Collapsed"
-                 IsClosable="False"
-                 Severity="Informational"
-                 Title="WinSight 原生预览版"
-                 Message="{x:Bind ViewModel.PreviewNotice}"/>
-
-        <!-- Main Navigation View -->
-        <NavigationView Grid.Row="2"
+        <!-- Main Navigation View (LeftCompact saves horizontal canvas while keeping icons + tooltips + Ctrl+1..5) -->
+        <NavigationView Grid.Row="1"
                         x:Name="NavView"
                         IsBackButtonVisible="Collapsed"
                         IsSettingsVisible="False"
-                        PaneDisplayMode="Left"
+                        PaneDisplayMode="LeftCompact"
+                        CompactPaneLength="48"
+                        OpenPaneLength="196"
                         ItemInvoked="OnNavItemInvoked"
                         SelectionChanged="OnNavSelectionChanged">
-            <NavigationView.PaneHeader>
-                <StackPanel Orientation="Horizontal" Spacing="10" Margin="12,8">
-                    <Image Source="ms-appx:///Assets/WinSight.png" Width="32" Height="32"
-                           AutomationProperties.Name="WinSight logo"/>
-                    <TextBlock Text="WinSight" Style="{ThemeResource SubtitleTextBlockStyle}"
-                               VerticalAlignment="Center"/>
-                </StackPanel>
-            </NavigationView.PaneHeader>
             <NavigationView.MenuItems>
-                <NavigationViewItem Content="搜索" Tag="search" Icon="Find"/>
-                <NavigationViewItem Content="目录管理" Tag="folders" Icon="Folder"/>
-                <NavigationViewItem Content="存储与模型" Tag="storage" Icon="Library"/>
-                <NavigationViewItem Content="MCP 控制台" Tag="mcp" Icon="Globe"/>
+                <NavigationViewItem x:Name="NavSearch" Content="搜索 (Ctrl+1)" Tag="search" Icon="Find" ToolTipService.ToolTip="搜索 (Ctrl+1)"/>
+                <NavigationViewItem x:Name="NavFolders" Content="目录管理 (Ctrl+2)" Tag="folders" Icon="Folder" ToolTipService.ToolTip="目录管理 (Ctrl+2)"/>
+                <NavigationViewItem x:Name="NavStorage" Content="存储与模型 (Ctrl+3)" Tag="storage" Icon="Library" ToolTipService.ToolTip="存储与模型 (Ctrl+3)"/>
+                <NavigationViewItem x:Name="NavMcp" Content="MCP 控制台 (Ctrl+4)" Tag="mcp" Icon="Globe" ToolTipService.ToolTip="MCP 控制台 (Ctrl+4)"/>
             </NavigationView.MenuItems>
 
             <NavigationView.FooterMenuItems>
-                <NavigationViewItem Content="设置" Tag="settings" Icon="Setting"/>
+                <NavigationViewItem x:Name="NavSettings" Content="设置 (Ctrl+5)" Tag="settings" Icon="Setting" ToolTipService.ToolTip="设置 (Ctrl+5)"/>
             </NavigationView.FooterMenuItems>
 
             <Frame x:Name="ContentFrame"/>
         </NavigationView>
 
         <!-- Modern Compact Bottom Status Bar -->
-        <Border Grid.Row="3"
+        <Border Grid.Row="2"
                 Background="{ThemeResource LayerFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"
@@ -79,14 +72,10 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- Left: Pill Status Badge -->
-                <Border Grid.Column="0"
-                        Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                        BorderThickness="1" CornerRadius="10" Padding="9,3"
-                        VerticalAlignment="Center">
+                <!-- Left: Pill Status Badge with live state color -->
+                <Border Grid.Column="0" Style="{StaticResource WsPillBadgeStyle}" VerticalAlignment="Center">
                     <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                        <Ellipse Width="7" Height="7" Fill="{ThemeResource SystemFillColorSuccessBrush}" VerticalAlignment="Center"/>
+                        <Ellipse Width="7" Height="7" Fill="{x:Bind ViewModel.StatusDotBrush, Mode=OneWay}" VerticalAlignment="Center"/>
                         <TextBlock x:Name="IndexingStateLabel"
                                    Text="{x:Bind ViewModel.IndexingStateText, Mode=OneWay}"
                                    AutomationProperties.LiveSetting="Polite"

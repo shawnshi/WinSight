@@ -536,6 +536,49 @@ await Test("query validation, no keyword error swallowing, dispose ownership, co
     Check(model.LastInput!.Value == "task: code retrieval | query: retry");
 });
 
+await Test("schema5 page_size 8192, auto_vacuum incremental, int8 scalar quantization and vacuum reclaim", async () =>
+{
+    string path = Db("opt_page_vac");
+    await using var repo = new SqliteIndexRepository(path);
+    await repo.InitializeAsync();
+    using (var db = Open(path))
+    {
+        Check(Convert.ToInt64(Scalar(db, "PRAGMA page_size")) == 8192, "Page size must be 8192");
+        Check(Convert.ToInt64(Scalar(db, "PRAGMA auto_vacuum")) == 2, "Auto-vacuum must be INCREMENTAL (2)");
+    }
+
+    var rnd = new Random(42);
+    var vec = new float[768];
+    double norm = 0;
+    for (int i = 0; i < 768; i++) { vec[i] = (float)(rnd.NextDouble() * 2 - 1); norm += (double)vec[i] * vec[i]; }
+    norm = Math.Sqrt(norm);
+    for (int i = 0; i < 768; i++) vec[i] = (float)(vec[i] / norm);
+
+    var qBytes = VectorContract.QuantizeInt8(vec);
+    Check(qBytes.Length == 772, "Int8 quantized bytes length must be 772");
+    var deq = VectorContract.DequantizeInt8(qBytes);
+    Check(deq.Length == 768, "Dequantized vector length must be 768");
+    double cos = VectorMath.Dot(vec, deq);
+    Check(cos > 0.9999, $"Cosine fidelity {cos} must be > 0.9999");
+    double directDot = VectorMath.DotInt8(vec, qBytes);
+    Check(Math.Abs(cos - directDot) < 1e-4, $"DotInt8 {directDot} must match Dot {cos}");
+
+    await repo.SetMetaAsync("profile_id", "synthetic-profile-v1");
+    await repo.SetMetaAsync("vector_encoding", "int8");
+    await repo.UpsertFileAsync(SampleFile("C:/int8/doc.txt", "int8 quantized text", vec));
+    using (var db = Open(path))
+    {
+        var writtenBlob = (byte[])Scalar(db, "SELECT vec FROM segments WHERE file=(SELECT id FROM files WHERE path='C:/int8/doc.txt') AND vec IS NOT NULL")!;
+        Check(writtenBlob.Length == 772, $"On-disk vector blob must be 772 bytes, got {writtenBlob.Length}");
+    }
+    var readBack = (await repo.ReadFilesAsync()).First(f => f.Path == "C:/int8/doc.txt");
+    var readVec = readBack.Segments.First(s => s.Vector != null).Vector!;
+    Check(VectorMath.Dot(vec, readVec) > 0.9999, "Read back vector must preserve > 0.9999 similarity");
+
+    var reclaimed = await repo.IncrementalVacuumAsync(500);
+    Check(reclaimed >= 0, "Incremental vacuum must return non-negative reclaimed pages");
+});
+
 await WsRegressions.RunAsync(root, Test);
 await IncrementalQueueStorageTests.RunAsync(root, Test);
 await IncrementalQueueBehaviourTests.RunAsync(root, Test);

@@ -92,6 +92,45 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
     public string BackendStatusRaw => embeddingInfo?.BackendStatus ?? "";
     public string BackendStatusSummary => SummarizeBackendStatus(embeddingInfo?.BackendStatus);
 
+    private StorageMetrics? metrics;
+    private CancellationTokenSource? backfillCts;
+    private bool isBackfilling;
+    private string maintenanceStatus = "";
+
+    public string DatabaseSizeText => metrics is null ? "—" : FormatBytes(metrics.DatabaseBytes);
+    public string PreviewCacheSizeText => metrics is null ? "—" : $"{metrics.PreviewCacheFiles} 个文件 · {FormatBytes(metrics.PreviewCacheBytes)}";
+    public string VectorCoverageText => metrics is null || metrics.TotalSegments <= 0
+        ? "—"
+        : $"{metrics.EmbeddedSegments:N0} / {metrics.TotalSegments:N0} ({VectorCoveragePercent:F1}%)";
+    public double VectorCoveragePercent => metrics is null || metrics.TotalSegments <= 0
+        ? 0
+        : Math.Clamp((double)metrics.EmbeddedSegments * 100.0 / metrics.TotalSegments, 0, 100);
+    public bool IsBackfilling
+    {
+        get => isBackfilling;
+        private set
+        {
+            if (SetProperty(ref isBackfilling, value))
+            {
+                OnPropertyChanged(nameof(CanStartBackfill));
+            }
+        }
+    }
+    public bool CanStartBackfill => !isBackfilling;
+    public string MaintenanceStatus
+    {
+        get => maintenanceStatus;
+        private set => SetProperty(ref maintenanceStatus, value);
+    }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024 * 1024):F2} GB",
+        >= 1024L * 1024 => $"{bytes / (1024.0 * 1024):F1} MB",
+        >= 1024 => $"{bytes / 1024.0:F0} KB",
+        _ => $"{bytes} B"
+    };
+
     public StorageModelViewModel(IDesktopBackend backend)
     {
         this.backend = backend;
@@ -112,10 +151,82 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(FailedCount));
             OnPropertyChanged(nameof(StatusDetail));
             await RefreshQueueStatusAsync();
+            metrics = await backend.GetStorageMetricsAsync();
+            OnPropertyChanged(nameof(DatabaseSizeText));
+            OnPropertyChanged(nameof(PreviewCacheSizeText));
+            OnPropertyChanged(nameof(VectorCoverageText));
+            OnPropertyChanged(nameof(VectorCoveragePercent));
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Status check failed: {ex.Message}";
+            StatusMessage = $"状态读取失败：{ex.Message}";
+        }
+    }
+
+    public async Task StartBackfillAsync()
+    {
+        if (isBackfilling) return;
+        backfillCts?.Cancel();
+        backfillCts?.Dispose();
+        backfillCts = new CancellationTokenSource();
+        IsBackfilling = true;
+        MaintenanceStatus = "正在启动推理宿主，准备补全缺失的语义向量…";
+        try
+        {
+            var progress = new Progress<(int Processed, int Remaining)>(p =>
+            {
+                MaintenanceStatus = $"正在后台补全语义向量：已生成 {p.Processed:N0} 条…";
+            });
+            int added = await backend.RunVectorBackfillAsync(0, progress, backfillCts.Token);
+            MaintenanceStatus = added > 0
+                ? $"向量补全完成：新增 {added:N0} 条语义向量。"
+                : "所有分段均已包含语义向量，无需补全。";
+            await RefreshStatusAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            MaintenanceStatus = "已停止向量补全（已生成的向量已持久化保存）。";
+            await RefreshStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            MaintenanceStatus = $"向量补全失败：{ex.Message}";
+        }
+        finally
+        {
+            IsBackfilling = false;
+        }
+    }
+
+    public void StopBackfill() => backfillCts?.Cancel();
+
+    public async Task ClearPreviewCacheAsync()
+    {
+        try
+        {
+            int deleted = await backend.ClearPreviewCacheAsync();
+            MaintenanceStatus = $"已清理 {deleted} 个离线预览缓存文件。";
+            await RefreshStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            MaintenanceStatus = $"清理缓存失败：{ex.Message}";
+        }
+    }
+
+    public async Task CompactDatabaseAsync()
+    {
+        try
+        {
+            int pages = await backend.CompactDatabaseAsync();
+            MaintenanceStatus = pages > 0
+                ? $"数据库整理完成，已回收 {pages:N0} 个空闲页。"
+                : "数据库空间已紧凑，暂无待回收空闲页。";
+            await RefreshStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            MaintenanceStatus = $"数据库整理失败：{ex.Message}";
         }
     }
 

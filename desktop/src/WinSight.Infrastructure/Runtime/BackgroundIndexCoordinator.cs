@@ -263,6 +263,9 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
                     }
                     if (processed > 0 && indexPaths != null)
                     {
+                        var remaining = await queue.GetTaskCountsAsync(stop.Token).ConfigureAwait(false);
+                        if (remaining.GetValueOrDefault("Pending") + remaining.GetValueOrDefault("Stabilizing") + remaining.GetValueOrDefault("Ready") > 0)
+                            Signal();
                         continue;
                     }
                 }
