@@ -237,6 +237,70 @@ internal static class IncrementalQueueBehaviourTests
             var deferred = await repo.GetTaskAsync(path);
             Require(deferred!.State == "Deferred" && deferred.Reason == "locked" && deferred.Attempts == 6, "The budget must end in Deferred(locked).");
         });
+
+        await test("S1-P1-TOMBSTONE-FAILED-RETRY deletes move tombstone under indexPaths, retries due Failed tasks below max, and advances embedding backfill cursor", async () =>
+        {
+            var sandbox = Sandbox(root);
+            await using var repo = new SqliteIndexRepository(Path.Combine(sandbox, "p1.sqlite"));
+            await repo.InitializeAsync();
+            var processedPaths = new List<string>();
+            await using var queue = new IncrementalIndexQueue(
+                repo,
+                indexPaths: (roots, paths, code, token) =>
+                {
+                    processedPaths.AddRange(paths);
+                    return Task.CompletedTask;
+                },
+                quietPeriod: TimeSpan.FromMilliseconds(20),
+                maxWait: TimeSpan.FromSeconds(2));
+            await queue.InitializeAsync();
+
+            var oldPath = Path.Combine(sandbox, "oldname.txt");
+            var newPath = Path.Combine(sandbox, "newname.txt");
+            var normOld = FilePolicy.Normalize(oldPath);
+            var normNew = FilePolicy.Normalize(newPath);
+            await File.WriteAllTextAsync(oldPath, "payload");
+            await repo.UpsertFileAsync(new IndexedFile(0, normOld, "doc", 7, 1, "done", null, null,
+                [new IndexSegment("chunk", "none", 1, null, "payload", null), new IndexSegment("chunk", "none", 2, null, "second", null)]));
+
+            File.Move(oldPath, newPath);
+            await queue.EnqueueEventAsync(newPath, sandbox, false, WatcherChangeTypes.Renamed, oldPath: oldPath);
+            await Task.Delay(50);
+            Require(await queue.ProcessReadyTasksAsync(10) >= 1, "Move task should process once stabilized.");
+            Require(processedPaths.Contains(normNew, StringComparer.OrdinalIgnoreCase), "indexPaths should receive the moved destination path.");
+            Require(await repo.GetFileAsync(normOld) is null, "Old tombstone file entry must be removed from files table when indexPaths handles Move.");
+            Require(await repo.GetTaskAsync(normOld) is null && await repo.GetTaskAsync(normNew) is null, "Move tasks must be acked.");
+
+            var retryPath = FilePolicy.Normalize(Path.Combine(sandbox, "failed-retryable.txt"));
+            var terminalPath = FilePolicy.Normalize(Path.Combine(sandbox, "failed-terminal.txt"));
+            await File.WriteAllTextAsync(retryPath, "retry me");
+            var past = DateTimeOffset.UtcNow.AddSeconds(-5);
+            await repo.EnqueueIndexTaskAsync(new IndexTask(retryPath, sandbox, false, "Update", null, "Failed", 1, past, past, "transient"));
+            await repo.EnqueueIndexTaskAsync(new IndexTask(terminalPath, sandbox, false, "Update", null, "Failed", 8, past, past, "terminal"));
+
+            var due = await repo.ReadDueTasksAsync(10);
+            Require(due.Any(t => t.Path == retryPath), "Due Failed task with attempts < 8 must be read for retry.");
+            Require(!due.Any(t => t.Path == terminalPath), "Terminal Failed task with attempts >= 8 must not be read as due.");
+
+            Require(await queue.ProcessReadyTasksAsync(10) == 1, "Retryable Failed task should be retried once due.");
+            Require(await repo.GetTaskAsync(retryPath) is null, "Recovered Failed task must be acked.");
+            var stillTerminal = await repo.GetTaskAsync(terminalPath);
+            Require(stillTerminal is not null && stillTerminal.State == "Failed" && stillTerminal.Attempts == 8, "Terminal Failed task must remain Failed.");
+            Require(await repo.CountRetryableFailedTasksAsync() == 0, "Retryable Failed count must be 0 when only Attempts == 8 Failed remains.");
+            await File.WriteAllTextAsync(terminalPath, "terminal content");
+            await queue.ReconcileRootAsync(sandbox, false, force: true);
+            stillTerminal = await repo.GetTaskAsync(terminalPath);
+            Require(stillTerminal is not null && stillTerminal.State == "Failed" && stillTerminal.Attempts == 8, "ReconcileRootAsync must preserve State == Failed && Attempts == 8.");
+
+            await repo.UpsertFileAsync(new IndexedFile(0, normNew, "doc", 7, 1, "partial", null, null,
+                [new IndexSegment("chunk", "none", 1, null, "alpha", null), new IndexSegment("chunk", "none", 2, null, "beta", null)]));
+            var page1 = await repo.ReadPendingEmbeddingSegmentsAsync(1, 0);
+            Require(page1.Count == 1, "First cursor page must return 1 pending segment.");
+            var page2 = await repo.ReadPendingEmbeddingSegmentsAsync(1, page1[^1].Id);
+            Require(page2.Count == 1 && page2[0].Id > page1[0].Id, "Cursor page 2 must strictly advance past page 1 id.");
+            var page3 = await repo.ReadPendingEmbeddingSegmentsAsync(1, page2[^1].Id);
+            Require(page3.Count == 0, "Cursor page 3 must terminate cleanly when past all pending segments.");
+        });
     }
 
 

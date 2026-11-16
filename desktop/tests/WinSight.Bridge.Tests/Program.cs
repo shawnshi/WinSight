@@ -23,12 +23,19 @@ var corpus = new (string Name, string Body, string Query)[]
     ("c错误码.txt", "错误码 E1001 表示 接口 超时 请 重试", "E1001"),
 };
 foreach (var (name, body, _) in corpus) await File.WriteAllTextAsync(Path.Combine(docs, name), body, new UTF8Encoding(false));
-// Two extra indexed files for the read_file_context contract: one is replaced by binary after indexing, one has a huge single line.
+// Three extra indexed files for the read_file_context contract: binary swap, huge single line, and junction reparse test.
 var swapped = Path.Combine(docs, "swapped.txt");
 var longLine = Path.Combine(docs, "longline.txt");
+var reparseSubDir = Path.Combine(docs, "reparse-sub");
+Directory.CreateDirectory(reparseSubDir);
+var reparseFile = Path.Combine(reparseSubDir, "reparse.txt");
+var outsideDir = Path.Combine(root, "outside-secret");
+Directory.CreateDirectory(outsideDir);
+await File.WriteAllTextAsync(Path.Combine(outsideDir, "reparse.txt"), "TOP_SECRET_OUTSIDE", new UTF8Encoding(false));
 await File.WriteAllTextAsync(swapped, "BINSWAPWORD harmless text before the file is replaced", new UTF8Encoding(false));
 await File.WriteAllTextAsync(longLine, "LONGLINEWORD " + new string('x', 200_000), new UTF8Encoding(false));
-const int extraFiles = 2;
+await File.WriteAllTextAsync(reparseFile, "JUNCTIONSWAPWORD safe original text", new UTF8Encoding(false));
+const int extraFiles = 3;
 var database = Path.Combine(root, "index.sqlite");
 await using (var repository = new SqliteIndexRepository(database))
 {
@@ -96,6 +103,14 @@ await using (var stdio = new StdioBridge(bridge, database))
     var swapHit = Hits(await stdio.Tool("search_files", new { query = "BINSWAPWORD", topK = 1 }))[0].GetProperty("path").GetString()!;
     await File.WriteAllBytesAsync(swapHit, new byte[] { 0x25, 0x50, 0x44, 0x46, 0x00, 0x01, 0x02, 0x03 });
     Check("a file replaced by binary content is refused", Code(await stdio.Tool("read_file_context", new { path = swapHit })) == "excluded_file");
+    var junctionHit = Hits(await stdio.Tool("search_files", new { query = "JUNCTIONSWAPWORD", topK = 1 }))[0].GetProperty("path").GetString()!;
+    Directory.Delete(reparseSubDir, recursive: true);
+    using (var mklink = Process.Start(new ProcessStartInfo("cmd.exe") { UseShellExecute = false, CreateNoWindow = true, ArgumentList = { "/c", "mklink", "/J", reparseSubDir, outsideDir } })!)
+    {
+        mklink.WaitForExit();
+        Check("junction creation succeeded for reparse test", mklink.ExitCode == 0, mklink.ExitCode.ToString());
+    }
+    Check("a path whose ancestor became a junction is refused", Code(await stdio.Tool("read_file_context", new { path = junctionHit })) == "excluded_file");
     Check("stdio rejects an oversized query", Code(await stdio.Tool("search_files", new { query = new string('x', 5000) })) == "validation_error");
     Check("stdio rejects an unknown tool", Code(await stdio.Call("tools/call", new { name = "nope", arguments = new { } })) is not null);
     Check("stdio stdout carried only JSON", stdio.Output.All(line => line.Trim().Length == 0 || Parses(line)));
@@ -173,6 +188,13 @@ using (var authorized = new HttpRequestMessage(HttpMethod.Post, endpoint) { Cont
     using var document = JsonDocument.Parse(await reply.Content.ReadAsStringAsync());
     var overHttp = Signature(document.RootElement);
     Check("http returns the same hits as stdio", overHttp.SequenceEqual(stdioSignature), string.Join("|", overHttp));
+}
+using (var chunked = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = new StreamContent(new NonSeekablePayloadStream(Encoding.UTF8.GetBytes(new string('A', (1024 * 1024) + 64)))) })
+{
+    chunked.Headers.TransferEncodingChunked = true;
+    chunked.Headers.Add("Authorization", "Bearer " + token);
+    using var reply = await http.SendAsync(chunked);
+    Check("http rejects oversized chunked body with 413 without crashing", (int)reply.StatusCode == 413 && !httpProcess.HasExited, ((int)reply.StatusCode).ToString());
 }
 httpProcess.Kill(true);
 
@@ -354,4 +376,27 @@ internal sealed class FixtureEmbeddings : IEmbeddingService
         return Task.FromResult<IReadOnlyList<EmbeddingResult>>(results);
     }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+internal sealed class NonSeekablePayloadStream(byte[] payload) : Stream
+{
+    private int offset;
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        int available = payload.Length - this.offset;
+        if (available <= 0) return 0;
+        int n = Math.Min(available, count);
+        Buffer.BlockCopy(payload, this.offset, buffer, offset, n);
+        this.offset += n;
+        return n;
+    }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }

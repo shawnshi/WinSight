@@ -94,22 +94,6 @@ internal sealed class SafeFile : IDisposable
             handle.Dispose();
             handle = CreateFileW(nativePath, 0x80u, share, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
         }
-        if (handle.IsInvalid)
-        {
-            var firstError = Marshal.GetLastWin32Error();
-            // In OneDrive / CloudFilter / concurrent environments, if access is denied (5) or sharing violation (32) occurs,
-            // retry with full sharing (1 | 2 | 4) and standard backup semantics.
-            if (firstError is 5 or 32)
-            {
-                handle.Dispose();
-                handle = CreateFileW(nativePath, access, 1u | 2u | 4u, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
-                if (handle.IsInvalid && directory && access == 0x81u)
-                {
-                    handle.Dispose();
-                    handle = CreateFileW(nativePath, 0x80u, 1u | 2u | 4u, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
-                }
-            }
-        }
         if (!handle.IsInvalid) return handle;
         var error = Marshal.GetLastWin32Error();
         handle.Dispose();

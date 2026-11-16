@@ -75,7 +75,7 @@ internal static partial class SearchText
 
         if (original.Length <= 256)
         {
-            if (NormalizedShortCache.Count > 100_000) NormalizedShortCache.Clear();
+            if (NormalizedShortCache.Count > 16_384) NormalizedShortCache.Clear();
             NormalizedShortCache[original] = result;
         }
         return result;
@@ -288,7 +288,6 @@ internal static partial class SearchText
             try { tokens = NativeSegmenter.Segment(word); }
             catch (SegmenterUnavailableException) { if (seen.Add(word)) latin.Add(word); continue; }
             var content = tokens.Where(t => t.Length != 0 && !(CjkFunctionWords.Contains(t))).ToArray();
-            if (tokens.Count > 1 && seen.Add(word)) cjk.Add(word);
             foreach (var token in content.Length != 0 ? content : tokens)
                 if (token.Length != 0 && seen.Add(token)) cjk.Add(token);
         }

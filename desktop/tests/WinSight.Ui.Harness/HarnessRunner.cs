@@ -397,7 +397,7 @@ public static class HarnessRunner
                 switch (req.Query)
                 {
                     case "none": return new SearchResponse(Array.Empty<SearchHit>(), TimeSpan.FromMilliseconds(1), true);
-                    case "boom": throw new InvalidOperationException("boom");
+                    case "boom" or "boom2": throw new InvalidOperationException("boom");
                     case "partial":
                         if (req.Mode == SearchMode.Keyword) return new SearchResponse(new[] { a }, TimeSpan.FromMilliseconds(1), false);
                         throw new InvalidOperationException("embedding host down");
@@ -433,6 +433,12 @@ public static class HarnessRunner
             vm.Query = "boom";
             await WaitFor(() => vm.ViewState == SearchViewState.Error && !vm.IsLoading, "error state");
             if (!vm.HasNotice) throw new Exception("Error state must carry a notice");
+
+            vm.SelectedMode = SearchMode.Keyword;
+            vm.Query = "boom2";
+            await WaitFor(() => lastQuery == "boom2" && vm.ViewState == SearchViewState.Error && !vm.IsLoading, "keyword-mode error state");
+            if (!vm.HasNotice) throw new Exception("Keyword-mode error state must carry a notice");
+            vm.SelectedMode = SearchMode.Hybrid;
 
             vm.Query = "partial";
             await WaitFor(() => vm.Hits.Count == 1 && !vm.IsLoading, "keyword fallback");

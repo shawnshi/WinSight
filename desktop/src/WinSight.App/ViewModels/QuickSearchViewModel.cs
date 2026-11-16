@@ -195,7 +195,7 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
                 {
                     fast = await backend.SearchAsync(new SearchRequest(q, Limit: 60, Mode: SearchMode.Keyword, Kind: kind, MinScore: 0.25), ct);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (Exception ex) when (ex is not OperationCanceledException && selectedMode != SearchMode.Keyword)
                 {
                     // The hybrid pass below reports the real failure; a keyword fault alone must not blank the page.
                 }
@@ -344,14 +344,18 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         }
 
         var keep = preserveSelection && SelectedItem is { } current ? RowKey(current) : null;
+        var prevItem = SelectedItem;
         selectedIndex = -1;
         Hits.Clear();
         foreach (var row in rows) Hits.Add(row);
 
         var index = keep is null ? -1 : Array.IndexOf(incoming, keep);
-        SelectedIndex = index >= 0 ? index : Hits.Count > 0 ? 0 : -1;
-        OnPropertyChanged(nameof(SelectedIndex));
-        OnPropertyChanged(nameof(SelectedItem));
+        var nextIndex = index >= 0 ? index : Hits.Count > 0 ? 0 : -1;
+        SelectedIndex = nextIndex;
+        if (nextIndex < 0 && prevItem is not null)
+        {
+            OnPropertyChanged(nameof(SelectedItem));
+        }
         OnPropertyChanged(nameof(IsRefining));
         ViewState = Hits.Count == 0 ? SearchViewState.Searching : SearchViewState.Results;
     }

@@ -24,6 +24,8 @@ public sealed partial class SearchPage : Page
     private bool compact, showingDetail;
     private int heroCurrentPage = 1;
     private int? heroTotalPages;
+    private SearchItemViewModel? currentHeroItem;
+    private bool heroStageInitialized;
 
     /// <summary>Hosts that drive the page headlessly (tests) turn the one-time tip off.</summary>
     internal bool FirstRunTipEnabled { get; set; } = true;
@@ -41,7 +43,7 @@ public sealed partial class SearchPage : Page
     {
         if (e.PropertyName == nameof(QuickSearchViewModel.IsLoading) && !ViewModel.IsLoading)
             DispatcherQueue?.TryEnqueue(AnnounceStatus);
-        if (e.PropertyName is nameof(QuickSearchViewModel.SelectedItem) or nameof(QuickSearchViewModel.SelectedIndex))
+        if (e.PropertyName == nameof(QuickSearchViewModel.SelectedItem))
         {
             DispatcherQueue?.TryEnqueue(() =>
             {
@@ -119,10 +121,17 @@ public sealed partial class SearchPage : Page
         catch (Exception error) { AppLog.Warn("stage animation skipped", error); }
     }
 
-    private void UpdateHeroStage(SearchItemViewModel? selected) => LoadHeroStageAsync(selected, overridePage: null);
+    private void UpdateHeroStage(SearchItemViewModel? selected)
+    {
+        if (heroStageInitialized && !previewSessionOpen && ReferenceEquals(currentHeroItem, selected))
+            return;
+        LoadHeroStageAsync(selected, overridePage: null);
+    }
 
     private async void LoadHeroStageAsync(SearchItemViewModel? selected, int? overridePage)
     {
+        heroStageInitialized = true;
+        currentHeroItem = previewSessionOpen ? null : selected;
         AnimateStageIn();
         heroPreviewCts?.Cancel();
         heroPreviewCts?.Dispose();

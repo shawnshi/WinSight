@@ -26,6 +26,7 @@ internal static class PreviewServer
     {
         using var officeSta = new WarmOfficeStaWorker();
         var pdfCache = new PdfCacheState();
+        var rasterGate = new SemaphoreSlim(4, 4);
         var stdoutLock = new object();
         var inflight = new ConcurrentDictionary<long, Task>();
         long seq = 0;
@@ -88,7 +89,7 @@ internal static class PreviewServer
                         "render-word-page" => await RenderWordWarmAsync(requestPath, officeSta).ConfigureAwait(false),
                         "render-excel-page" => await RenderExcelWarmAsync(requestPath, officeSta).ConfigureAwait(false),
                         "render-presentation-page" => await officeSta.RunAsync(() => RenderPresentationWarm(requestPath)).ConfigureAwait(false),
-                        "render-raster-preview" => await NativeMediaCommand.RenderRasterPreviewAsync(requestPath).ConfigureAwait(false),
+                        "render-raster-preview" => await RenderRasterBoundedAsync(requestPath, rasterGate).ConfigureAwait(false),
                         _ => throw new ArgumentException($"Unknown preview op: {op}")
                     };
                     var payload = JsonSerializer.Serialize(result, CamelJson);
@@ -104,6 +105,7 @@ internal static class PreviewServer
                 }
             });
             inflight[taskKey] = task;
+            if (task.IsCompleted) inflight.TryRemove(taskKey, out _);
         }
 
         try { Task.WaitAll([.. inflight.Values], TimeSpan.FromSeconds(2)); } catch { }
@@ -226,6 +228,19 @@ internal static class PreviewServer
         return WarmOfficeStaWorker.Current!.RenderPresentationSlide(requestPath);
     }
 
+    private static async Task<RasterPreviewResult> RenderRasterBoundedAsync(string requestPath, SemaphoreSlim gate)
+    {
+        await gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            return await NativeMediaCommand.RenderRasterPreviewAsync(requestPath).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     private sealed class WarmOfficeStaWorker : IDisposable
     {
         [ThreadStatic]
@@ -237,9 +252,13 @@ internal static class PreviewServer
         private object? wordApp;
         private object? excelApp;
         private object? pptApp;
+        private bool ownsWord;
+        private bool ownsExcel;
+        private bool ownsPpt;
         private bool pptPublisherVerified;
         private string? pptExecutable;
         private DateTime lastActivity = DateTime.UtcNow;
+        private int idleCheckQueued;
 
         internal WarmOfficeStaWorker()
         {
@@ -253,15 +272,28 @@ internal static class PreviewServer
         {
             if ((DateTime.UtcNow - lastActivity) < TimeSpan.FromSeconds(120)) return;
             if (wordApp is null && excelApp is null && pptApp is null) return;
+            if (queue.IsAddingCompleted || queue.Count > 0) return;
+            if (Interlocked.CompareExchange(ref idleCheckQueued, 1, 0) != 0) return;
+            var posted = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
             try
             {
-                RunAsync(() =>
+                queue.Add((() =>
                 {
-                    if ((DateTime.UtcNow - lastActivity) >= TimeSpan.FromSeconds(120))
-                        ReleaseAllApps();
-                }).GetAwaiter().GetResult();
+                    try
+                    {
+                        if ((DateTime.UtcNow - lastActivity) >= TimeSpan.FromSeconds(120))
+                            ReleaseAllApps();
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref idleCheckQueued, 0);
+                    }
+                }, posted));
             }
-            catch { }
+            catch
+            {
+                Interlocked.Exchange(ref idleCheckQueued, 0);
+            }
         }
 
         private void RunLoop()
@@ -325,7 +357,7 @@ internal static class PreviewServer
                         {
                             var app = new NativeMediaCommand.OfficeObject(appObj, com);
                             var docs = app.Object("Documents");
-                            var doc = docs.Object("Open", true, copy, false, true, false, Type.Missing, Type.Missing, Type.Missing, Type.Missing, Type.Missing, false);
+                            var doc = docs.Object("Open", true, copy, false, true, false, "__winsight_invalid_pwd__", "__winsight_invalid_pwd__", Type.Missing, Type.Missing, Type.Missing, Type.Missing, Type.Missing, false);
                             int resolvedPage = Math.Max(1, pageNumber);
                             if (paragraphNumber is > 0)
                             {
@@ -368,7 +400,9 @@ internal static class PreviewServer
                     }
                     catch (COMException) when (attempt == 0)
                     {
-                        ReleaseCom(ref wordApp, quit: false);
+                        bool wasOwned = ownsWord;
+                        ownsWord = false;
+                        ReleaseCom(ref wordApp, quit: wasOwned, "Documents", saveFalseArg: true);
                     }
                 }
                 throw new IOException("Word automation failed.");
@@ -399,7 +433,7 @@ internal static class PreviewServer
                         {
                             var app = new NativeMediaCommand.OfficeObject(appObj, com);
                             var workbooks = app.Object("Workbooks");
-                            var book = workbooks.Object("Open", true, copy, 0, true);
+                            var book = workbooks.Object("Open", true, copy, 0, true, Type.Missing, "__winsight_invalid_pwd__");
                             var target = book;
                             if (!string.IsNullOrWhiteSpace(sheetName))
                             {
@@ -440,7 +474,9 @@ internal static class PreviewServer
                     }
                     catch (COMException) when (attempt == 0)
                     {
-                        ReleaseCom(ref excelApp, quit: false);
+                        bool wasOwned = ownsExcel;
+                        ownsExcel = false;
+                        ReleaseCom(ref excelApp, quit: wasOwned, "Workbooks", saveFalseArg: false);
                     }
                 }
                 throw new IOException("Excel automation failed.");
@@ -472,20 +508,27 @@ internal static class PreviewServer
             try { WinSight.Infrastructure.Media.PowerPointPolicy.ValidateInteractivePackage(source, CancellationToken.None); }
             catch (NotSupportedException) { return Deferred("unsupported-content"); }
 
-            if (!pptPublisherVerified)
-            {
-                WinSight.Infrastructure.Media.PowerPointPolicy.VerifyPublisher(executable);
-                pptPublisherVerified = true;
-            }
+            using var pptMutex = new Mutex(false, WinSight.Infrastructure.Media.PowerPointPolicy.AutomationMutex);
+            bool acquired;
+            try { acquired = pptMutex.WaitOne(TimeSpan.FromSeconds(5)); }
+            catch (AbandonedMutexException) { acquired = true; }
+            if (!acquired) return Deferred("renderer-busy");
 
-            Directory.CreateDirectory(output);
-            var copy = Path.Combine(output, "input.pptx");
-            source.Position = 0;
-            using (var writer = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                source.CopyTo(writer);
-
+            string? copy = null;
             try
             {
+                if (!pptPublisherVerified)
+                {
+                    WinSight.Infrastructure.Media.PowerPointPolicy.VerifyPublisher(executable);
+                    pptPublisherVerified = true;
+                }
+
+                Directory.CreateDirectory(output);
+                copy = Path.Combine(output, "input.pptx");
+                source.Position = 0;
+                using (var writer = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    source.CopyTo(writer);
+
                 for (int attempt = 0; attempt < 2; attempt++)
                 {
                     try
@@ -566,21 +609,24 @@ internal static class PreviewServer
                     }
                     catch (COMException) when (attempt == 0)
                     {
-                        ReleaseCom(ref pptApp, quit: false);
+                        bool wasOwned = ownsPpt;
+                        ownsPpt = false;
+                        ReleaseCom(ref pptApp, quit: wasOwned, "Presentations", saveFalseArg: false);
                     }
                 }
                 throw new IOException("PowerPoint automation failed.");
             }
             finally
             {
-                try { File.Delete(copy); } catch { }
+                try { pptMutex.ReleaseMutex(); } catch { }
+                if (copy is not null) { try { File.Delete(copy); } catch { } }
             }
         }
 
         private object EnsureWord()
         {
             if (wordApp is not null) return wordApp;
-            wordApp = CreateTrackedOfficeApp("Word.Application", "WINWORD", "Microsoft Word is not installed.");
+            (wordApp, ownsWord) = CreateTrackedOfficeApp("Word.Application", "WINWORD", "Microsoft Word is not installed.");
             var app = new NativeMediaCommand.OfficeObject(wordApp, new List<object>());
             app.Set("Visible", false);
             try { app.Set("DisplayAlerts", 0); } catch { }
@@ -591,7 +637,7 @@ internal static class PreviewServer
         private object EnsureExcel()
         {
             if (excelApp is not null) return excelApp;
-            excelApp = CreateTrackedOfficeApp("Excel.Application", "EXCEL", "Microsoft Excel is not installed.");
+            (excelApp, ownsExcel) = CreateTrackedOfficeApp("Excel.Application", "EXCEL", "Microsoft Excel is not installed.");
             var app = new NativeMediaCommand.OfficeObject(excelApp, new List<object>());
             app.Set("Visible", false);
             try { app.Set("DisplayAlerts", false); } catch { }
@@ -604,34 +650,40 @@ internal static class PreviewServer
         private object EnsurePowerPoint()
         {
             if (pptApp is not null) return pptApp;
-            pptApp = CreateTrackedOfficeApp("PowerPoint.Application", "POWERPNT", "Microsoft PowerPoint is not installed.");
+            (pptApp, ownsPpt) = CreateTrackedOfficeApp("PowerPoint.Application", "POWERPNT", "Microsoft PowerPoint is not installed.");
             return pptApp;
         }
 
         private IntPtr officeJobHandle;
 
-        private object CreateTrackedOfficeApp(string progId, string procName, string missingMessage)
+        private (object Instance, bool Owned) CreateTrackedOfficeApp(string progId, string procName, string missingMessage)
         {
             var type = Type.GetTypeFromProgID(progId) ?? throw new NotSupportedException(missingMessage);
             var beforePids = Process.GetProcessesByName(procName).Select(p => { int id = p.Id; p.Dispose(); return id; }).ToHashSet();
             var instance = Activator.CreateInstance(type)!;
+            bool owned = false;
             try
             {
-                EnsureOfficeJob();
-                if (officeJobHandle != IntPtr.Zero)
+                if (beforePids.Count == 0)
                 {
+                    var newProcs = new List<Process>();
                     foreach (var p in Process.GetProcessesByName(procName))
                     {
-                        using (p)
-                        {
-                            if (!beforePids.Contains(p.Id))
-                                AssignProcessToJobObject(officeJobHandle, p.Handle);
-                        }
+                        if (!beforePids.Contains(p.Id)) newProcs.Add(p);
+                        else p.Dispose();
                     }
+                    if (newProcs.Count == 1)
+                    {
+                        owned = true;
+                        EnsureOfficeJob();
+                        if (officeJobHandle != IntPtr.Zero)
+                            AssignProcessToJobObject(officeJobHandle, newProcs[0].Handle);
+                    }
+                    foreach (var p in newProcs) p.Dispose();
                 }
             }
             catch { }
-            return instance;
+            return (instance, owned);
         }
 
         private void EnsureOfficeJob()
@@ -688,12 +740,15 @@ internal static class PreviewServer
 
         private void ReleaseAllApps()
         {
-            ReleaseCom(ref wordApp, quit: true, saveFalseArg: true);
-            ReleaseCom(ref excelApp, quit: true, saveFalseArg: false);
-            ReleaseCom(ref pptApp, quit: true, saveFalseArg: false);
+            bool wasWord = ownsWord; ownsWord = false;
+            ReleaseCom(ref wordApp, quit: wasWord, "Documents", saveFalseArg: true);
+            bool wasExcel = ownsExcel; ownsExcel = false;
+            ReleaseCom(ref excelApp, quit: wasExcel, "Workbooks", saveFalseArg: false);
+            bool wasPpt = ownsPpt; ownsPpt = false;
+            ReleaseCom(ref pptApp, quit: wasPpt, "Presentations", saveFalseArg: false);
         }
 
-        private static void ReleaseCom(ref object? comObj, bool quit, bool saveFalseArg = false)
+        private static void ReleaseCom(ref object? comObj, bool quit, string docsCollectionProp, bool saveFalseArg = false)
         {
             var obj = comObj;
             comObj = null;
@@ -702,9 +757,28 @@ internal static class PreviewServer
             {
                 if (quit)
                 {
-                    var app = new NativeMediaCommand.OfficeObject(obj, new List<object>());
-                    if (saveFalseArg) app.Call("Quit", false);
-                    else app.Call("Quit");
+                    var refs = new List<object>();
+                    var app = new NativeMediaCommand.OfficeObject(obj, refs);
+                    bool canSafelyQuit = false;
+                    try
+                    {
+                        var vis = app.Get<object>("Visible");
+                        bool isHidden = vis is bool b ? !b : Convert.ToInt32(vis) == 0;
+                        int openDocs = app.Object(docsCollectionProp).Get<int>("Count");
+                        canSafelyQuit = isHidden && openDocs == 0;
+                    }
+                    catch { canSafelyQuit = false; }
+                    finally
+                    {
+                        for (int n = refs.Count - 1; n >= 0; n--)
+                            if (!ReferenceEquals(refs[n], obj) && Marshal.IsComObject(refs[n]))
+                                Marshal.FinalReleaseComObject(refs[n]);
+                    }
+                    if (canSafelyQuit)
+                    {
+                        if (saveFalseArg) app.Call("Quit", false);
+                        else app.Call("Quit");
+                    }
                 }
             }
             catch { }

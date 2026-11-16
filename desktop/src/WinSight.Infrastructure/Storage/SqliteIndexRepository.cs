@@ -23,8 +23,12 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     private SqliteConnection? connection;
     private SqliteConnection? readConnection;
     private (long ReadVersion, long ConnVersion, CompactVectorIndex Index)? vectorCache;
+    private (long ReadVersion, string Query, string? Kind, string? Root, int WordLimit, bool NeedsSourceAnchors, Func<string, bool>? Authorize, IReadOnlyList<WordEvidence> Matches)? lastWordEvidence;
     private readonly HashSet<string> dirtyVectorPaths = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> dirtyVectorSeqs = new(StringComparer.Ordinal);
     private long vectorWriteSeq;
+    private long vectorCacheSeq;
+    private int inflightVectorWrites;
     private bool writable;
     private bool disposed;
     public string DatabasePath { get; }
@@ -82,7 +86,13 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                         reconcile_utc TEXT
                     );
                     """);
-                Execute(db, null, "UPDATE index_tasks SET state='Pending' WHERE state IN ('Running', 'Stabilizing')");
+                Execute(db, null, """
+                    UPDATE index_tasks SET
+                        state = CASE WHEN attempts + 1 >= 4 THEN 'Failed' ELSE 'Pending' END,
+                        attempts = CASE WHEN attempts + 1 >= 4 THEN 8 ELSE attempts + 1 END
+                    WHERE state = 'Running';
+                    UPDATE index_tasks SET state = 'Pending' WHERE state = 'Stabilizing';
+                    """);
             }
             ct.ThrowIfCancellationRequested();
             connection = db;
@@ -306,24 +316,51 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             throw new InvalidDataException("Native format marker changed; refusing writes.");
         action(connection, tx);
         ct.ThrowIfCancellationRequested();
-        tx.Commit();
-        // Queue/USN bookkeeping does not change vectors, and a file write only dirties that file: patching one file
-        // is far cheaper than re-decoding every vector in the index after each background commit.
-        lock (vectorCacheSync)
+        // Gate concurrent WAL readers against any vector/header commit window (R2-BLK-01):
+        // mark write-in-flight and advance vectorWriteSeq BEFORE tx.Commit(), then finalize dirty state AFTER Commit.
+        if (effect != VectorEffect.None)
         {
-            switch (effect)
+            lock (vectorCacheSync)
             {
-                case VectorEffect.None: break;
-                case VectorEffect.Files when vectorCache is not null:
+                inflightVectorWrites++;
+                vectorWriteSeq++;
+                lastWordEvidence = null;
+            }
+        }
+        bool committed = false;
+        try
+        {
+            tx.Commit();
+            committed = true;
+        }
+        finally
+        {
+            if (effect != VectorEffect.None)
+            {
+                lock (vectorCacheSync)
+                {
+                    inflightVectorWrites--;
                     vectorWriteSeq++;
-                    foreach (var path in touchedPaths) if (!string.IsNullOrEmpty(path)) dirtyVectorPaths.Add(path);
-                    break;
-                case VectorEffect.Files: break;
-                default:
-                    vectorWriteSeq++;
-                    vectorCache = null;
-                    dirtyVectorPaths.Clear();
-                    break;
+                    lastWordEvidence = null;
+                    if (!committed || effect == VectorEffect.All)
+                    {
+                        vectorCache = null;
+                        vectorCacheSeq = vectorWriteSeq;
+                        dirtyVectorPaths.Clear();
+                        dirtyVectorSeqs.Clear();
+                    }
+                    else if (effect == VectorEffect.Files && vectorCache is not null)
+                    {
+                        foreach (var path in touchedPaths)
+                        {
+                            if (!string.IsNullOrEmpty(path))
+                            {
+                                dirtyVectorPaths.Add(path);
+                                dirtyVectorSeqs[path] = vectorWriteSeq;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -508,7 +545,13 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         {
             Write(cancellationToken, (db, tx) =>
             {
-                Execute(db, tx, "UPDATE index_tasks SET state='Pending' WHERE state IN ('Running', 'Stabilizing')");
+                Execute(db, tx, """
+                    UPDATE index_tasks SET
+                        state = CASE WHEN attempts + 1 >= 4 THEN 'Failed' ELSE 'Pending' END,
+                        attempts = CASE WHEN attempts + 1 >= 4 THEN 8 ELSE attempts + 1 END
+                    WHERE state = 'Running';
+                    UPDATE index_tasks SET state = 'Pending' WHERE state = 'Stabilizing';
+                    """);
             }, VectorEffect.None);
             return 0;
         }, cancellationToken);
@@ -560,33 +603,48 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         {
             Write(cancellationToken, (db, tx) =>
             {
+                using var cmd = db.CreateCommand();
+                cmd.Transaction = tx;
+                cmd.CommandText = """
+                    INSERT INTO index_tasks(path, root, code, kind, tombstone, state, attempts, due_utc, seen_utc, reason)
+                    VALUES($path, $root, $code, $kind, $tombstone, $state, $attempts, $due, $seen, $reason)
+                    ON CONFLICT(path) DO UPDATE SET
+                        root=excluded.root,
+                        code=excluded.code,
+                        kind=excluded.kind,
+                        tombstone=coalesce(excluded.tombstone, index_tasks.tombstone),
+                        state=CASE WHEN index_tasks.state = 'Failed' AND index_tasks.attempts >= 8 AND excluded.reason = 'reconcile_backfill' THEN index_tasks.state ELSE excluded.state END,
+                        attempts=CASE WHEN index_tasks.state = 'Failed' AND index_tasks.attempts >= 8 AND excluded.reason = 'reconcile_backfill' THEN index_tasks.attempts ELSE excluded.attempts END,
+                        due_utc=CASE WHEN index_tasks.state = 'Failed' AND index_tasks.attempts >= 8 AND excluded.reason = 'reconcile_backfill' THEN index_tasks.due_utc ELSE excluded.due_utc END,
+                        seen_utc=CASE WHEN excluded.seen_utc < index_tasks.seen_utc THEN excluded.seen_utc ELSE index_tasks.seen_utc END,
+                        reason=CASE WHEN index_tasks.state = 'Failed' AND index_tasks.attempts >= 8 AND excluded.reason = 'reconcile_backfill' THEN index_tasks.reason ELSE excluded.reason END
+                    """;
+                var pPath = cmd.Parameters.Add("$path", SqliteType.Text);
+                var pRoot = cmd.Parameters.Add("$root", SqliteType.Text);
+                var pCode = cmd.Parameters.Add("$code", SqliteType.Integer);
+                var pKind = cmd.Parameters.Add("$kind", SqliteType.Text);
+                var pTombstone = cmd.Parameters.Add("$tombstone", SqliteType.Text);
+                var pState = cmd.Parameters.Add("$state", SqliteType.Text);
+                var pAttempts = cmd.Parameters.Add("$attempts", SqliteType.Integer);
+                var pDue = cmd.Parameters.Add("$due", SqliteType.Text);
+                var pSeen = cmd.Parameters.Add("$seen", SqliteType.Text);
+                var pReason = cmd.Parameters.Add("$reason", SqliteType.Text);
+                cmd.Prepare();
+
                 foreach (var task in tasks)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    Execute(db, tx, """
-                        INSERT INTO index_tasks(path, root, code, kind, tombstone, state, attempts, due_utc, seen_utc, reason)
-                        VALUES($path, $root, $code, $kind, $tombstone, $state, $attempts, $due, $seen, $reason)
-                        ON CONFLICT(path) DO UPDATE SET
-                            root=excluded.root,
-                            code=excluded.code,
-                            kind=excluded.kind,
-                            tombstone=coalesce(excluded.tombstone, index_tasks.tombstone),
-                            state=excluded.state,
-                            attempts=excluded.attempts,
-                            due_utc=excluded.due_utc,
-                            seen_utc=index_tasks.seen_utc,
-                            reason=excluded.reason
-                        """,
-                        ("$path", task.Path),
-                        ("$root", task.Root),
-                        ("$code", task.Code ? 1 : 0),
-                        ("$kind", task.Kind),
-                        ("$tombstone", task.Tombstone),
-                        ("$state", task.State),
-                        ("$attempts", task.Attempts),
-                        ("$due", task.DueUtc.ToString("O")),
-                        ("$seen", task.SeenUtc.ToString("O")),
-                        ("$reason", task.Reason));
+                    pPath.Value = task.Path;
+                    pRoot.Value = task.Root;
+                    pCode.Value = task.Code ? 1 : 0;
+                    pKind.Value = task.Kind;
+                    pTombstone.Value = (object?)task.Tombstone ?? DBNull.Value;
+                    pState.Value = task.State;
+                    pAttempts.Value = task.Attempts;
+                    pDue.Value = task.DueUtc.ToString("O");
+                    pSeen.Value = task.SeenUtc.ToString("O");
+                    pReason.Value = (object?)task.Reason ?? DBNull.Value;
+                    cmd.ExecuteNonQuery();
                 }
             }, VectorEffect.None);
             return 0;
@@ -621,7 +679,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     internal Task<(long TotalSegments, long EmbeddedSegments)> GetSegmentVectorCountsAsync(CancellationToken cancellationToken = default) =>
         RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) =>
         {
-            long total = Convert.ToInt64(Scalar(db, tx, "SELECT COUNT(*) FROM segments WHERE kind IN ('chunk', 'page', 'cells') AND length(trim(coalesce(excerpt,''))) > 0") ?? 0L);
+            long total = Convert.ToInt64(Scalar(db, tx, "SELECT COUNT(*) FROM segments WHERE kind IN ('chunk', 'page', 'cells', 'lines') AND length(trim(coalesce(excerpt,''))) > 0") ?? 0L);
             long embedded = Convert.ToInt64(Scalar(db, tx, "SELECT COUNT(*) FROM segments WHERE vec IS NOT NULL") ?? 0L);
             return (total, embedded);
         }), cancellationToken);
@@ -653,7 +711,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             using var cmd = Command(db, tx, """
                 SELECT path, root, code, kind, tombstone, state, attempts, due_utc, seen_utc, reason
                 FROM index_tasks
-                WHERE due_utc <= $now AND state IN ('Pending', 'Stabilizing', 'Ready')
+                WHERE due_utc <= $now AND (state IN ('Pending', 'Stabilizing', 'Ready') OR (state IN ('Failed', 'Deferred') AND attempts < 8))
                 ORDER BY due_utc ASC
                 LIMIT $limit
                 """, ("$now", now), ("$limit", limit));
@@ -804,6 +862,10 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         }, cancellationToken);
     }
 
+    public Task<int> CountRetryableFailedTasksAsync(CancellationToken cancellationToken = default) =>
+        RunReadAsync(() => ReadOnReader(cancellationToken, (db, tx) =>
+            Convert.ToInt32(Scalar(db, tx, "SELECT COUNT(*) FROM index_tasks WHERE state IN ('Failed', 'Deferred') AND attempts < 8") ?? 0)), cancellationToken);
+
     public Task<IReadOnlyDictionary<string, int>> GetTaskCountsAsync(CancellationToken cancellationToken = default)
     {
         return RunAsync(() => Read(cancellationToken, (db, tx) =>
@@ -934,8 +996,8 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         {
             using var cmd = Command(db, tx, "UPDATE files SET state = 'pending', detail = NULL WHERE state = 'failed'");
             count = cmd.ExecuteNonQuery();
-            // Also reset any failed tasks in index_tasks back to Ready with 0 attempts so the queue re-runs them
-            using var resetTasksCmd = Command(db, tx, "UPDATE index_tasks SET state = 'Ready', attempts = 0, reason = NULL WHERE state = 'Failed'");
+            // Also reset any failed/deferred tasks in index_tasks back to Ready with 0 attempts so the queue re-runs them
+            using var resetTasksCmd = Command(db, tx, "UPDATE index_tasks SET state = 'Ready', attempts = 0, reason = NULL WHERE state IN ('Failed', 'Deferred')");
             resetTasksCmd.ExecuteNonQuery();
         }, VectorEffect.None, []);
         return count;
@@ -955,24 +1017,39 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         {
             vectorWriteSeq++;
             vectorCache = null;
+            vectorCacheSeq = vectorWriteSeq;
+            lastWordEvidence = null;
             dirtyVectorPaths.Clear();
+            dirtyVectorSeqs.Clear();
         }
-        try
+        if (gate.Wait(200))
         {
-            if (connection != null && !disposed)
+            try
             {
-                using var cmd = connection.CreateCommand();
-                cmd.CommandText = "PRAGMA shrink_memory;";
-                cmd.ExecuteNonQuery();
+                if (connection != null && !disposed)
+                {
+                    using var cmd = connection.CreateCommand();
+                    cmd.CommandText = "PRAGMA shrink_memory;";
+                    cmd.ExecuteNonQuery();
+                }
             }
-            if (readConnection != null && !disposed)
-            {
-                using var cmd = readConnection.CreateCommand();
-                cmd.CommandText = "PRAGMA shrink_memory;";
-                cmd.ExecuteNonQuery();
-            }
+            catch { }
+            finally { gate.Release(); }
         }
-        catch { }
+        if (readGate.Wait(200))
+        {
+            try
+            {
+                if (readConnection != null && !disposed)
+                {
+                    using var cmd = readConnection.CreateCommand();
+                    cmd.CommandText = "PRAGMA shrink_memory;";
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            catch { }
+            finally { readGate.Release(); }
+        }
     }
 
     private static string ComputeUnitString(SourceAnchor? anchor, string kind, double? loc, double? locEnd)
@@ -1110,12 +1187,21 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     private static CompactVectorIndex PatchCompactVectorIndex(SqliteConnection db, SqliteTransaction tx, CompactVectorIndex cached, IReadOnlyCollection<string> dirty, CancellationToken ct)
     {
         if (dirty.Count == 0) return cached;
-        foreach (var path in dirty) cached.MarkFileRemoved(path);
+        var working = cached.CloneForMutation();
+        foreach (var path in dirty) working.MarkFileRemoved(path);
         var refreshedHeaders = ReadHeadersWithRootInfo(db, tx, ct, paths: dirty);
-        foreach (var h in refreshedHeaders) cached.UpsertHeader(h);
+        foreach (var h in refreshedHeaders) working.UpsertHeader(h);
         if (refreshedHeaders.Count > 0)
-            AppendCompactVectors(db, tx, cached, ct, dirty);
-        return cached.NeedsCompaction ? cached.Compact() : cached;
+            AppendCompactVectors(db, tx, working, ct, dirty);
+        return working.NeedsCompaction ? working.Compact() : working;
+    }
+
+    private bool IsVectorSeqUnchanged(long seqBefore)
+    {
+        lock (vectorCacheSync)
+        {
+            return inflightVectorWrites == 0 && vectorWriteSeq == seqBefore && vectorCache is not null;
+        }
     }
 
     private long TryGetConnDataVersion()
@@ -1135,24 +1221,68 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
         Func<string, bool>? authorize = null, Func<string, string?, long, bool>? matchesSource = null,
         bool allHeaders = false, bool includeHeaderInfo = false, bool needsSourceAnchors = true) => RunReadAsync(() => ReadOnReader(ct, (db, tx) =>
     {
+        // Capture cache & write-sequence state BEFORE opening the WAL read snapshot on the first SQL query,
+        // guaranteeing the SQLite snapshot is at least as new as seqBefore.
+        (long ReadVersion, long ConnVersion, CompactVectorIndex Index)? cachedSnapshot = null;
+        (long ReadVersion, string Query, string? Kind, string? Root, int WordLimit, bool NeedsSourceAnchors, Func<string, bool>? Authorize, IReadOnlyList<WordEvidence> Matches)? cachedWord = null;
+        string[] dirtySnapshot = [];
+        long seqBefore = 0;
+        int dirtyCountSnapshot = 0;
+        bool writeInFlightAtStart;
+        lock (vectorCacheSync)
+        {
+            seqBefore = vectorWriteSeq;
+            writeInFlightAtStart = inflightVectorWrites > 0;
+            if (!writeInFlightAtStart)
+            {
+                cachedSnapshot = vectorCache;
+                cachedWord = lastWordEvidence;
+                dirtyCountSnapshot = dirtyVectorPaths.Count;
+                if (vectors)
+                {
+                    dirtySnapshot = dirtyVectorPaths.ToArray();
+                }
+            }
+        }
+
         long before = Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version"));
         var profile = Scalar(db, tx, "SELECT value FROM meta WHERE key='profile_id'") as string;
         long version = Convert.ToInt64(Scalar(db, tx, "PRAGMA data_version"));
-        var matches = words ? FindWords(db, tx, query, kind, root, Math.Max(100, limit), ct, authorize, matchesSource, needsSourceAnchors: needsSourceAnchors) : [];
+        int wordLimit = Math.Max(100, limit);
+        IReadOnlyList<WordEvidence> matches;
+        if (!words)
+        {
+            matches = [];
+        }
+        else if (matchesSource is null && before == version && cachedWord is { } w
+            && w.ReadVersion == version
+            && ReferenceEquals(w.Authorize, authorize)
+            && w.WordLimit == wordLimit
+            && w.NeedsSourceAnchors == needsSourceAnchors
+            && string.Equals(w.Query, query, StringComparison.Ordinal)
+            && string.Equals(w.Kind, kind, StringComparison.Ordinal)
+            && string.Equals(w.Root, root, StringComparison.Ordinal))
+        {
+            matches = w.Matches;
+        }
+        else
+        {
+            matches = FindWords(db, tx, query, kind, root, wordLimit, ct, authorize, matchesSource, needsSourceAnchors: needsSourceAnchors);
+            if (matchesSource is null && before == version && !writeInFlightAtStart)
+            {
+                lock (vectorCacheSync)
+                {
+                    if (inflightVectorWrites == 0 && vectorWriteSeq == seqBefore)
+                    {
+                        lastWordEvidence = (version, query, kind, root, wordLimit, needsSourceAnchors, authorize, matches);
+                    }
+                }
+            }
+        }
         CompactVectorIndex? compactIndex = null;
         IReadOnlyDictionary<long, IndexedFile> headers;
         if (vectors)
         {
-            (long ReadVersion, long ConnVersion, CompactVectorIndex Index)? cachedSnapshot;
-            string[] dirtySnapshot;
-            long seqBefore;
-            lock (vectorCacheSync)
-            {
-                cachedSnapshot = vectorCache;
-                dirtySnapshot = dirtyVectorPaths.ToArray();
-                seqBefore = vectorWriteSeq;
-            }
-
             long connVersion = cachedSnapshot?.ConnVersion ?? -1;
             if (cachedSnapshot is { } cached && cached.ReadVersion == version && dirtySnapshot.Length == 0)
             {
@@ -1164,10 +1294,10 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 long currentConn = TryGetConnDataVersion();
                 if (currentConn >= 0) connVersion = currentConn;
             }
-            else if (cachedSnapshot is { } cachedCheck && dirtySnapshot.Length == 0 && (connVersion = TryGetConnDataVersion()) >= 0 && connVersion == cachedCheck.ConnVersion)
+            else if (cachedSnapshot is { } cachedCheck && dirtySnapshot.Length == 0 && (connVersion = TryGetConnDataVersion()) >= 0 && connVersion == cachedCheck.ConnVersion && IsVectorSeqUnchanged(seqBefore))
             {
                 // Local VectorEffect.None writes (index_tasks / usn_checkpoints) bump readConnection's data_version
-                // without changing connection's external data_version; skip full vector rebuild.
+                // without changing connection's external data_version; skip full vector rebuild only when vectorWriteSeq did not advance.
                 compactIndex = cachedCheck.Index;
             }
             else
@@ -1176,22 +1306,36 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 compactIndex = BuildCompactVectorIndex(db, tx, ct);
             }
 
-            lock (vectorCacheSync)
+            if (!writeInFlightAtStart)
             {
-                if (vectorWriteSeq == seqBefore)
+                lock (vectorCacheSync)
                 {
-                    vectorCache = (version, connVersion, compactIndex);
-                    dirtyVectorPaths.Clear();
-                }
-                else
-                {
-                    foreach (var p in dirtySnapshot) dirtyVectorPaths.Remove(p);
-                    if (vectorCache is not null) vectorCache = (version, connVersion, compactIndex);
+                    if (inflightVectorWrites == 0 && vectorWriteSeq == seqBefore)
+                    {
+                        vectorCache = (version, connVersion, compactIndex);
+                        vectorCacheSeq = seqBefore;
+                        dirtyVectorPaths.Clear();
+                        dirtyVectorSeqs.Clear();
+                    }
+                    else if (vectorCache is not null && seqBefore >= vectorCacheSeq)
+                    {
+                        foreach (var p in dirtySnapshot)
+                        {
+                            if (dirtyVectorSeqs.TryGetValue(p, out var pSeq) && pSeq <= seqBefore)
+                            {
+                                dirtyVectorPaths.Remove(p);
+                                dirtyVectorSeqs.Remove(p);
+                            }
+                        }
+                        // Invalidate version pins while keeping the newer index so remaining dirty paths are patched next read.
+                        vectorCache = (-1, -1, compactIndex);
+                        vectorCacheSeq = seqBefore;
+                    }
                 }
             }
             headers = compactIndex.Files;
         }
-        else if (allHeaders && !includeHeaderInfo && matchesSource == null && before == version && vectorCache is { } vCached && vCached.ReadVersion == version && dirtyVectorPaths.Count == 0)
+        else if (allHeaders && !includeHeaderInfo && matchesSource == null && before == version && cachedSnapshot is { } vCached && vCached.ReadVersion == version && dirtyCountSnapshot == 0)
         {
             headers = vCached.Index.Files;
         }
@@ -1681,6 +1825,9 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
     { using var cmd = Command(db, tx, sql, args); var value = cmd.ExecuteScalar(); return value is DBNull ? null : value; }
 
     public Task<IReadOnlyList<PendingEmbeddingSegment>> ReadPendingEmbeddingSegmentsAsync(int limit, CancellationToken cancellationToken = default) =>
+        ReadPendingEmbeddingSegmentsAsync(limit, 0L, cancellationToken);
+
+    public Task<IReadOnlyList<PendingEmbeddingSegment>> ReadPendingEmbeddingSegmentsAsync(int limit, long afterId, CancellationToken cancellationToken = default) =>
         RunReadAsync(() =>
         {
             return ReadOnReader(cancellationToken, (db, tx) =>
@@ -1689,13 +1836,14 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                     SELECT s.id, s.file, f.path, s.excerpt, s.kind
                     FROM segments s
                     JOIN files f ON s.file = f.id
-                    WHERE s.vec IS NULL 
+                    WHERE s.id > $afterId
+                      AND s.vec IS NULL 
                       AND s.excerpt IS NOT NULL 
                       AND length(trim(s.excerpt)) > 0
-                      AND s.kind IN ('chunk', 'page', 'cells')
+                      AND s.kind IN ('chunk', 'page', 'cells', 'lines')
                     ORDER BY s.id
                     LIMIT $limit
-                    """, ("$limit", limit));
+                    """, ("$afterId", afterId), ("$limit", limit));
                 using var r = cmd.ExecuteReader();
                 var list = new List<PendingEmbeddingSegment>();
                 while (r.Read())
@@ -1737,7 +1885,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
                 foreach (var fileId in affectedFiles)
                 {
                     long remaining = Convert.ToInt64(Scalar(db, tx,
-                        "SELECT COUNT(*) FROM segments WHERE file=$file AND vec IS NULL AND kind IN ('chunk', 'page', 'cells') AND length(trim(coalesce(excerpt,''))) > 0",
+                        "SELECT COUNT(*) FROM segments WHERE file=$file AND vec IS NULL AND kind IN ('chunk', 'page', 'cells', 'lines') AND length(trim(coalesce(excerpt,''))) > 0",
                         ("$file", fileId)));
                     if (remaining == 0)
                     {
@@ -1761,6 +1909,7 @@ public sealed class SqliteIndexRepository : IIndexRepository, IUsnCheckpointRepo
             {
                 vectorCache = null;
                 dirtyVectorPaths.Clear();
+                dirtyVectorSeqs.Clear();
             }
             readConnection?.Dispose();
             readConnection = null;

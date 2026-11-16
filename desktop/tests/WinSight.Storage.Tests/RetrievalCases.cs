@@ -173,5 +173,155 @@ internal static class RetrievalCases
             Require(Names((await service.SearchAsync(request)).Hits).SequenceEqual(["5.txt"]), "deleted file must leave the semantic channel");
 
         });
+
+        await Test("RET-P1-COW-CONCURRENT concurrent search, upsert, and TrimMemory stay consistent", async () =>
+        {
+            await using var repo = new SqliteIndexRepository(Db("cow-concurrent"));
+            await repo.SetMetaAsync("profile_id", "synthetic-profile-v1");
+            for (int i = 0; i < 20; i++)
+                await repo.UpsertFileAsync(File($"C:/cow/{i}.txt", "alpha", Cosine(0.1)));
+
+            var service = new SearchService(repo, new FakeEmbedding());
+            var writer = Task.Run(async () =>
+            {
+                for (int iter = 0; iter < 12; iter++)
+                {
+                    await repo.UpsertFileAsync(File("C:/cow/target.txt", "alpha", Cosine(0.95)));
+                    await repo.UpsertFileAsync(File("C:/cow/1.txt", "alpha", Cosine(iter % 2 == 0 ? 0.2 : 0.15)));
+                    await repo.DeleteFileAsync("C:/cow/2.txt");
+                    await repo.UpsertFileAsync(File("C:/cow/2.txt", "alpha", Cosine(0.1)));
+                }
+            });
+            var reader = Task.Run(async () =>
+            {
+                var req = new SearchRequest("alpha", Mode: SearchMode.Semantic);
+                for (int iter = 0; iter < 12; iter++)
+                {
+                    var response = await service.SearchAsync(req);
+                    Require(response.Hits.Count >= 0, "search returned negative hit count");
+                    if (iter % 3 == 0) repo.TrimMemory();
+                }
+            });
+
+            await Task.WhenAll(writer, reader);
+
+            var converged = (await service.SearchAsync(new SearchRequest("alpha", Mode: SearchMode.Semantic))).Hits;
+            Require(converged.Any(h => h.Path == "C:/cow/target.txt"), "converged cache must include final upserted hit");
+        });
+
+        await Test("RET-CJK-MULTIWORD-RECALL multi-term Chinese query matches across separated clauses", async () =>
+        {
+            await using var repo = new SqliteIndexRepository(Db("cjk-multiword"));
+            await repo.SetMetaAsync("profile_id", "synthetic-profile-v1");
+            await repo.UpsertFileAsync(File("C:/cjk/arch.txt", "系统采用分布式架构，并通过租约机制保障缓存层的一致性。"));
+            var service = new SearchService(repo, new FakeEmbedding());
+            var hits = (await service.SearchAsync(new SearchRequest("分布式缓存一致性", Mode: SearchMode.Keyword))).Hits;
+            Require(hits.Count == 1 && hits[0].Path == "C:/cjk/arch.txt", $"expected CJK multi-word recall, got {hits.Count} hits");
+        });
+
+        await Test("RET-INT8-AVX2-EQUIVALENCE pre-quantized DotInt8 matches float DotInt8 across multi-chunk index", () =>
+        {
+            var files = new Dictionary<long, IndexedFile>();
+            for (long id = 1; id <= 150; id++)
+                files[id] = new(id, $"C:/simd/{id}.txt", "doc", 10, 1, "done", null, null, []);
+            var index = new CompactVectorIndex(files);
+            var rng = new Random(20261116);
+            Span<float> scratch = stackalloc float[CompactVectorIndex.Dimension];
+            Span<sbyte> quantized = stackalloc sbyte[CompactVectorIndex.Dimension];
+            byte chId = index.InternChannel("body");
+
+            for (int row = 0; row < 150; row++)
+            {
+                double normSq = 0;
+                for (int d = 0; d < CompactVectorIndex.Dimension; d++)
+                {
+                    float val = (float)(rng.NextDouble() * 2.0 - 1.0);
+                    scratch[d] = val;
+                    normSq += (double)val * val;
+                }
+                float invNorm = (float)(1.0 / Math.Sqrt(normSq));
+                float maxAbs = 0f;
+                for (int d = 0; d < CompactVectorIndex.Dimension; d++)
+                {
+                    scratch[d] *= invNorm;
+                    float a = MathF.Abs(scratch[d]);
+                    if (a > maxAbs) maxAbs = a;
+                }
+                float scale = maxAbs / 127.0f;
+                float invScale = 127.0f / maxAbs;
+                for (int d = 0; d < CompactVectorIndex.Dimension; d++)
+                    quantized[d] = (sbyte)Math.Clamp((int)MathF.Round(scratch[d] * invScale), -127, 127);
+                index.Add(row + 1, (row % 150) + 1, (ulong)(row + 1), chId, quantized, scale);
+            }
+
+            Require(index.ChunkCount == 3, $"expected 3 chunks at ChunkCapacity=64 for 150 vectors, got {index.ChunkCount}");
+            var query = new float[CompactVectorIndex.Dimension];
+            double qNormSq = 0;
+            for (int d = 0; d < CompactVectorIndex.Dimension; d++)
+            {
+                query[d] = (float)(rng.NextDouble() * 2.0 - 1.0);
+                qNormSq += (double)query[d] * query[d];
+            }
+            float qInvNorm = (float)(1.0 / Math.Sqrt(qNormSq));
+            for (int d = 0; d < CompactVectorIndex.Dimension; d++) query[d] *= qInvNorm;
+
+            Span<short> qInt16 = stackalloc short[CompactVectorIndex.Dimension];
+            CompactVectorIndex.QuantizeQuery(query, qInt16, out float queryScale);
+            for (int i = 0; i < 150; i++)
+            {
+                var span = index.GetVectorSpan(i);
+                var meta = index.GetMeta(i);
+                double expected = CompactVectorIndex.DotInt8(span, meta.Scale, query);
+                double actual = CompactVectorIndex.DotInt8PreQuantized(span, meta.Scale, qInt16, queryScale);
+                Require(Math.Abs(expected - actual) < 1e-4, $"AVX2 pre-quantized mismatch at {i}: expected={expected:F6}, actual={actual:F6}");
+            }
+            return Task.CompletedTask;
+        });
+
+        await Test("RET-R2-BLK01-NO-STALE-PROMOTION concurrent readers during warm-cache File writes never promote stale snapshot", async () =>
+        {
+            await using var repo = new SqliteIndexRepository(Db("r2-blk01"));
+            await repo.SetMetaAsync("profile_id", "synthetic-profile-v1");
+            for (int i = 0; i < 30; i++)
+                await repo.UpsertFileAsync(File($"C:/blk01/noise-{i}.txt", "noise", Cosine(0.05 + (i % 5) * 0.01)));
+
+            var service = new SearchService(repo, new FakeEmbedding());
+            var req = new SearchRequest("target", Mode: SearchMode.Semantic);
+            var warm = await service.SearchAsync(req);
+            Require(warm.Hits.Count == 0, "baseline noise corpus should yield 0 semantic hits");
+
+            using var readerStop = new CancellationTokenSource();
+            var readers = Enumerable.Range(0, 2).Select(_ => Task.Run(async () =>
+            {
+                while (!readerStop.IsCancellationRequested)
+                {
+                    try { await service.SearchAsync(req, readerStop.Token); }
+                    catch (OperationCanceledException) when (readerStop.IsCancellationRequested) { break; }
+                }
+            })).ToArray();
+
+            try
+            {
+                for (int round = 0; round < 40; round++)
+                {
+                    if (round > 0)
+                        await repo.DeleteFileAsync($"C:/blk01/target-{round - 1}.txt");
+                    string targetPath = $"C:/blk01/target-{round}.txt";
+                    await repo.UpsertFileAsync(File(targetPath, "target", Cosine(0.95)));
+                    var hits = (await service.SearchAsync(req)).Hits;
+                    Require(hits.Any(h => h.Path == targetPath),
+                        $"round {round}: post-upsert search missed {targetPath} (stale vectorCache promotion?); got=[{string.Join(",", hits.Select(h => Path.GetFileName(h.Path)))}]");
+                }
+            }
+            finally
+            {
+                await readerStop.CancelAsync();
+                await Task.WhenAll(readers);
+            }
+
+            var finalHits = (await service.SearchAsync(req)).Hits;
+            Require(finalHits.Any(h => h.Path == "C:/blk01/target-39.txt"), "final search must include target-39.txt");
+            Require(!finalHits.Any(h => h.Path == "C:/blk01/target-38.txt"), "final search must exclude deleted target-38.txt");
+        });
     }
 }

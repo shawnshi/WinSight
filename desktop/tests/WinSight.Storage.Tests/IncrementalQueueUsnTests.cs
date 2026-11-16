@@ -1,6 +1,7 @@
 using System.IO;
 using Microsoft.Win32.SafeHandles;
 using WinSight.Core;
+using WinSight.Infrastructure.Extraction;
 using WinSight.Infrastructure.Indexing;
 using WinSight.Infrastructure.Storage;
 
@@ -288,6 +289,74 @@ internal static class IncrementalQueueUsnTests
             {
                 throw new Exception($"Expected usn_unavailable(journal-delete-in-progress), got {queue.UsnState}");
             }
+        });
+
+        await test("S3-USN-08: Multi-root same-volume catch-up saves checkpoint once and directory rename falls back to walk", async () =>
+        {
+            string dbPath = Db("s3-multi-root");
+            string rootA = Path.Combine(root, "multi-a");
+            string rootB = Path.Combine(root, "multi-b");
+            Directory.CreateDirectory(rootA);
+            Directory.CreateDirectory(rootB);
+            string fileA = Path.Combine(rootA, "a.txt");
+            string fileB = Path.Combine(rootB, "b.txt");
+            await File.WriteAllTextAsync(fileA, "alpha");
+            await File.WriteAllTextAsync(fileB, "beta");
+
+            await using var repo = new SqliteIndexRepository(dbPath);
+            await repo.InitializeAsync();
+            await repo.SaveUsnCheckpointAsync("VOL_MULTI", "1122334455667788", "1000", DateTimeOffset.UtcNow.AddMinutes(-5));
+
+            var now = DateTimeOffset.UtcNow;
+            var mockReader = new MockUsnReader(
+                isNtfs: true,
+                volumeSerial: "VOL_MULTI",
+                queryResult: (true, new UsnJournalInfo(0x1122334455667788UL, 100, 3000), null),
+                readResult: (true, [
+                    new UsnChangeRecord(1500, 101, 10, UsnJournalReader.USN_REASON_FILE_CREATE, "a.txt", now),
+                    new UsnChangeRecord(1501, 102, 11, UsnJournalReader.USN_REASON_FILE_CREATE, "b.txt", now)
+                ], 2000, null),
+                pathResolver: (_, frn, _, name) => frn == 101 ? Path.Combine(rootA, name) : Path.Combine(rootB, name)
+            );
+
+            await using var queue = new IncrementalIndexQueue(repo, usnReader: mockReader);
+            await queue.InitializeAsync();
+
+            bool ok = await queue.ReconcileRootsAsync([rootA, rootB], code: false, force: true);
+            if (!ok) throw new Exception("Multi-root ReconcileRootsAsync failed.");
+            var taskA = await repo.GetTaskAsync(FilePolicy.Normalize(fileA));
+            var taskB = await repo.GetTaskAsync(FilePolicy.Normalize(fileB));
+            if (taskA is null || taskA.Reason != "usn_catch_up" || taskB is null || taskB.Reason != "usn_catch_up")
+                throw new Exception("Both same-volume roots must receive their USN catch-up tasks.");
+            var chk = await repo.GetUsnCheckpointAsync("VOL_MULTI");
+            if (chk?.NextUsn != "2000")
+                throw new Exception($"Expected single volume checkpoint NextUsn=2000, got {chk?.NextUsn ?? "<null>"}.");
+
+            // Directory rename/delete in USN must fall back to directory walk so child files are never missed.
+            string dirInside = Path.Combine(rootA, "renamed-folder");
+            Directory.CreateDirectory(dirInside);
+            string nestedFile = Path.Combine(dirInside, "inside.txt");
+            await File.WriteAllTextAsync(nestedFile, "inside renamed directory");
+
+            await using var repo2 = new SqliteIndexRepository(Db("s3-dir-fallback"));
+            await repo2.InitializeAsync();
+            await repo2.SaveUsnCheckpointAsync("VOL_MULTI", "1122334455667788", "2000", DateTimeOffset.UtcNow.AddMinutes(-5));
+
+            var mockDirRename = new MockUsnReader(
+                isNtfs: true,
+                volumeSerial: "VOL_MULTI",
+                queryResult: (true, new UsnJournalInfo(0x1122334455667788UL, 100, 4000), null),
+                readResult: (true, [
+                    new UsnChangeRecord(2500, 200, 10, UsnJournalReader.USN_REASON_RENAME_NEW_NAME, "renamed-folder", now, 0x10 /* FILE_ATTRIBUTE_DIRECTORY */)
+                ], 3000, null),
+                pathResolver: (_, _, _, name) => Path.Combine(rootA, name)
+            );
+            await using var queue2 = new IncrementalIndexQueue(repo2, usnReader: mockDirRename);
+            await queue2.InitializeAsync();
+            await queue2.ReconcileRootsAsync([rootA, rootB], code: false, force: true);
+            var nestedTask = await repo2.GetTaskAsync(FilePolicy.Normalize(nestedFile));
+            if (nestedTask is null || nestedTask.Reason != "reconcile_backfill")
+                throw new Exception("Directory rename in USN must fall back to directory walk and backfill child files.");
         });
     }
 

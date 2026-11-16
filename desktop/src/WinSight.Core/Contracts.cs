@@ -115,6 +115,7 @@ public interface IIndexRepository : IAsyncDisposable
     Task AckTaskWithDeleteAsync(string filePath, string taskPath, CancellationToken cancellationToken = default) => DeleteFileAsync(filePath, cancellationToken);
     Task<int> TrimTasksAsync(int maxTasks = 50000, CancellationToken cancellationToken = default) => Task.FromResult(0);
     Task<int> ResetFailedFilesAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
+    Task<int> CountRetryableFailedTasksAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
     Task<IReadOnlyDictionary<string, int>> GetTaskCountsAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyDictionary<string, int>>(new Dictionary<string, int>());
     /// <summary>Counts indexed files at or below <paramref name="root"/> without materialising segments or vectors.</summary>
     async Task<int> CountFilesUnderAsync(string root, CancellationToken cancellationToken = default)
@@ -133,6 +134,8 @@ public interface IIndexRepository : IAsyncDisposable
     }
     Task<IReadOnlyList<PendingEmbeddingSegment>> ReadPendingEmbeddingSegmentsAsync(int limit, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<PendingEmbeddingSegment>>([]);
+    Task<IReadOnlyList<PendingEmbeddingSegment>> ReadPendingEmbeddingSegmentsAsync(int limit, long afterId, CancellationToken cancellationToken = default) =>
+        ReadPendingEmbeddingSegmentsAsync(limit, cancellationToken);
     Task<int> SaveBackfilledVectorsAsync(IReadOnlyList<SegmentVectorUpdate> updates, CancellationToken cancellationToken = default) =>
         Task.FromResult(0);
 }

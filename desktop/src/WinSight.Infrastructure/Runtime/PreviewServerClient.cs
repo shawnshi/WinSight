@@ -33,14 +33,16 @@ internal sealed class PreviewServerClient : IAsyncDisposable
         request.Validate();
         request = request with { SourcePath = MediaTaskFiles.LocalPath(request.SourcePath) };
         var files = MediaTaskFiles.CreatePdfPage(hostPath, workspacePath, request);
+        Task<string>? inflight = null;
         try
         {
-            var payload = await InvokeAsync("render-pdf-page", files.RequestPath, TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
+            inflight = InvokeAsync("render-pdf-page", files.RequestPath, TimeSpan.FromSeconds(30), token);
+            var payload = await inflight.ConfigureAwait(false);
             return NativePdfPageLease.Parse(payload, request, files, token);
         }
         catch
         {
-            TryCleanup(files);
+            CleanupOnFailure(files, inflight, token.IsCancellationRequested);
             throw;
         }
     }
@@ -50,14 +52,16 @@ internal sealed class PreviewServerClient : IAsyncDisposable
         request.Validate();
         request = request with { SourcePath = MediaTaskFiles.LocalPath(request.SourcePath) };
         var files = MediaTaskFiles.CreateWordPage(hostPath, workspacePath, request);
+        Task<string>? inflight = null;
         try
         {
-            var payload = await InvokeAsync("render-word-page", files.RequestPath, TimeSpan.FromSeconds(45), token).ConfigureAwait(false);
+            inflight = InvokeAsync("render-word-page", files.RequestPath, TimeSpan.FromSeconds(45), token);
+            var payload = await inflight.ConfigureAwait(false);
             return NativeWordPageLease.Parse(payload, request, files, token);
         }
         catch
         {
-            TryCleanup(files);
+            CleanupOnFailure(files, inflight, token.IsCancellationRequested);
             throw;
         }
     }
@@ -67,14 +71,16 @@ internal sealed class PreviewServerClient : IAsyncDisposable
         request.Validate();
         request = request with { SourcePath = MediaTaskFiles.LocalPath(request.SourcePath) };
         var files = MediaTaskFiles.CreateExcelPage(hostPath, workspacePath, request);
+        Task<string>? inflight = null;
         try
         {
-            var payload = await InvokeAsync("render-excel-page", files.RequestPath, TimeSpan.FromSeconds(45), token).ConfigureAwait(false);
+            inflight = InvokeAsync("render-excel-page", files.RequestPath, TimeSpan.FromSeconds(45), token);
+            var payload = await inflight.ConfigureAwait(false);
             return NativeExcelPageLease.Parse(payload, request, files, token);
         }
         catch
         {
-            TryCleanup(files);
+            CleanupOnFailure(files, inflight, token.IsCancellationRequested);
             throw;
         }
     }
@@ -84,14 +90,16 @@ internal sealed class PreviewServerClient : IAsyncDisposable
         request.Validate();
         request = request with { SourcePath = MediaTaskFiles.LocalPath(request.SourcePath) };
         var files = MediaTaskFiles.CreatePresentationPage(hostPath, workspacePath, request);
+        Task<string>? inflight = null;
         try
         {
-            var payload = await InvokeAsync("render-presentation-page", files.RequestPath, TimeSpan.FromSeconds(45), token).ConfigureAwait(false);
+            inflight = InvokeAsync("render-presentation-page", files.RequestPath, TimeSpan.FromSeconds(45), token);
+            var payload = await inflight.ConfigureAwait(false);
             return NativePresentationLease.ParsePage(payload, request, files, token);
         }
         catch
         {
-            TryCleanup(files);
+            CleanupOnFailure(files, inflight, token.IsCancellationRequested);
             throw;
         }
     }
@@ -101,14 +109,16 @@ internal sealed class PreviewServerClient : IAsyncDisposable
         request.Validate();
         request = request with { SourcePath = MediaTaskFiles.LocalPath(request.SourcePath) };
         var files = MediaTaskFiles.CreateRasterPreview(hostPath, workspacePath, request);
+        Task<string>? inflight = null;
         try
         {
-            var payload = await InvokeAsync("render-raster-preview", files.RequestPath, TimeSpan.FromSeconds(20), token).ConfigureAwait(false);
+            inflight = InvokeAsync("render-raster-preview", files.RequestPath, TimeSpan.FromSeconds(20), token);
+            var payload = await inflight.ConfigureAwait(false);
             return NativeRasterPreviewLease.Parse(payload, request, files, token);
         }
         catch
         {
-            TryCleanup(files);
+            CleanupOnFailure(files, inflight, token.IsCancellationRequested);
             throw;
         }
     }
@@ -139,13 +149,45 @@ internal sealed class PreviewServerClient : IAsyncDisposable
                 writeGate.Release();
             }
 
-            // On caller cancellation we abandon waiting on this TCS without killing the warm Office worker.
+            // Distinguish worker timeout (reset wedged worker) from caller cancellation (keep warm worker alive).
             return await tcs.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            await ResetAfterTimeoutAsync().ConfigureAwait(false);
+            throw new TimeoutException($"Preview worker operation '{op}' timed out after {timeout.TotalSeconds:F0}s.");
         }
         finally
         {
             pending.TryRemove(id, out _);
         }
+    }
+
+    private async Task ResetAfterTimeoutAsync()
+    {
+        if (!await lifecycleGate.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false))
+        {
+            ResetProcess();
+            return;
+        }
+        try
+        {
+            ResetProcess();
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+    }
+
+    private static void CleanupOnFailure(MediaTaskFiles files, Task? inflight, bool callerCancelled)
+    {
+        if (callerCancelled && inflight is not null && !inflight.IsCompleted)
+        {
+            _ = inflight.ContinueWith(_ => TryCleanup(files), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            return;
+        }
+        TryCleanup(files);
     }
 
     private async Task EnsureStartedAsync(CancellationToken token)
@@ -321,8 +363,6 @@ internal sealed class PreviewServerClient : IAsyncDisposable
         finally
         {
             lifecycleGate.Release();
-            lifecycleGate.Dispose();
-            writeGate.Dispose();
         }
     }
 

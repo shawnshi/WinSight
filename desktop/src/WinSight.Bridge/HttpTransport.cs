@@ -72,10 +72,26 @@ internal sealed class HttpTransport
                 Reject(413, "validation_error", "Request body exceeds 1 MiB.");
                 return;
             }
-            string body;
-            using (var reader = new StreamReader(request.InputStream, Encoding.UTF8))
-                body = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-            if (body.Length == 0 || body.Length > MaxBodyBytes)
+            byte[] rawBuffer;
+            using (var ms = new MemoryStream())
+            {
+                var chunk = new byte[Math.Min(16384, MaxBodyBytes + 1)];
+                int total = 0;
+                int read;
+                while ((read = await request.InputStream.ReadAsync(chunk.AsMemory(0, Math.Min(chunk.Length, MaxBodyBytes + 1 - total)), cancellationToken).ConfigureAwait(false)) > 0)
+                {
+                    total += read;
+                    if (total > MaxBodyBytes)
+                    {
+                        Reject(413, "validation_error", "Request body exceeds 1 MiB.");
+                        return;
+                    }
+                    ms.Write(chunk, 0, read);
+                }
+                rawBuffer = ms.ToArray();
+            }
+            string body = Encoding.UTF8.GetString(rawBuffer);
+            if (body.Length == 0)
             {
                 Reject(400, "validation_error", "Empty or oversized body.");
                 return;
@@ -87,7 +103,7 @@ internal sealed class HttpTransport
         catch (Exception error)
         {
             Log("http handler failed: " + error.GetType().Name + ": " + error.Message);
-            try { context.Response.StatusCode = 500; context.Response.Close(); } catch (ObjectDisposedException) { }
+            try { context.Response.StatusCode = 500; context.Response.Close(); } catch { }
         }
     }
 

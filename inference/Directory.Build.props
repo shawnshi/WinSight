@@ -8,6 +8,6 @@
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <RollForward>Disable</RollForward>
+    <RollForward>LatestPatch</RollForward>
   </PropertyGroup>
 </Project>

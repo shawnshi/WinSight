@@ -184,6 +184,9 @@ private async Task StartWatchingAsync()
             if (background != null || stopping != 0 || !settings.BackgroundIndexingEnabled || !settings.SetUp) return;
             var stores = await GetRepositoriesAsync(lifetimeStop.Token).ConfigureAwait(false);
             var repository = stores[0];
+            var codeRepository = stores[1];
+            await repository.ResetHangingTasksAsync(lifetimeStop.Token).ConfigureAwait(false);
+            await codeRepository.ResetHangingTasksAsync(lifetimeStop.Token).ConfigureAwait(false);
 
             background = new BackgroundIndexCoordinator(
                 settings,
@@ -203,7 +206,8 @@ private async Task StartWatchingAsync()
                 isOnAcPower: isOnAcPower,
                 repository: repository,
                 indexPaths: IndexPathsBackgroundAsync,
-                releaseCaches: ReleaseCachesForMemoryPressureAsync);
+                releaseCaches: ReleaseCachesForMemoryPressureAsync,
+                codeRepository: codeRepository);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {

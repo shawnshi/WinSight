@@ -94,30 +94,39 @@ public sealed partial class DesktopBackend
             var start = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
             start.ArgumentList.Add("environment");
             using var process = System.Diagnostics.Process.Start(start)!;
+            using var job = OperatingSystem.IsWindows() ? WinSight.Infrastructure.Inference.WindowsChildJob.Attach(process, lowPriority: false) : null;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(90));
-            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            var text = await stdout.ConfigureAwait(false);
-            if (process.ExitCode != 0)
-                return new WinMlProbe("unavailable", Array.Empty<string>(), Array.Empty<string>(), Array.Empty<WinMlDevice>(),
-                    "environment exited " + process.ExitCode + ": " + (await stderr.ConfigureAwait(false)).Trim());
-            using var document = System.Text.Json.JsonDocument.Parse(text);
-            var root = document.RootElement;
-            string[] ReadStrings(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.Array
-                ? value.EnumerateArray().Select(v => v.GetString() ?? "").Where(v => v.Length != 0).ToArray()
-                : Array.Empty<string>();
-            var devices = root.TryGetProperty("devices", out var list) && list.ValueKind == System.Text.Json.JsonValueKind.Array
-                ? list.EnumerateArray().Select(d => new WinMlDevice(
-                    d.TryGetProperty("ep", out var ep) ? ep.GetString() ?? "" : "",
-                    d.TryGetProperty("type", out var type) ? type.GetString() ?? "" : "",
-                    d.TryGetProperty("device_id", out var id) && id.TryGetInt32(out var parsedId) ? parsedId : 0,
-                    d.TryGetProperty("vendor_id", out var vendor) && vendor.TryGetInt32(out var parsedVendor) ? parsedVendor : 0))
-                  .Where(d => d.Ep.Length != 0).ToArray()
-                : Array.Empty<WinMlDevice>();
-            var ort = root.TryGetProperty("ort_version", out var version) ? version.GetString() ?? "unknown" : "unknown";
-            return new WinMlProbe(ort, ReadStrings("libraries"), ReadStrings("available"), devices);
+            try
+            {
+                var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                var text = await stdout.ConfigureAwait(false);
+                if (process.ExitCode != 0)
+                    return new WinMlProbe("unavailable", Array.Empty<string>(), Array.Empty<string>(), Array.Empty<WinMlDevice>(),
+                        "environment exited " + process.ExitCode + ": " + (await stderr.ConfigureAwait(false)).Trim());
+                using var document = System.Text.Json.JsonDocument.Parse(text);
+                var root = document.RootElement;
+                string[] ReadStrings(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.Array
+                    ? value.EnumerateArray().Select(v => v.GetString() ?? "").Where(v => v.Length != 0).ToArray()
+                    : Array.Empty<string>();
+                var devices = root.TryGetProperty("devices", out var list) && list.ValueKind == System.Text.Json.JsonValueKind.Array
+                    ? list.EnumerateArray().Select(d => new WinMlDevice(
+                        d.TryGetProperty("ep", out var ep) ? ep.GetString() ?? "" : "",
+                        d.TryGetProperty("type", out var type) ? type.GetString() ?? "" : "",
+                        d.TryGetProperty("device_id", out var id) && id.TryGetInt32(out var parsedId) ? parsedId : 0,
+                        d.TryGetProperty("vendor_id", out var vendor) && vendor.TryGetInt32(out var parsedVendor) ? parsedVendor : 0))
+                      .Where(d => d.Ep.Length != 0).ToArray()
+                    : Array.Empty<WinMlDevice>();
+                var ort = root.TryGetProperty("ort_version", out var version) ? version.GetString() ?? "unknown" : "unknown";
+                return new WinMlProbe(ort, ReadStrings("libraries"), ReadStrings("available"), devices);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or System.Text.Json.JsonException or OperationCanceledException or System.ComponentModel.Win32Exception)
         {
@@ -138,26 +147,35 @@ public sealed partial class DesktopBackend
             var start = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
             start.ArgumentList.Add("probe");
             using var process = System.Diagnostics.Process.Start(start)!;
+            using var job = OperatingSystem.IsWindows() ? WinSight.Infrastructure.Inference.WindowsChildJob.Attach(process, lowPriority: false) : null;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(60));
-            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            var text = await stdout.ConfigureAwait(false);
-            if (process.ExitCode != 0) return new FoundryProbe("unavailable", Array.Empty<string>(), Array.Empty<FoundryProvider>(), "probe exited " + process.ExitCode + ": " + (await stderr.ConfigureAwait(false)).Trim());
-            using var document = System.Text.Json.JsonDocument.Parse(text);
-            var root = document.RootElement;
-            var sdk = root.TryGetProperty("sdk", out var sdkElement) ? sdkElement.GetString() ?? "unknown" : "unknown";
-            var types = root.TryGetProperty("deviceTypes", out var typeElement) && typeElement.ValueKind == System.Text.Json.JsonValueKind.Array
-                ? typeElement.EnumerateArray().Select(v => v.GetString() ?? "").Where(v => v.Length != 0).ToArray()
-                : Array.Empty<string>();
-            var providers = root.TryGetProperty("providers", out var providerElement) && providerElement.ValueKind == System.Text.Json.JsonValueKind.Array
-                ? providerElement.EnumerateArray()
-                    .Select(p => new FoundryProvider(p.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
-                        p.TryGetProperty("registered", out var r) && r.ValueKind == System.Text.Json.JsonValueKind.True))
-                    .Where(p => p.Name.Length != 0).ToArray()
-                : Array.Empty<FoundryProvider>();
-            return new FoundryProbe(sdk, types, providers);
+            try
+            {
+                var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                var text = await stdout.ConfigureAwait(false);
+                if (process.ExitCode != 0) return new FoundryProbe("unavailable", Array.Empty<string>(), Array.Empty<FoundryProvider>(), "probe exited " + process.ExitCode + ": " + (await stderr.ConfigureAwait(false)).Trim());
+                using var document = System.Text.Json.JsonDocument.Parse(text);
+                var root = document.RootElement;
+                var sdk = root.TryGetProperty("sdk", out var sdkElement) ? sdkElement.GetString() ?? "unknown" : "unknown";
+                var types = root.TryGetProperty("deviceTypes", out var typeElement) && typeElement.ValueKind == System.Text.Json.JsonValueKind.Array
+                    ? typeElement.EnumerateArray().Select(v => v.GetString() ?? "").Where(v => v.Length != 0).ToArray()
+                    : Array.Empty<string>();
+                var providers = root.TryGetProperty("providers", out var providerElement) && providerElement.ValueKind == System.Text.Json.JsonValueKind.Array
+                    ? providerElement.EnumerateArray()
+                        .Select(p => new FoundryProvider(p.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                            p.TryGetProperty("registered", out var r) && r.ValueKind == System.Text.Json.JsonValueKind.True))
+                        .Where(p => p.Name.Length != 0).ToArray()
+                    : Array.Empty<FoundryProvider>();
+                return new FoundryProbe(sdk, types, providers);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or System.Text.Json.JsonException or OperationCanceledException or System.ComponentModel.Win32Exception)
         {
@@ -180,23 +198,32 @@ public sealed partial class DesktopBackend
             start.ArgumentList.Add("--allow-download");
             using var process = System.Diagnostics.Process.Start(start);
             if (process is null) return new FoundryInstallResult(false, "start-failed", Array.Empty<string>(), Array.Empty<string>(), "Foundry host did not start.");
+            using var job = OperatingSystem.IsWindows() ? WinSight.Infrastructure.Inference.WindowsChildJob.Attach(process, lowPriority: false) : null;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromMinutes(10));
-            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            var text = await stdout.ConfigureAwait(false);
-            var tail = (await stderr.ConfigureAwait(false)).Trim();
-            var jsonStart = text.IndexOf('{', StringComparison.Ordinal);
-            if (jsonStart < 0) return new FoundryInstallResult(false, "no-result", Array.Empty<string>(), Array.Empty<string>(), tail.Length == 0 ? "host produced no result" : tail);
-            using var document = System.Text.Json.JsonDocument.Parse(text[jsonStart..]);
-            var root = document.RootElement;
-            string[] ReadArray(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.Array
-                ? value.EnumerateArray().Select(v => v.GetString() ?? "").Where(v => v.Length != 0).ToArray()
-                : Array.Empty<string>();
-            var success = root.TryGetProperty("success", out var flag) && flag.ValueKind == System.Text.Json.JsonValueKind.True;
-            var status = root.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "" : "";
-            return new FoundryInstallResult(success, status, ReadArray("registered"), ReadArray("failed"), tail.Length == 0 ? null : tail);
+            try
+            {
+                var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                var text = await stdout.ConfigureAwait(false);
+                var tail = (await stderr.ConfigureAwait(false)).Trim();
+                var jsonStart = text.IndexOf('{', StringComparison.Ordinal);
+                if (jsonStart < 0) return new FoundryInstallResult(false, "no-result", Array.Empty<string>(), Array.Empty<string>(), tail.Length == 0 ? "host produced no result" : tail);
+                using var document = System.Text.Json.JsonDocument.Parse(text[jsonStart..]);
+                var root = document.RootElement;
+                string[] ReadArray(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.Array
+                    ? value.EnumerateArray().Select(v => v.GetString() ?? "").Where(v => v.Length != 0).ToArray()
+                    : Array.Empty<string>();
+                var success = root.TryGetProperty("success", out var flag) && flag.ValueKind == System.Text.Json.JsonValueKind.True;
+                var status = root.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "" : "";
+                return new FoundryInstallResult(success, status, ReadArray("registered"), ReadArray("failed"), tail.Length == 0 ? null : tail);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

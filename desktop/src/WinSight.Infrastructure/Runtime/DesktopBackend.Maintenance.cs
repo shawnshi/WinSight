@@ -99,13 +99,30 @@ public string RebuildStatus => rebuildStatus;
         rebuildStatus = "running: staging " + roots.Length + " root(s)";
         _ = Task.Run(async () =>
         {
+            await reconfiguration.WaitAsync().ConfigureAwait(false);
             try
             {
+                await StopWatchingAsync().ConfigureAwait(false);
+                using var runLock = IndexRunLock.TryAcquire(dataDirectory);
+                if (runLock is null)
+                {
+                    rebuildStatus = "failed: another indexing run is active";
+                    return;
+                }
                 var dictionary = NativeSegmenter.Fingerprint(Array.Empty<string>());
                 var generation = info.ProfileId[..Math.Min(12, info.ProfileId.Length)] + "-" + dictionary[..8] + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
-                var repository = (await GetRepositoriesAsync(CancellationToken.None).ConfigureAwait(false))[0];
-                await repository.DisposeAsync().ConfigureAwait(false);
-                repositories.Clear();
+                await lifecycle.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    ObjectDisposedException.ThrowIf(disposed || stopping != 0, this);
+                    if (repositories.Count > 0)
+                    {
+                        foreach (var store in repositories) await store.DisposeAsync().ConfigureAwait(false);
+                        repositories.Clear();
+                    }
+                }
+                finally { lifecycle.Release(); }
+
                 var outcome = await IndexRebuildCoordinator.RebuildAsync(IndexDirectory, generation, async stagingRoot =>
                 {
                     await using var staging = new SqliteIndexRepository(Path.Combine(stagingRoot, "index.sqlite"));
@@ -114,7 +131,8 @@ public string RebuildStatus => rebuildStatus;
                     await staging.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, IndexRebuildCoordinator.LexiconSchema, CancellationToken.None).ConfigureAwait(false);
                     await staging.SetMetaAsync(IndexRebuildCoordinator.DictionaryKey, dictionary, CancellationToken.None).ConfigureAwait(false);
                     await staging.SetMetaAsync(IndexRebuildCoordinator.GenerationKey, generation, CancellationToken.None).ConfigureAwait(false);
-                    var builder = new IndexingService(staging, new ContentExtractor(GetMediaClient()), embeddings!,
+                    await using var mediaClient = GetMediaClient();
+                    var builder = new IndexingService(staging, new ContentExtractor(mediaClient), embeddings!,
                         null, null, null, allowDeferredStages: true);
                     await builder.IndexAsync(new IndexRequest(roots), null, CancellationToken.None).ConfigureAwait(false);
                 }, async database =>
@@ -124,19 +142,24 @@ public string RebuildStatus => rebuildStatus;
                     var files = await probe.ReadFileHeadersAsync(CancellationToken.None).ConfigureAwait(false);
                     return files.Count == 0 ? Array.Empty<string>() : new[] { "files:" + files.Count };
                 }, CancellationToken.None).ConfigureAwait(false);
-                repositories.Clear();
+
+                await lifecycle.WaitAsync().ConfigureAwait(false);
+                try { repositories.Clear(); }
+                finally { lifecycle.Release(); }
+
                 rebuildStatus = outcome.Switched
                     ? "done: rebuilt with " + roots.Length + " root(s); previous generation kept as " + Path.GetFileName(outcome.PreviousDirectory ?? "none")
                     : "failed: " + (outcome.Detail ?? "unknown");
             }
-            catch (Exception error) when (error is IOException or InvalidOperationException or InvalidDataException)
+            catch (Exception error) when (error is IOException or InvalidOperationException or InvalidDataException or ObjectDisposedException)
             {
                 rebuildStatus = "failed: " + error.GetType().Name + ": " + error.Message;
             }
             finally
             {
                 rebuildRunning = false;
-                repositories.Clear();
+                if (stopping == 0) ConfigureWatching();
+                reconfiguration.Release();
             }
         }, CancellationToken.None);
         return "started";
@@ -273,49 +296,71 @@ public Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default
         IProgress<(int Processed, int Remaining)>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        var repo = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];
-        var service = GetEmbeddings();
-        var info = await service.GetInfoAsync(cancellationToken).ConfigureAwait(false);
-        if (info == null || !info.Capabilities.Contains("text", StringComparer.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Embedding service is not available or does not support text.");
-
+        ObjectDisposedException.ThrowIf(stopping != 0, this);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetimeStop.Token);
         const int batchSize = 32;
         int totalProcessed = 0;
-        int queryLimit = maxSegments > 0 ? Math.Min(maxSegments, 256) : 256;
 
-        while (!cancellationToken.IsCancellationRequested)
+        await indexing.RunAsync(async token =>
         {
-            var segments = await repo.ReadPendingEmbeddingSegmentsAsync(queryLimit, cancellationToken).ConfigureAwait(false);
-            if (segments.Count == 0) break;
+            using var runLock = IndexRunLock.TryAcquire(dataDirectory)
+                ?? throw new IOException("Another WinSight process is currently indexing this data directory.");
+            var stores = await GetRepositoriesAsync(token).ConfigureAwait(false);
+            var service = GetEmbeddings();
+            var info = await service.GetInfoAsync(token).ConfigureAwait(false);
+            if (info == null || !info.Capabilities.Contains("text", StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Embedding service is not available or does not support text.");
 
-            foreach (var chunk in segments.Chunk(batchSize))
+            foreach (var repo in stores)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var inputs = chunk.Select(s => new EmbeddingInput(
-                    "text",
-                    $"title: {s.Title} | text: {(s.Kind == "page" ? ContentExtractor.Prefix(s.Excerpt, 1000) : s.Excerpt)}"
-                )).ToArray();
-
-                var results = await service.EmbedAsync(inputs, cancellationToken).ConfigureAwait(false);
-                var updates = new List<SegmentVectorUpdate>();
-                for (int i = 0; i < chunk.Length; i++)
+                var currentProfile = await repo.GetMetaAsync("profile_id", token).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(currentProfile))
                 {
-                    if (results[i].Vector is { } vec)
+                    await repo.SetMetaAsync("profile_id", info.ProfileId, token).ConfigureAwait(false);
+                }
+                else if (!FilePolicy.IsCompatibleProfile(currentProfile, info.ProfileId))
+                {
+                    throw new InvalidOperationException($"Active embedding profile '{info.ProfileId}' is incompatible with index profile '{currentProfile}'. Rebuild the index before backfilling vectors.");
+                }
+
+                long afterId = 0;
+                while (!token.IsCancellationRequested)
+                {
+                    if (maxSegments > 0 && totalProcessed >= maxSegments) break;
+                    int remainingBudget = maxSegments > 0 ? maxSegments - totalProcessed : 256;
+                    int queryLimit = Math.Min(remainingBudget, 256);
+                    var segments = await repo.ReadPendingEmbeddingSegmentsAsync(queryLimit, afterId, token).ConfigureAwait(false);
+                    if (segments.Count == 0) break;
+                    afterId = segments[^1].Id;
+
+                    foreach (var chunk in segments.Chunk(batchSize))
                     {
-                        updates.Add(new SegmentVectorUpdate(chunk[i].Id, chunk[i].FileId, vec));
+                        token.ThrowIfCancellationRequested();
+                        var inputs = chunk.Select(s => new EmbeddingInput(
+                            "text",
+                            $"title: {s.Title} | text: {ContentExtractor.Prefix(s.Excerpt, s.Kind == "page" ? 1000 : 4000)}"
+                        )).ToArray();
+
+                        var results = await service.EmbedAsync(inputs, token).ConfigureAwait(false);
+                        var updates = new List<SegmentVectorUpdate>();
+                        for (int i = 0; i < chunk.Length; i++)
+                        {
+                            if (results[i].Vector is { } vec)
+                            {
+                                updates.Add(new SegmentVectorUpdate(chunk[i].Id, chunk[i].FileId, vec));
+                            }
+                        }
+
+                        if (updates.Count > 0)
+                        {
+                            await repo.SaveBackfilledVectorsAsync(updates, token).ConfigureAwait(false);
+                            totalProcessed += updates.Count;
+                            progress?.Report((totalProcessed, -1));
+                        }
                     }
                 }
-
-                if (updates.Count > 0)
-                {
-                    await repo.SaveBackfilledVectorsAsync(updates, cancellationToken).ConfigureAwait(false);
-                    totalProcessed += updates.Count;
-                    progress?.Report((totalProcessed, -1));
-                }
             }
-
-            if (maxSegments > 0 && totalProcessed >= maxSegments) break;
-        }
+        }, linked.Token).ConfigureAwait(false);
 
         return totalProcessed;
     }

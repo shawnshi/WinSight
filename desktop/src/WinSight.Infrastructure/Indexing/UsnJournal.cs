@@ -20,7 +20,8 @@ public sealed record UsnChangeRecord(
     ulong ParentFileReferenceNumber,
     uint Reason,
     string FileName,
-    DateTimeOffset Timestamp);
+    DateTimeOffset Timestamp,
+    uint FileAttributes = 0);
 
 public interface IUsnJournalReader
 {
@@ -32,6 +33,9 @@ public interface IUsnJournalReader
         long startUsn,
         int maxRecords = 5000);
     string? ResolvePath(string volumePath, ulong fileReferenceNumber, ulong parentFileReferenceNumber, string fileName);
+    SafeFileHandle? OpenVolumeForBatch(string volumePath) => null;
+    string? ResolvePath(string volumePath, ulong fileReferenceNumber, ulong parentFileReferenceNumber, string fileName, SafeFileHandle? volumeHandle) =>
+        ResolvePath(volumePath, fileReferenceNumber, parentFileReferenceNumber, fileName);
 }
 
 public class UsnJournalReader : IUsnJournalReader
@@ -293,8 +297,9 @@ public class UsnJournalReader : IUsnJournalReader
 
                 int offset = 8;
                 int batchCount = 0;
+                bool hitMax = false;
 
-                while (offset + 60 <= bytesReturned && results.Count < maxRecords)
+                while (offset + 60 <= bytesReturned)
                 {
                     uint recordLength = (uint)Marshal.ReadInt32(pOut + offset);
                     if (recordLength == 0 || offset + recordLength > bytesReturned)
@@ -305,11 +310,19 @@ public class UsnJournalReader : IUsnJournalReader
                     ushort major = (ushort)Marshal.ReadInt16(pOut + offset + 4);
                     if (major == 2)
                     {
+                        long usn = Marshal.ReadInt64(pOut + offset + 24);
+                        if (results.Count >= maxRecords)
+                        {
+                            currentUsn = usn;
+                            hitMax = true;
+                            break;
+                        }
+
                         ulong frn = (ulong)Marshal.ReadInt64(pOut + offset + 8);
                         ulong pfrn = (ulong)Marshal.ReadInt64(pOut + offset + 16);
-                        long usn = Marshal.ReadInt64(pOut + offset + 24);
                         long timeStamp = Marshal.ReadInt64(pOut + offset + 32);
                         uint reason = (uint)Marshal.ReadInt32(pOut + offset + 40);
+                        uint fileAttributes = (uint)Marshal.ReadInt32(pOut + offset + 52);
                         ushort fnLen = (ushort)Marshal.ReadInt16(pOut + offset + 56);
                         ushort fnOff = (ushort)Marshal.ReadInt16(pOut + offset + 58);
 
@@ -323,11 +336,22 @@ public class UsnJournalReader : IUsnJournalReader
                         try { ts = DateTimeOffset.FromFileTime(timeStamp); }
                         catch { ts = DateTimeOffset.UtcNow; }
 
-                        results.Add(new UsnChangeRecord(usn, frn, pfrn, reason, fileName, ts));
+                        if ((fileAttributes & 0x10) != 0 &&
+                            (reason & (USN_REASON_FILE_DELETE | USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME)) != 0)
+                        {
+                            parentPathCache.Clear();
+                        }
+
+                        results.Add(new UsnChangeRecord(usn, frn, pfrn, reason, fileName, ts, fileAttributes));
                         batchCount++;
                     }
 
                     offset += (int)recordLength;
+                }
+
+                if (hitMax)
+                {
+                    break;
                 }
 
                 if (nextUsn <= currentUsn || batchCount == 0)
@@ -348,7 +372,22 @@ public class UsnJournalReader : IUsnJournalReader
         }
     }
 
-    public virtual string? ResolvePath(string volumePath, ulong fileReferenceNumber, ulong parentFileReferenceNumber, string fileName)
+    public SafeFileHandle? OpenVolumeForBatch(string volumePath)
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        var handle = OpenVolume(volumePath, out _);
+        if (handle.IsInvalid)
+        {
+            handle.Dispose();
+            return null;
+        }
+        return handle;
+    }
+
+    public virtual string? ResolvePath(string volumePath, ulong fileReferenceNumber, ulong parentFileReferenceNumber, string fileName) =>
+        ResolvePath(volumePath, fileReferenceNumber, parentFileReferenceNumber, fileName, null);
+
+    public virtual string? ResolvePath(string volumePath, ulong fileReferenceNumber, ulong parentFileReferenceNumber, string fileName, SafeFileHandle? volumeHandle)
     {
         if (string.IsNullOrEmpty(fileName)) return null;
 
@@ -359,41 +398,66 @@ public class UsnJournalReader : IUsnJournalReader
 
         if (!OperatingSystem.IsWindows()) return null;
 
-        using var handle = OpenVolume(volumePath, out _);
-        if (handle.IsInvalid) return null;
-
-        var desc = new FILE_ID_DESCRIPTOR
+        SafeFileHandle? ownedHandle = null;
+        SafeFileHandle handle;
+        if (volumeHandle != null && !volumeHandle.IsInvalid && !volumeHandle.IsClosed)
         {
-            dwSize = (uint)Marshal.SizeOf<FILE_ID_DESCRIPTOR>(),
-            Type = 0, // FileIdType
-            FileId = parentFileReferenceNumber,
-            FileIdHigh = 0
-        };
-
-        // Open directory with FILE_FLAG_BACKUP_SEMANTICS (0x02000000)
-        using var hDir = OpenFileById(handle, ref desc, 0x00000080 /* FILE_READ_ATTRIBUTES */, 1 | 2 | 4, IntPtr.Zero, 0x02000000);
-        if (!hDir.IsInvalid)
+            handle = volumeHandle;
+        }
+        else
         {
-            var sb = new StringBuilder(1024);
-            uint len = GetFinalPathNameByHandleW(hDir, sb, 1024, 0);
-            if (len > 0)
+            ownedHandle = OpenVolume(volumePath, out _);
+            if (ownedHandle.IsInvalid)
             {
-                var dirPath = sb.ToString();
-                if (dirPath.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
-                {
-                    dirPath = @"\\" + dirPath.Substring(8);
-                }
-                else if (dirPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
-                {
-                    dirPath = dirPath.Substring(4);
-                }
-
-                parentPathCache[parentFileReferenceNumber] = dirPath;
-                return Path.Combine(dirPath, fileName);
+                ownedHandle.Dispose();
+                return null;
             }
+            handle = ownedHandle;
         }
 
-        return null;
+        try
+        {
+            var desc = new FILE_ID_DESCRIPTOR
+            {
+                dwSize = (uint)Marshal.SizeOf<FILE_ID_DESCRIPTOR>(),
+                Type = 0, // FileIdType
+                FileId = parentFileReferenceNumber,
+                FileIdHigh = 0
+            };
+
+            // Open directory with FILE_FLAG_BACKUP_SEMANTICS (0x02000000)
+            using var hDir = OpenFileById(handle, ref desc, 0x00000080 /* FILE_READ_ATTRIBUTES */, 1 | 2 | 4, IntPtr.Zero, 0x02000000);
+            if (!hDir.IsInvalid)
+            {
+                var sb = new StringBuilder(1024);
+                uint len = GetFinalPathNameByHandleW(hDir, sb, (uint)sb.Capacity, 0);
+                if (len > 0 && len < sb.Capacity)
+                {
+                    var dirPath = sb.ToString();
+                    if (dirPath.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+                    {
+                        dirPath = @"\\" + dirPath.Substring(8);
+                    }
+                    else if (dirPath.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                    {
+                        dirPath = dirPath.Substring(4);
+                    }
+
+                    if (parentPathCache.Count >= 16384)
+                    {
+                        parentPathCache.Clear();
+                    }
+                    parentPathCache[parentFileReferenceNumber] = dirPath;
+                    return Path.Combine(dirPath, fileName);
+                }
+            }
+
+            return null;
+        }
+        finally
+        {
+            ownedHandle?.Dispose();
+        }
     }
 
     public static string MapWin32Error(int errorCode)

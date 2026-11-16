@@ -80,6 +80,9 @@ private async Task<IReadOnlyList<IIndexRepository>> GetRepositoriesAsync(Cancell
     /// so each of the (possibly hundreds of thousands of) indexed paths costs only ordinal prefix comparisons.
     /// Stored paths are already canonical; anything that is not falls back to the full normalising check.
     /// </summary>
+    private readonly object authorizerCacheLock = new();
+    private (string Signature, Func<string, bool> Fn)? cachedDocAuthorizer, cachedCodeAuthorizer;
+
     internal Func<string, bool> CreateAuthorizer(bool code)
     {
         static string Canonical(string value) => Path.GetFullPath(value).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -88,10 +91,18 @@ private async Task<IReadOnlyList<IIndexRepository>> GetRepositoriesAsync(Cancell
             || (path.Length > root.Length && path.StartsWith(root, StringComparison.OrdinalIgnoreCase) && path[root.Length] is '\\' or '/');
         var excluded = new[] { Canonical(dataDirectory), Canonical(IndexDirectory) };
         var skips = (code ? settings.CodeSkipped : settings.Skipped).Select(Canonical).ToArray();
-        var scopes = (code ? settings.CodeFolders : settings.Folders).Select(Canonical).Distinct(StringComparer.OrdinalIgnoreCase)
+        var roots = (code ? settings.CodeFolders : settings.Folders).Select(Canonical).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var signature = string.Join('\0', excluded) + "\x01" + string.Join('\0', roots) + "\x01" + string.Join('\0', skips);
+        lock (authorizerCacheLock)
+        {
+            var existing = code ? cachedCodeAuthorizer : cachedDocAuthorizer;
+            if (existing is { } hit && string.Equals(hit.Signature, signature, StringComparison.Ordinal))
+                return hit.Fn;
+        }
+        var scopes = roots
             .Select(root => (Root: root, Skips: skips.Where(skip => Within(skip, root) && !skip.Equals(root, StringComparison.OrdinalIgnoreCase)).ToArray()))
             .ToArray();
-        return path =>
+        Func<string, bool> fn = path =>
         {
             if (string.IsNullOrEmpty(path)) return false;
             // Mixed separators, dot segments and trailing separators are the only shapes GetFullPath would change.
@@ -107,6 +118,12 @@ private async Task<IReadOnlyList<IIndexRepository>> GetRepositoriesAsync(Cancell
             }
             return false;
         };
+        lock (authorizerCacheLock)
+        {
+            if (code) cachedCodeAuthorizer = (signature, fn);
+            else cachedDocAuthorizer = (signature, fn);
+        }
+        return fn;
     }
 
 internal bool IsAuthorizedResult(string path, bool code)

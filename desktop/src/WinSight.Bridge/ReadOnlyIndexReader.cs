@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using WinSight.Core;
+using WinSight.Infrastructure.Extraction;
 using WinSight.Infrastructure.Search;
 using WinSight.Infrastructure.Storage;
 
@@ -44,7 +45,7 @@ public sealed class ReadOnlyIndexReader : IDisposable
             connection.Open();
             connection.CreateCollation("WINSIGHT_PATH", StringComparer.OrdinalIgnoreCase.Compare);
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = "PRAGMA query_only=ON; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-32768; PRAGMA mmap_size=268435456;";
+            cmd.CommandText = "PRAGMA query_only=ON; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16384; PRAGMA mmap_size=0;";
             cmd.ExecuteNonQuery();
             return connection;
         }
@@ -228,9 +229,10 @@ public sealed class ReadOnlyIndexReader : IDisposable
 
             using var connection = OpenReadOnlyConnection();
 
-            // Build FTS query
+            // Build FTS query using shared normalization so full-width/accented/case inputs match the indexed FTS5 terms.
             string trimmed = query.Trim();
-            var parts = trimmed.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            var normalizedQuery = SearchText.Normalize(trimmed);
+            var parts = (normalizedQuery.Length != 0 ? normalizedQuery : trimmed).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
             string ftsPattern = string.Join(" ", parts.Select(p => $"\"{p.Replace("\"", "\"\"")}\""));
 
             // Two lexical sources, same rules as the application: the literal index and the segmented index.
@@ -464,10 +466,27 @@ public sealed class ReadOnlyIndexReader : IDisposable
         var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
         bool isDocumentContainer = ext is "pdf" or "docx" or "pptx" or "xlsx" or "doc" or "xls" or "ppt" or "odt";
 
-        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        SafeFile OpenPinnedOrThrow()
         {
+            try
+            {
+                return SafeFile.Open(path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (!File.Exists(path))
+                {
+                    throw new McpException(McpErrors.StaleReference, $"File '{path}' no longer exists on disk.", ex);
+                }
+                throw new McpException(McpErrors.ExcludedFile, $"File '{path}' failed safety checks: {ex.Message}", ex);
+            }
+        }
+
+        using (var pin = OpenPinnedOrThrow())
+        {
+            var stream = pin.Stream!;
             // The content must be what the index described; report (do not hide) a file that changed after indexing.
-            var diskVersion = FormattableString.Invariant($"{ToUnixSeconds(File.GetLastWriteTimeUtc(path)):F6}:{stream.Length}");
+            var diskVersion = FormattableString.Invariant($"{ToUnixSeconds(File.GetLastWriteTimeUtc(stream.SafeFileHandle)):F6}:{stream.Length}");
             indexStale = !VersionsMatch(diskVersion, currentVersion);
             if (isDocumentContainer && !indexStale && dbFileId > 0)
             {

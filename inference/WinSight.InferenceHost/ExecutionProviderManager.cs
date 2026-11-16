@@ -127,6 +127,69 @@ internal sealed class ExecutionProviderManager : IDisposable
     private const int JobObjectExtendedLimitInformation = 9;
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WINTRUST_FILE_INFO
+    {
+        public uint cbStruct;
+        [MarshalAs(UnmanagedType.LPWStr)] public string pcwszFilePath;
+        public IntPtr hFile;
+        public IntPtr pgKnownSubject;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINTRUST_DATA
+    {
+        public uint cbStruct;
+        public IntPtr pPolicyCallbackData;
+        public IntPtr pSIPClientData;
+        public uint dwUIChoice;
+        public uint fdwRevocationChecks;
+        public uint dwUnionChoice;
+        public IntPtr pFile;
+        public uint dwStateAction;
+        public IntPtr hWVTStateData;
+        public IntPtr pwszURLReference;
+        public uint dwProvFlags;
+        public uint dwUIContext;
+        public IntPtr pSignatureSettings;
+    }
+
+    [DllImport("wintrust.dll", ExactSpelling = true, PreserveSig = true)]
+    private static extern int WinVerifyTrust(IntPtr hwnd, ref Guid pgActionID, ref WINTRUST_DATA pWVTData);
+
+    private static bool VerifyAuthenticodeSignature(string filePath)
+    {
+        var fileInfo = new WINTRUST_FILE_INFO
+        {
+            cbStruct = (uint)Marshal.SizeOf<WINTRUST_FILE_INFO>(),
+            pcwszFilePath = filePath
+        };
+        var filePtr = Marshal.AllocHGlobal(Marshal.SizeOf<WINTRUST_FILE_INFO>());
+        var action = new Guid("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
+        var trustData = new WINTRUST_DATA
+        {
+            cbStruct = (uint)Marshal.SizeOf<WINTRUST_DATA>(),
+            dwUIChoice = 2,          // WTD_UI_NONE
+            fdwRevocationChecks = 0, // WTD_REVOKE_NONE
+            dwUnionChoice = 1,       // WTD_CHOICE_FILE
+            pFile = filePtr,
+            dwStateAction = 1,       // WTD_STATEACTION_VERIFY
+            dwProvFlags = 0x1010     // WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_REVOCATION_CHECK_NONE
+        };
+        try
+        {
+            Marshal.StructureToPtr(fileInfo, filePtr, false);
+            return WinVerifyTrust(new IntPtr(-1), ref action, ref trustData) == 0;
+        }
+        finally
+        {
+            trustData.dwStateAction = 2; // WTD_STATEACTION_CLOSE
+            try { WinVerifyTrust(new IntPtr(-1), ref action, ref trustData); } catch { }
+            Marshal.DestroyStructure<WINTRUST_FILE_INFO>(filePtr);
+            Marshal.FreeHGlobal(filePtr);
+        }
+    }
+
     internal ExecutionProviderManager(ModelManifest models, string preference = "auto")
     {
         this.models = models;
@@ -175,37 +238,35 @@ internal sealed class ExecutionProviderManager : IDisposable
     {
         try
         {
-            var targetDir = @"C:\ProgramData\RyzenAI\vitisai_ep";
-            var targetDll = Path.Combine(targetDir, "onnxruntime_providers_vitisai.dll");
-            if (!File.Exists(targetDll))
+            string baseDir = AppContext.BaseDirectory;
+            string epDir = Path.Combine(baseDir, "ep");
+            string vitisDir = Path.Combine(epDir, "vitisai");
+            if ((Directory.Exists(epDir) && (File.GetAttributes(epDir) & FileAttributes.ReparsePoint) != 0)
+                || (Directory.Exists(vitisDir) && (File.GetAttributes(vitisDir) & FileAttributes.ReparsePoint) != 0))
             {
-                var winApps = @"C:\Program Files\WindowsApps";
-                if (Directory.Exists(winApps))
-                {
-                    var match = Directory.GetDirectories(winApps, "MicrosoftCorporationII.WinML.AMD.NPU.EP*").FirstOrDefault();
-                    if (match != null)
-                    {
-                        var epSrc = Path.Combine(match, "ExecutionProvider");
-                        if (Directory.Exists(epSrc))
-                        {
-                            Directory.CreateDirectory(targetDir);
-                            foreach (var file in Directory.GetFiles(epSrc))
-                            {
-                                var dest = Path.Combine(targetDir, Path.GetFileName(file));
-                                if (!File.Exists(dest)) File.Copy(file, dest, true);
-                            }
-                        }
-                    }
-                }
+                return;
             }
+            string[] candidates =
+            [
+                Path.Combine(baseDir, "onnxruntime_providers_vitisai.dll"),
+                Path.Combine(vitisDir, "onnxruntime_providers_vitisai.dll")
+            ];
 
-            if (File.Exists(targetDll))
+            foreach (var candidateDll in candidates)
             {
+                if (!File.Exists(candidateDll)) continue;
+                if ((File.GetAttributes(candidateDll) & FileAttributes.ReparsePoint) != 0) continue;
+                using var pinnedRead = new FileStream(candidateDll, FileMode.Open, FileAccess.Read, FileShare.Read);
+                if (!VerifyAuthenticodeSignature(candidateDll)) continue;
                 try
                 {
-                    ort.RegisterExecutionProviderLibrary("VitisAIExecutionProvider", targetDll);
+                    ort.RegisterExecutionProviderLibrary("VitisAIExecutionProvider", candidateDll);
+                    return;
                 }
-                catch (Exception ex) when (ex.Message.Contains("already registered", StringComparison.OrdinalIgnoreCase)) { }
+                catch (Exception ex) when (ex.Message.Contains("already registered", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
             }
         }
         catch { /* Non-blocking: will fall back to catalog or DirectML */ }
@@ -803,7 +864,10 @@ internal sealed class ExecutionProviderManager : IDisposable
         {
             try
             {
-                cpuTime = Median(slot.Cpu.Value, probe, cpuRunOptions);
+                lock (slot.Gate)
+                {
+                    cpuTime = Median(slot.Cpu.Value, probe, cpuRunOptions);
+                }
             }
             catch (Exception error) when (error is not OutOfMemoryException and not AccessViolationException)
             {

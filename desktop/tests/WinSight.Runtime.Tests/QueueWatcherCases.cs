@@ -105,6 +105,71 @@ internal static class QueueWatcherCases
             Require(st.LastReconcileUtc is not null, $"LastReconcileUtc must be populated after initial reconcile. Got: UsnState={st.UsnState}, Pending={st.Pending}, Detail={eng.Detail}");
             await backend.DisposeAsync();
         });
+
+        await test("S1-P1-CODE-ISOLATION-AND-NO-FULLSCAN doc save wakes on delayed timer without full scan and code save routes strictly to codeQueue", async () =>
+        {
+            var docRoot = Path.Combine(root, "p1-doc-root");
+            var codeRoot = Path.Combine(root, "p1-code-root");
+            Directory.CreateDirectory(docRoot);
+            Directory.CreateDirectory(codeRoot);
+
+            await using var docRepo = new SqliteIndexRepository(Path.Combine(root, "p1-doc.sqlite"));
+            await using var codeRepo = new SqliteIndexRepository(Path.Combine(root, "p1-code.sqlite"));
+            await docRepo.InitializeAsync();
+            await codeRepo.InitializeAsync();
+
+            var fullScanCount = 0;
+            var docBatches = new List<string>();
+            var codeBatches = new List<string>();
+            await using var coordinator = new BackgroundIndexCoordinator(
+                new AppSettings { Folders = [docRoot], CodeFolders = [codeRoot], ProcessorOnly = false },
+                (request, token) => { Interlocked.Increment(ref fullScanCount); return Task.CompletedTask; },
+                error => throw new InvalidOperationException("Unexpected watcher error.", error),
+                debounce: TimeSpan.FromMilliseconds(40),
+                policyPoll: TimeSpan.FromSeconds(60),
+                repository: docRepo,
+                codeRepository: codeRepo,
+                indexPaths: (roots, paths, code, token) =>
+                {
+                    var target = code ? codeBatches : docBatches;
+                    lock (target) target.AddRange(paths);
+                    return Task.CompletedTask;
+                });
+
+            // Wait for initial reconcile pass to finish before triggering live watcher saves.
+            var initDeadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < initDeadline && (coordinator.Queue?.LastReconcileUtc is null || coordinator.CodeQueue?.LastReconcileUtc is null))
+                await Task.Delay(50);
+            Require(coordinator.Queue?.LastReconcileUtc is not null && coordinator.CodeQueue?.LastReconcileUtc is not null, "Both queues must complete initial reconcile.");
+
+            var docFile = Path.Combine(docRoot, "note.txt");
+            var codeFile = Path.Combine(codeRoot, "Program.cs");
+            await File.WriteAllTextAsync(docFile, "hello doc");
+            await File.WriteAllTextAsync(codeFile, "class Program {}");
+
+            var normDoc = FilePolicy.Normalize(docFile);
+            var normCode = FilePolicy.Normalize(codeFile);
+            var deadline = DateTime.UtcNow.AddSeconds(12);
+            while (DateTime.UtcNow < deadline)
+            {
+                bool gotDoc, gotCode;
+                lock (docBatches) gotDoc = docBatches.Contains(normDoc, StringComparer.OrdinalIgnoreCase);
+                lock (codeBatches) gotCode = codeBatches.Contains(normCode, StringComparer.OrdinalIgnoreCase);
+                if (gotDoc && gotCode && await docRepo.GetTaskAsync(normDoc) is null && await codeRepo.GetTaskAsync(normCode) is null)
+                    break;
+                await Task.Delay(50);
+            }
+
+            bool docDelivered, codeDelivered;
+            lock (docBatches) docDelivered = docBatches.Contains(normDoc, StringComparer.OrdinalIgnoreCase) && !docBatches.Contains(normCode, StringComparer.OrdinalIgnoreCase);
+            lock (codeBatches) codeDelivered = codeBatches.Contains(normCode, StringComparer.OrdinalIgnoreCase) && !codeBatches.Contains(normDoc, StringComparer.OrdinalIgnoreCase);
+
+            Require(docDelivered, "Document save must wake via delayed timer and deliver only to doc batches.");
+            Require(codeDelivered, "Code save must route exclusively to codeQueue and deliver only to code batches.");
+            Require(await docRepo.GetTaskAsync(normCode) is null, "docRepo index_tasks must not receive code files.");
+            Require(await codeRepo.GetTaskAsync(normDoc) is null, "codeRepo index_tasks must not receive doc files.");
+            Require(Volatile.Read(ref fullScanCount) == 0, $"Full-root fallback index delegate must not execute when active queues are present (count={fullScanCount}).");
+        });
     }
 
     private static void Require(bool condition, string message)

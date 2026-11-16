@@ -63,6 +63,7 @@ DiskSpanning=yes
 DiskSliceSize=2100000000
 WizardStyle=modern
 SetupLogging=yes
+ChangesEnvironment=yes
 
 ; Graceful process termination across active WinSight execution roles
 CloseApplications=yes
@@ -179,11 +180,11 @@ begin
         NewPath := OldPath + ';' + AppDir
       else
         NewPath := OldPath + AppDir;
-      RegWriteStringValue(RootKey, TargetKey, 'Path', NewPath);
+      RegWriteExpandStringValue(RootKey, TargetKey, 'Path', NewPath);
     end;
   end
   else
-    RegWriteStringValue(RootKey, TargetKey, 'Path', AppDir);
+    RegWriteExpandStringValue(RootKey, TargetKey, 'Path', AppDir);
 end;
 
 procedure RemoveFromPath();
@@ -212,7 +213,7 @@ begin
       Delete(P, StartPos, Length(AppDir) + 1);
       if (Length(P) > 0) and (P[1] = ';') then Delete(P, 1, 1);
       if (Length(P) > 0) and (P[Length(P)] = ';') then Delete(P, Length(P), 1);
-      RegWriteStringValue(RootKey, TargetKey, 'Path', P);
+      RegWriteExpandStringValue(RootKey, TargetKey, 'Path', P);
     end;
   end;
 end;
@@ -240,7 +241,7 @@ begin
 
   if CurUninstallStep = usPostUninstall then
   begin
-    DataDir := ExpandConstant('{localappdata}\WinSight\Index');
+    DataDir := ExpandConstant('{localappdata}\WinSight\NativePreview');
     { Index, settings and logs belong to the user: preserve on silent uninstalls and ask interactively }
     if DirExists(DataDir) and not UninstallSilent then
       if MsgBox('是否同时删除 WinSight 的本地索引数据库、配置文件与日志？' + #13#10 + DataDir,

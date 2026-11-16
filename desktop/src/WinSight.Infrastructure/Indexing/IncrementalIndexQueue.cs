@@ -20,6 +20,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
     private readonly IUsnJournalReader usnReader;
 
     private long watcherOverflows;
+    private long enqueueCounter;
     private int overflowDropped;
     private DateTimeOffset? lastReconcileUtc;
 
@@ -166,10 +167,13 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
         await repository.EnqueueIndexTaskAsync(finalTask, cancellationToken).ConfigureAwait(false);
 
-        var dropped = await repository.TrimTasksAsync(maxQueueTasks, cancellationToken).ConfigureAwait(false);
-        if (dropped > 0)
+        if (maxQueueTasks < 500 || (Interlocked.Increment(ref enqueueCounter) & 63) == 0)
         {
-            Interlocked.Add(ref overflowDropped, dropped);
+            var dropped = await repository.TrimTasksAsync(maxQueueTasks, cancellationToken).ConfigureAwait(false);
+            if (dropped > 0)
+            {
+                Interlocked.Add(ref overflowDropped, dropped);
+            }
         }
     }
 
@@ -318,29 +322,100 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
     // Reconciliation enumerates the whole root, so it is gated: an explicit caller (startup, overflow,
     // resume) forces it, while ordinary file events must not pay for a full diff on every save.
-    public async Task<bool> ReconcileRootAsync(string root, bool code, bool force = false, CancellationToken cancellationToken = default, bool requireStabilization = true, bool upgradePageImages = false)
+    public Task<bool> ReconcileRootAsync(string root, bool code, bool force = false, CancellationToken cancellationToken = default, bool requireStabilization = true, bool upgradePageImages = false) =>
+        ReconcileRootsAsync([root], code, force, cancellationToken, requireStabilization, upgradePageImages);
+
+    public async Task<bool> ReconcileRootsAsync(IReadOnlyList<string> roots, bool code, bool force = false, CancellationToken cancellationToken = default, bool requireStabilization = true, bool upgradePageImages = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!Directory.Exists(root)) return false;
-        var dirty = dirtyRoots.ContainsKey(root);
-        var due = lastReconcileUtc is null || DateTimeOffset.UtcNow - lastReconcileUtc.Value >= reconcileInterval;
-        if (!force && !dirty && !due) return false;
+        var validRoots = roots
+            .Where(Directory.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (validRoots.Length == 0) return false;
 
-        // Try USN catch-up first if on NTFS and checkpoint is valid
-        if (!upgradePageImages && await TryUsnCatchUpAsync(root, code, cancellationToken).ConfigureAwait(false))
+        var due = lastReconcileUtc is null || DateTimeOffset.UtcNow - lastReconcileUtc.Value >= reconcileInterval;
+        var activeRoots = (force || due)
+            ? validRoots
+            : validRoots.Where(r => dirtyRoots.ContainsKey(r)).ToArray();
+        if (activeRoots.Length == 0) return false;
+
+        var ntfsByVolume = new Dictionary<string, List<(string RawRoot, string NormRoot)>>(StringComparer.OrdinalIgnoreCase);
+        var fallbackRoots = new List<(string RawRoot, string NormRoot)>();
+
+        foreach (var root in activeRoots)
         {
-            return true;
+            var normRoot = FilePolicy.Normalize(root);
+            if (!upgradePageImages && repository is IUsnCheckpointRepository)
+            {
+                if (usnReader.IsNtfsVolume(normRoot, out var volumeSerial) && !string.IsNullOrEmpty(volumeSerial))
+                {
+                    if (!ntfsByVolume.TryGetValue(volumeSerial, out var list))
+                    {
+                        list = [];
+                        ntfsByVolume[volumeSerial] = list;
+                    }
+                    list.Add((root, normRoot));
+                }
+                else
+                {
+                    UsnState = "usn_unavailable(not-ntfs)";
+                    fallbackRoots.Add((root, normRoot));
+                }
+            }
+            else
+            {
+                if (!upgradePageImages && repository is not IUsnCheckpointRepository)
+                {
+                    UsnState = "usn_unavailable(no-checkpoint-store)";
+                }
+                fallbackRoots.Add((root, normRoot));
+            }
         }
 
-        var existingFiles = await repository.ReadFileHeadersAsync(cancellationToken).ConfigureAwait(false);
-        var normRoot = FilePolicy.Normalize(root);
+        bool anyReconciled = false;
+        foreach (var (volumeSerial, volumeRoots) in ntfsByVolume)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await TryUsnCatchUpVolumeAsync(volumeSerial, volumeRoots, code, cancellationToken).ConfigureAwait(false))
+            {
+                anyReconciled = true;
+            }
+            else
+            {
+                fallbackRoots.AddRange(volumeRoots);
+            }
+        }
+
+        if (fallbackRoots.Count > 0)
+        {
+            var existingFiles = await repository.ReadFileHeadersAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var (rawRoot, normRoot) in fallbackRoots)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await ReconcileSingleFallbackRootAsync(rawRoot, normRoot, code, requireStabilization, upgradePageImages, existingFiles, cancellationToken).ConfigureAwait(false);
+                anyReconciled = true;
+            }
+        }
+
+        return anyReconciled;
+    }
+
+    private async Task ReconcileSingleFallbackRootAsync(
+        string rawRoot,
+        string normRoot,
+        bool code,
+        bool requireStabilization,
+        bool upgradePageImages,
+        IReadOnlyList<IndexedFile> existingFiles,
+        CancellationToken cancellationToken)
+    {
         var indexMap = existingFiles
             .Where(f => FilePolicy.Under(f.Path, normRoot))
             .ToDictionary(f => FilePolicy.Normalize(f.Path), StringComparer.OrdinalIgnoreCase);
 
         var diskPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var pending = new List<IndexTask>();
-        var rootDir = new DirectoryInfo(normRoot);
         // A manual pass enumerates settled files; marking them Ready avoids a 300 ms probe per file.
         var enqueueState = requireStabilization ? "Pending" : "Ready";
         async Task FlushAsync(bool flushAll)
@@ -365,7 +440,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                 bool needsEmbeddingUpgrade = indexed.State == "partial" &&
                     (indexed.Detail?.Contains("Semantic extraction unavailable", StringComparison.OrdinalIgnoreCase) == true
                      || indexed.Detail?.Contains("no embedding service", StringComparison.OrdinalIgnoreCase) == true);
-                if (!needsPageImageUpgrade && !needsEmbeddingUpgrade && indexed.State != "failed" && indexed.Size == file.Length && Math.Abs(indexed.ModifiedTime - mtime) < 0.001)
+                if (!needsPageImageUpgrade && !needsEmbeddingUpgrade && indexed.State != "failed" && indexed.State != "pending" && indexed.Size == file.Length && Math.Abs(indexed.ModifiedTime - mtime) < 0.001)
                 {
                     continue;
                 }
@@ -382,32 +457,30 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         foreach (var missing in indexMap.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var delTask = new IndexTask(missing.Path, normRoot, code, "Delete", null, enqueueState, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill");
-            await EnqueueWithCoalescingAsync(delTask, cancellationToken).ConfigureAwait(false);
+            pending.Add(new IndexTask(missing.Path, normRoot, code, "Delete", null, enqueueState, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill"));
+            await FlushAsync(false).ConfigureAwait(false);
         }
 
         await TryRecordUsnCheckpointAsync(normRoot, cancellationToken).ConfigureAwait(false);
 
         await FlushAsync(true).ConfigureAwait(false);
-        dirtyRoots.TryRemove(root, out _);
+        dirtyRoots.TryRemove(rawRoot, out _);
         lastReconcileUtc = DateTimeOffset.UtcNow;
-        return true;
     }
 
-    private async Task<bool> TryUsnCatchUpAsync(string root, bool code, CancellationToken cancellationToken)
+    private async Task<bool> TryUsnCatchUpVolumeAsync(
+        string volumeSerial,
+        IReadOnlyList<(string RawRoot, string NormRoot)> volumeRoots,
+        bool code,
+        CancellationToken cancellationToken)
     {
-        var normRoot = FilePolicy.Normalize(root);
-        if (!usnReader.IsNtfsVolume(normRoot, out var volumeSerial) || string.IsNullOrEmpty(volumeSerial))
-        {
-            UsnState = "usn_unavailable(not-ntfs)";
-            return false;
-        }
-
         if (repository is not IUsnCheckpointRepository checkpointRepo)
         {
             UsnState = "usn_unavailable(no-checkpoint-store)";
             return false;
         }
+
+        string probeRoot = volumeRoots[0].NormRoot;
 
         (string JournalId, string NextUsn, DateTimeOffset ReconcileUtc)? checkpoint;
         try
@@ -426,7 +499,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
             return false;
         }
 
-        var (queryOk, queryInfo, queryErr) = usnReader.QueryJournal(normRoot);
+        var (queryOk, queryInfo, queryErr) = usnReader.QueryJournal(probeRoot);
         if (!queryOk || queryInfo == null)
         {
             UsnState = $"usn_unavailable({queryErr ?? "query-failed"})";
@@ -453,24 +526,50 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
             return false;
         }
 
-        var (readOk, records, nextUsn, readErr) = usnReader.ReadIncrements(normRoot, queryInfo.JournalId, startUsn);
+        var (readOk, records, nextUsn, readErr) = usnReader.ReadIncrements(probeRoot, queryInfo.JournalId, startUsn);
         if (!readOk)
         {
             UsnState = $"usn_unavailable({readErr ?? "read-failed"})";
             return false;
         }
 
+        const uint DirAttr = 0x10;
+        const uint DirTopologyReasons = UsnJournalReader.USN_REASON_FILE_DELETE
+            | UsnJournalReader.USN_REASON_RENAME_OLD_NAME
+            | UsnJournalReader.USN_REASON_RENAME_NEW_NAME;
+
+        foreach (var record in records)
+        {
+            if ((record.FileAttributes & DirAttr) != 0 && (record.Reason & DirTopologyReasons) != 0)
+            {
+                UsnState = "usn_unavailable(dir-rename-or-delete)";
+                return false;
+            }
+        }
+
         int matchedCount = 0;
         var now = DateTimeOffset.UtcNow;
+        var orderedRoots = volumeRoots.OrderByDescending(r => r.NormRoot.Length).ToArray();
+        using var volumeHandle = usnReader.OpenVolumeForBatch(probeRoot);
+        var batch = new List<IndexTask>();
 
         foreach (var record in records)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var resolvedPath = usnReader.ResolvePath(normRoot, record.FileReferenceNumber, record.ParentFileReferenceNumber, record.FileName);
+            var resolvedPath = usnReader.ResolvePath(probeRoot, record.FileReferenceNumber, record.ParentFileReferenceNumber, record.FileName, volumeHandle);
             if (resolvedPath == null) continue;
 
             var normPath = FilePolicy.Normalize(resolvedPath);
-            if (!FilePolicy.Under(normPath, normRoot)) continue;
+            string? matchedRoot = null;
+            foreach (var candidate in orderedRoots)
+            {
+                if (FilePolicy.Under(normPath, candidate.NormRoot))
+                {
+                    matchedRoot = candidate.NormRoot;
+                    break;
+                }
+            }
+            if (matchedRoot == null) continue;
             if (IsTemporaryFile(normPath)) continue;
             if (FilePolicy.Kind(normPath, code) == null) continue;
 
@@ -488,9 +587,18 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                 kind = "Update";
             }
 
-            var task = new IndexTask(normPath, normRoot, code, kind, null, "Pending", 0, now, now, "usn_catch_up");
-            await EnqueueWithCoalescingAsync(task, cancellationToken).ConfigureAwait(false);
+            batch.Add(new IndexTask(normPath, matchedRoot, code, kind, null, "Pending", 0, now, now, "usn_catch_up"));
             matchedCount++;
+        }
+
+        if (batch.Count > 0)
+        {
+            await repository.EnqueueIndexTasksAsync(batch, cancellationToken).ConfigureAwait(false);
+            if (maxQueueTasks < 500 || (Interlocked.Increment(ref enqueueCounter) & 63) == 0 || batch.Count >= 64)
+            {
+                var dropped = await repository.TrimTasksAsync(maxQueueTasks, cancellationToken).ConfigureAwait(false);
+                if (dropped > 0) Interlocked.Add(ref overflowDropped, dropped);
+            }
         }
 
         try
@@ -502,7 +610,10 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
             onError?.Invoke(ex);
         }
 
-        dirtyRoots.TryRemove(root, out _);
+        foreach (var (rawRoot, _) in volumeRoots)
+        {
+            dirtyRoots.TryRemove(rawRoot, out _);
+        }
         lastReconcileUtc = now;
         UsnState = $"usn_caught_up({matchedCount} records)";
         return true;
@@ -617,7 +728,44 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         foreach (var task in dueTasks)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (task.State == "Ready" || await CheckStabilizationAsync(task, cancellationToken).ConfigureAwait(false))
+            if (task.State == "Ready")
+            {
+                ready.Add(task);
+            }
+            else if (task.State == "Failed")
+            {
+                await repository.UpdateTaskStateAsync(task.Path, "Ready", task.Attempts, DateTimeOffset.UtcNow, task.Reason, cancellationToken).ConfigureAwait(false);
+                ready.Add(task with { State = "Ready" });
+            }
+            else if (task.State == "Deferred")
+            {
+                if (string.Equals(task.Reason, "locked", StringComparison.Ordinal))
+                {
+                    if (!File.Exists(task.Path) || TryProbeUnlocked(task.Path))
+                    {
+                        await repository.UpdateTaskStateAsync(task.Path, "Ready", 0, DateTimeOffset.UtcNow, null, cancellationToken).ConfigureAwait(false);
+                        ready.Add(task with { State = "Ready", Attempts = 0, Reason = null });
+                    }
+                    else
+                    {
+                        var nextAttempts = task.Attempts + 1;
+                        if (nextAttempts >= 8)
+                            await repository.UpdateTaskStateAsync(task.Path, "Failed", 8, DateTimeOffset.UtcNow + TimeSpan.FromMinutes(10), "locked", cancellationToken).ConfigureAwait(false);
+                        else
+                            await repository.UpdateTaskStateAsync(task.Path, "Deferred", nextAttempts, DateTimeOffset.UtcNow + TimeSpan.FromMinutes(10), "locked", cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                else if (task.Attempts >= 4)
+                {
+                    await repository.UpdateTaskStateAsync(task.Path, "Failed", 8, DateTimeOffset.UtcNow + TimeSpan.FromMinutes(5), task.Reason, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await repository.UpdateTaskStateAsync(task.Path, "Ready", task.Attempts, DateTimeOffset.UtcNow, task.Reason, cancellationToken).ConfigureAwait(false);
+                    ready.Add(task with { State = "Ready" });
+                }
+            }
+            else if (await CheckStabilizationAsync(task, cancellationToken).ConfigureAwait(false))
             {
                 ready.Add(task);
             }
@@ -656,6 +804,11 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                         await indexPaths([group.Key.Root], chunk.Select(t => t.Path).ToArray(), group.Key.Code, cancellationToken).ConfigureAwait(false);
                         foreach (var task in chunk)
                         {
+                            if (!string.IsNullOrEmpty(task.Tombstone) && !string.Equals(task.Tombstone, task.Path, StringComparison.OrdinalIgnoreCase))
+                            {
+                                await repository.DeleteFileAsync(task.Tombstone, cancellationToken).ConfigureAwait(false);
+                                await repository.AckTaskAsync(task.Tombstone, cancellationToken).ConfigureAwait(false);
+                            }
                             await repository.AckTaskAsync(task.Path, cancellationToken).ConfigureAwait(false);
                         }
                     }
@@ -676,8 +829,15 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                     }
                     processed += chunk.Length;
                 }
-                catch (IndexingPausedException) { throw; }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex) when (ex is IndexingPausedException || (ex is OperationCanceledException && cancellationToken.IsCancellationRequested))
+                {
+                    foreach (var task in chunk)
+                    {
+                        try { await repository.UpdateTaskStateAsync(task.Path, "Ready", task.Attempts, DateTimeOffset.UtcNow, task.Reason, CancellationToken.None).ConfigureAwait(false); }
+                        catch { }
+                    }
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     foreach (var task in chunk) await RecordFailureAsync(task, ex, cancellationToken).ConfigureAwait(false);
@@ -688,15 +848,38 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         return processed;
     }
 
+    private static bool TryProbeUnlocked(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+            return true;
+        }
+        catch { return false; }
+    }
+
     private async Task RecordFailureAsync(IndexTask task, Exception error, CancellationToken cancellationToken)
     {
         var attempts = task.Attempts + 1;
-        await repository.UpdateTaskStateAsync(task.Path, attempts >= 3 ? "Deferred" : "Failed", attempts,
-            DateTimeOffset.UtcNow.AddSeconds(attempts >= 3 ? 300 : 5), error.Message, cancellationToken).ConfigureAwait(false);
+        if (attempts >= 4)
+        {
+            await repository.UpdateTaskStateAsync(task.Path, "Failed", 8, DateTimeOffset.UtcNow.AddMinutes(5), error.Message, cancellationToken).ConfigureAwait(false);
+        }
+        else if (attempts == 3)
+        {
+            await repository.UpdateTaskStateAsync(task.Path, "Deferred", attempts, DateTimeOffset.UtcNow.AddMinutes(5), error.Message, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await repository.UpdateTaskStateAsync(task.Path, "Failed", attempts, DateTimeOffset.UtcNow.AddSeconds(5), error.Message, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public Task<IReadOnlyDictionary<string, int>> GetTaskCountsAsync(CancellationToken cancellationToken = default) =>
         repository.GetTaskCountsAsync(cancellationToken);
+
+    public Task<int> CountRetryableFailedTasksAsync(CancellationToken cancellationToken = default) =>
+        repository.CountRetryableFailedTasksAsync(cancellationToken);
 
     public async Task<IndexingQueueStatus> GetIndexingQueueStatusAsync(
         IReadOnlyList<IndexBudgetState>? budgets = null,

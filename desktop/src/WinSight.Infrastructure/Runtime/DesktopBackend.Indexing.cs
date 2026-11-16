@@ -213,12 +213,74 @@ public async Task SetIndexingPausedAsync(bool paused, CancellationToken cancella
 
     private async Task IndexPathsBackgroundAsync(IReadOnlyList<string> roots, IReadOnlyList<string> paths, bool code, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var stores = await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false);
-        var repository = stores[code ? 1 : 0];
-        var model = GetEmbeddings();
-        var service = new IndexingService(repository, new ContentExtractor(), model);
-        await service.IndexPathsAsync(roots, paths, code, null, cancellationToken).ConfigureAwait(false);
+        ObjectDisposedException.ThrowIf(stopping != 0, this);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetimeStop.Token);
+        await indexing.RunAsync(async token =>
+        {
+            using var runLock = IndexRunLock.TryAcquire(dataDirectory)
+                ?? throw new IOException("Another WinSight process is currently indexing this data directory.");
+            IIndexRepository repository;
+            IEmbeddingService model;
+            string mediaHost;
+            string[] approvedPaths;
+            DocumentExtractionOptions docOptions;
+            await lifecycle.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                ObjectDisposedException.ThrowIf(disposed, this);
+                var skipTypes = settings.SkipTypes
+                    .Select(s => s.TrimStart('*', '.'))
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                approvedPaths = paths
+                    .Where(p => IsAuthorizedResult(p, code) && !skipTypes.Contains(FilePolicy.Extension(p)))
+                    .ToArray();
+                if (approvedPaths.Length == 0) return;
+                var stores = await GetRepositoriesAsync(token).ConfigureAwait(false);
+                repository = stores[code ? 1 : 0];
+                model = GetEmbeddings();
+                mediaHost = settings.InferenceExecutable ?? Path.Combine(applicationDirectory, "inference", "WinSight.InferenceHost.exe");
+                docOptions = new DocumentExtractionOptions(settings.IncludeWordComments, settings.IncludeWordHeadersFooters);
+            }
+            finally { lifecycle.Release(); }
+
+            NativeMediaProcessClient? mediaClient = null;
+            try
+            {
+                if (!code && File.Exists(mediaHost))
+                {
+                    var workspace = MediaTaskFiles.LocalPath(Path.Combine(dataDirectory, "media-tasks"));
+                    using var dataPin = SafeFile.Open(dataDirectory, directory: true);
+                    Directory.CreateDirectory(workspace);
+                    using var workspacePin = SafeFile.Open(workspace, directory: true);
+                    mediaClient = new NativeMediaProcessClient(new NativeMediaProcessOptions
+                    {
+                        HostExecutable = mediaHost,
+                        WorkspaceRoot = workspace
+                    });
+                }
+
+                EmbeddingInfo? info = null;
+                try
+                {
+                    info = await model.GetInfoAsync(token).ConfigureAwait(false);
+                }
+                catch (Exception modelError) when (modelError is IOException or InvalidDataException or TimeoutException or System.ComponentModel.Win32Exception)
+                {
+                    AppLog.Warn("Embedding model host unavailable during background indexing; falling back to lexical-only indexing", modelError);
+                    backgroundError = "Embedding model unavailable; lexical/keyword indexing only: " + modelError.Message;
+                }
+
+                var service = new IndexingService(repository, new ContentExtractor(mediaClient), info is null ? null : model,
+                    null, null, null, allowDeferredStages: true);
+                await service.IndexPathsAsync(roots, approvedPaths, code, null, token, docOptions).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (mediaClient is not null)
+                    await mediaClient.DisposeAsync().ConfigureAwait(false);
+            }
+        }, linked.Token).ConfigureAwait(false);
     }
 
 public async Task<IReadOnlyList<string>> GetFailureSummaryAsync(int limit = 5, CancellationToken cancellationToken = default)

@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using WinSight.Core;
 
 namespace WinSight.Infrastructure.Storage;
@@ -20,7 +21,7 @@ internal readonly record struct VectorMeta(
 internal sealed class CompactVectorIndex
 {
     internal const int Dimension = 768;
-    internal const int ChunkCapacity = 4096;
+    internal const int ChunkCapacity = 64;
 
     private readonly Dictionary<long, IndexedFile> files;
     private readonly Dictionary<string, long> fileIdByPath;
@@ -28,6 +29,7 @@ internal sealed class CompactVectorIndex
     private readonly Dictionary<string, byte> channelIds = new(StringComparer.Ordinal);
     private readonly List<sbyte[]> vectorChunks = [];
     private readonly List<VectorMeta[]> metaChunks = [];
+    private readonly HashSet<int> ownedMetaChunks = [];
     private int count;
     private int tombstones;
 
@@ -37,6 +39,51 @@ internal sealed class CompactVectorIndex
         fileIdByPath = new Dictionary<string, long>(files.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var kv in files)
             fileIdByPath[kv.Value.Path] = kv.Key;
+    }
+
+    private CompactVectorIndex(
+        Dictionary<long, IndexedFile> files,
+        Dictionary<string, long> fileIdByPath,
+        List<string> channels,
+        Dictionary<string, byte> channelIds,
+        List<sbyte[]> vectorChunks,
+        List<VectorMeta[]> metaChunks,
+        int count,
+        int tombstones)
+    {
+        this.files = files;
+        this.fileIdByPath = fileIdByPath;
+        this.channels = channels;
+        this.channelIds = channelIds;
+        this.vectorChunks = vectorChunks;
+        this.metaChunks = metaChunks;
+        this.count = count;
+        this.tombstones = tombstones;
+    }
+
+    /// <summary>
+    /// Creates an isolated copy for CoW patching so concurrent readers holding the previous snapshot
+    /// never observe dictionary corruption or torn chunk writes.
+    /// </summary>
+    internal CompactVectorIndex CloneForMutation()
+    {
+        var copy = new CompactVectorIndex(
+            new Dictionary<long, IndexedFile>(files),
+            new Dictionary<string, long>(fileIdByPath, StringComparer.OrdinalIgnoreCase),
+            new List<string>(channels),
+            new Dictionary<string, byte>(channelIds, StringComparer.Ordinal),
+            new List<sbyte[]>(vectorChunks),
+            new List<VectorMeta[]>(metaChunks),
+            count,
+            tombstones);
+        if (copy.vectorChunks.Count > 0 && count % ChunkCapacity != 0)
+        {
+            int tail = copy.vectorChunks.Count - 1;
+            copy.vectorChunks[tail] = (sbyte[])copy.vectorChunks[tail].Clone();
+            copy.metaChunks[tail] = (VectorMeta[])copy.metaChunks[tail].Clone();
+            copy.ownedMetaChunks.Add(tail);
+        }
+        return copy;
     }
 
     internal IReadOnlyDictionary<long, IndexedFile> Files => files;
@@ -62,6 +109,7 @@ internal sealed class CompactVectorIndex
         {
             vectorChunks.Add(new sbyte[ChunkCapacity * Dimension]);
             metaChunks.Add(new VectorMeta[ChunkCapacity]);
+            ownedMetaChunks.Add(chunkIdx);
         }
         quantized.CopyTo(vectorChunks[chunkIdx].AsSpan(slotIdx * Dimension, Dimension));
         metaChunks[chunkIdx][slotIdx] = new VectorMeta(segmentId, fileId, scale, unitHash, channelId);
@@ -86,6 +134,11 @@ internal sealed class CompactVectorIndex
             {
                 if (metas[i].FileId == fileId)
                 {
+                    if (ownedMetaChunks.Add(c))
+                    {
+                        metas = (VectorMeta[])metas.Clone();
+                        metaChunks[c] = metas;
+                    }
                     metas[i] = metas[i] with { FileId = -1 };
                     tombstones++;
                 }
@@ -248,5 +301,58 @@ internal sealed class CompactVectorIndex
         for (int i = 0; i < Dimension; i++)
             sum += quantized[i] * query[i];
         return sum * scale;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void QuantizeQuery(ReadOnlySpan<float> query, Span<short> qInt16, out float queryScale)
+    {
+        float maxAbs = 0f;
+        for (int i = 0; i < Dimension; i++)
+        {
+            float a = MathF.Abs(query[i]);
+            if (a > maxAbs) maxAbs = a;
+        }
+        if (maxAbs <= 1e-12f)
+        {
+            qInt16.Clear();
+            queryScale = 0f;
+            return;
+        }
+        queryScale = maxAbs / 16384.0f;
+        float invScale = 16384.0f / maxAbs;
+        for (int i = 0; i < Dimension; i++)
+        {
+            int q = (int)MathF.Round(query[i] * invScale);
+            qInt16[i] = (short)Math.Clamp(q, -16384, 16384);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static double DotInt8PreQuantized(ReadOnlySpan<sbyte> quantized, float vecScale, ReadOnlySpan<short> qInt16, float queryScale)
+    {
+        if (queryScale == 0f || vecScale == 0f) return 0.0;
+        if (Avx2.IsSupported && Vector256.IsHardwareAccelerated)
+        {
+            ref sbyte vecRef = ref MemoryMarshal.GetReference(quantized);
+            ref short qRef = ref MemoryMarshal.GetReference(qInt16);
+            var acc0 = Vector256<int>.Zero;
+            var acc1 = Vector256<int>.Zero;
+            for (nuint i = 0; i < Dimension; i += 32)
+            {
+                var s0 = Vector128.LoadUnsafe(ref vecRef, i);
+                var q0 = Vector256.LoadUnsafe(ref qRef, i);
+                acc0 = Avx2.Add(acc0, Avx2.MultiplyAddAdjacent(Avx2.ConvertToVector256Int16(s0), q0));
+
+                var s1 = Vector128.LoadUnsafe(ref vecRef, i + 16);
+                var q1 = Vector256.LoadUnsafe(ref qRef, i + 16);
+                acc1 = Avx2.Add(acc1, Avx2.MultiplyAddAdjacent(Avx2.ConvertToVector256Int16(s1), q1));
+            }
+            long total = Vector256.Sum(acc0) + (long)Vector256.Sum(acc1);
+            return total * ((double)vecScale * queryScale);
+        }
+        long scalar = 0;
+        for (int i = 0; i < Dimension; i++)
+            scalar += (long)quantized[i] * qInt16[i];
+        return scalar * ((double)vecScale * queryScale);
     }
 }

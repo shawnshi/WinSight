@@ -215,7 +215,8 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
     }
 
     public async Task IndexPathsAsync(IReadOnlyList<string> roots, IReadOnlyList<string> paths, bool code,
-        IProgress<IndexProgress>? progress = null, CancellationToken cancellationToken = default)
+        IProgress<IndexProgress>? progress = null, CancellationToken cancellationToken = default,
+        DocumentExtractionOptions? documentOptions = null)
     {
         ArgumentNullException.ThrowIfNull(roots);
         ArgumentNullException.ThrowIfNull(paths);
@@ -260,6 +261,10 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                         completed++;
                         progress?.Report(new("deleted", normPath, completed, failed, partial));
                     }
+                    else
+                    {
+                        await repository.AckTaskAsync(normPath, cancellationToken);
+                    }
                     continue;
                 }
 
@@ -279,7 +284,7 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                 }
                 progress?.Report(new("pending", normPath, completed, failed, partial));
 
-                var result = await ProcessAsync(candidate, code, info, new DocumentExtractionOptions(), false, cancellationToken);
+                var result = await ProcessAsync(candidate, code, info, documentOptions ?? new DocumentExtractionOptions(), false, cancellationToken);
 
                 if (result.State is "done" or "partial" || IsNativeMedia(candidate, code) && result.State == "skipped")
                 {
@@ -520,12 +525,13 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
                 { unavailable = true; continue; }
                 jobs.Add((pair.index, input));
             }
-            if (jobs.Count > 24)
+            bool truncatedForBackfill = jobs.Count > 64;
+            if (truncatedForBackfill)
             {
-                var sampled = new List<(int Index, EmbeddingInput Input)>(24);
-                for (int i = 0; i < 24; i++)
+                var sampled = new List<(int Index, EmbeddingInput Input)>(64);
+                for (int i = 0; i < 64; i++)
                 {
-                    int idx = (int)Math.Round(i * (jobs.Count - 1.0) / 23.0);
+                    int idx = (int)Math.Round(i * (jobs.Count - 1.0) / 63.0);
                     sampled.Add(jobs[idx]);
                 }
                 jobs = sampled;
@@ -555,7 +561,14 @@ public sealed class IndexingService(IIndexRepository repository, IContentExtract
             }
             if (errors.Count != 0) return new(segments, succeeded == 0 ? "failed" : "partial", Join(result.Detail, $"{errors.Count} embedding errors: {string.Join("; ", errors.Distinct().Take(3))}"), result.Info);
             if (unavailable) return new(segments, "partial", Join(result.Detail, "Semantic extraction unavailable: no embedding service or required modality capability; keyword content retained."), result.Info);
-            var encoded = result with { Segments = segments, State = segments.Length == 0 && result.State == "done" ? "skipped" : result.State };
+            var finalState = segments.Length == 0 && result.State == "done" ? "skipped" : result.State;
+            var finalDetail = result.Detail;
+            if (truncatedForBackfill && finalState == "done")
+            {
+                finalState = "partial";
+                finalDetail = Join(finalDetail, "Semantic vectors sampled inline (64 chunks); remaining chunks queued for background vector backfill.");
+            }
+            var encoded = result with { Segments = segments, State = finalState, Detail = finalDetail };
             if (!code && file.Kind == "pdf" && documentPages is not null)
             {
                 try { return await documentPages.AppendAsync(file.Path, title, encoded, embeddings, info, token); }

@@ -165,6 +165,7 @@ public sealed partial class DesktopBackend
         if(!info.RootElement.TryGetProperty("sourceSha256V1",out var value)||value.ValueKind!=JsonValueKind.String||value.GetString() is not {Length:64} expected||!expected.All(Uri.IsHexDigit))return false;
         pin.Stream.Position=0;var actual=await SHA256.HashDataAsync(pin.Stream,token);pin.Stream.Position=0;
         bool matched = CryptographicOperations.FixedTimeEquals(actual,Convert.FromHexString(expected));
+        if (VerifiedSourceFingerprints.Count > 4096) VerifiedSourceFingerprints.Clear();
         VerifiedSourceFingerprints[file.Path] = (file.Size, file.ModifiedTime, matched);
         return matched;
     }
@@ -210,7 +211,25 @@ public sealed partial class DesktopBackend
                 string? targetSheet = extension is "xlsx" or "xls" ? location?.Sheet : null;
                 string cacheKey = $"{source.File.Path}|{source.File.Size}|{source.File.ModifiedTime:F3}|{targetPage}|{targetParagraph?.ToString() ?? ""}|{targetSheet ?? ""}";
                 string cacheDir = Path.Combine(workspace, "cache");
-                string persistentRaster = Path.Combine(cacheDir, $"{HashCacheKey(cacheKey)}_{targetPage}.png");
+                string cachePrefix = $"{HashCacheKey(cacheKey)}_{targetPage}";
+                string? persistentRaster = null;
+                int? diskTotalPages = null;
+                if (Directory.Exists(cacheDir))
+                {
+                    persistentRaster = Directory.EnumerateFiles(cacheDir, $"{cachePrefix}_of_*.png").FirstOrDefault();
+                    if (persistentRaster is not null)
+                    {
+                        string stem = Path.GetFileNameWithoutExtension(persistentRaster);
+                        int marker = stem.LastIndexOf("_of_", StringComparison.Ordinal);
+                        if (marker >= 0 && int.TryParse(stem[(marker + 4)..], out int parsedTotal) && parsedTotal > 0)
+                            diskTotalPages = parsedTotal;
+                    }
+                    else
+                    {
+                        var legacy = Path.Combine(cacheDir, $"{cachePrefix}.png");
+                        if (File.Exists(legacy)) persistentRaster = legacy;
+                    }
+                }
                 bool isFallbackThumbnail = false;
                 if (RasterLruCache.TryGetValue(cacheKey, out var cachedRaster) && File.Exists(cachedRaster.RasterPath))
                 {
@@ -222,12 +241,15 @@ public sealed partial class DesktopBackend
                     resolvedPageNumber = cachedRaster.PageNumber;
                     totalPages = cachedRaster.TotalPages;
                 }
-                else if (File.Exists(persistentRaster) && TryReadPngDimensions(persistentRaster, out int diskW, out int diskH))
+                else if (persistentRaster is not null && TryReadPngDimensions(persistentRaster, out int diskW, out int diskH))
                 {
                     raster = persistentRaster;
                     width = diskW;
                     height = diskH;
-                    notice = $"已从本地缓存瞬时载入第 {targetPage} 页高清预览。";
+                    totalPages = diskTotalPages;
+                    notice = totalPages is > 1
+                        ? $"已从本地缓存瞬时载入第 {targetPage} / {totalPages} 页高清预览。"
+                        : $"已从本地缓存瞬时载入第 {targetPage} 页高清预览。";
                     try { File.SetLastWriteTimeUtc(persistentRaster, DateTime.UtcNow); } catch { }
                     RasterLruCache[cacheKey] = new(persistentRaster, diskW, diskH, notice, sourceText, DateTime.UtcNow, resolvedPageNumber, totalPages);
                 }
@@ -339,13 +361,14 @@ public sealed partial class DesktopBackend
                         try
                         {
                             Directory.CreateDirectory(cacheDir);
-                            File.Copy(raster, persistentRaster, overwrite: true);
+                            string savedDiskPath = Path.Combine(cacheDir, $"{cachePrefix}_of_{totalPages ?? 0}.png");
+                            File.Copy(raster, savedDiskPath, overwrite: true);
                             if (RasterLruCache.Count > 64)
                             {
                                 var oldest = RasterLruCache.OrderBy(kv => kv.Value.CachedAt).FirstOrDefault();
                                 if (oldest.Key is not null) RasterLruCache.TryRemove(oldest.Key, out _);
                             }
-                            RasterLruCache[cacheKey] = new(persistentRaster, width, height, notice, sourceText, DateTime.UtcNow, resolvedPageNumber, totalPages);
+                            RasterLruCache[cacheKey] = new(savedDiskPath, width, height, notice, sourceText, DateTime.UtcNow, resolvedPageNumber, totalPages);
                             PruneDiskCache(cacheDir);
                         }
                         catch { /* non-fatal cache persistence */ }
@@ -355,8 +378,9 @@ public sealed partial class DesktopBackend
             token.ThrowIfCancellationRequested();
             bool navigate=current&&source.Anchor?.Location is {} target&&NativeOfficeNavigationRequest.SupportsLocation(source.File.Path,target);
             if(navigate&&source.Anchor?.Location.Type=="slide")notice+=" 定位打开需要 PowerPoint 处于空闲状态。";
-            var snapshot=new PreviewSnapshot(sourceText,current?source.Anchor:source.Anchor is null?null:source.Anchor with{Regions=[]},raster,width,height,notice,current,navigate,pin,artifact,sourcePreviews,resolvedPageNumber,totalPages);
-            sourcePreviews[snapshot.Id]=snapshot;pin=null;artifact=null;return snapshot;
+            // Pass pin: null so finally disposes SafeFile immediately once raster/text bytes are produced, avoiding blocking FILE_SHARE_DELETE.
+            var snapshot=new PreviewSnapshot(sourceText,current?source.Anchor:source.Anchor is null?null:source.Anchor with{Regions=[]},raster,width,height,notice,current,navigate,null,artifact,sourcePreviews,resolvedPageNumber,totalPages);
+            sourcePreviews[snapshot.Id]=snapshot;artifact=null;return snapshot;
         }
         finally{try{if(artifact is not null)await artifact.DisposeAsync();}finally{pin?.Dispose();}}
     }
@@ -418,19 +442,29 @@ public sealed partial class DesktopBackend
 
     private async Task StopSourceOperationsAsync()
     {
-        sourceOperationsStop.Cancel();await sourceOperationsGate.WaitAsync();
+        var oldStop = Interlocked.Exchange(ref sourceOperationsStop, new());
+        oldStop.Cancel();
+        await sourceOperationsGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            foreach(var preview in sourcePreviews.Values) await preview.DisposeAsync();
-            if (previewServer is not null)
+            foreach(var preview in sourcePreviews.Values) await preview.DisposeAsync().ConfigureAwait(false);
+            PreviewServerClient? serverToDispose;
+            lock (previewServerLock)
             {
-                await previewServer.DisposeAsync();
+                serverToDispose = previewServer;
                 previewServer = null;
                 previewServerHost = null;
             }
-            sourceOperationsStop.Dispose();sourceOperationsStop=new();
+            if (serverToDispose is not null)
+            {
+                await serverToDispose.DisposeAsync().ConfigureAwait(false);
+            }
         }
-        finally{sourceOperationsGate.Release();}
+        finally
+        {
+            sourceOperationsGate.Release();
+            oldStop.Dispose();
+        }
     }
     private sealed class PreviewSnapshot(string excerpt,SourceAnchor? source,string? raster,int width,int height,string notice,bool current,bool navigate,SafeFile? pin,IAsyncDisposable? artifact,ConcurrentDictionary<Guid,PreviewSnapshot> owners,int pageNumber = 1,int? totalPages = null):ISourcePreview
     {

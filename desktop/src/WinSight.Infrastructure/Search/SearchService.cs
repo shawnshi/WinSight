@@ -370,6 +370,8 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
 
     private static List<CompactChannelGroup> SemanticCompact(CompactVectorIndex index, IReadOnlyDictionary<long, IndexedFile> files, float[] query, int channelLimit, CancellationToken ct, HashSet<long>? allowedSegmentIds = null)
     {
+        Span<short> qInt16 = stackalloc short[CompactVectorIndex.Dimension];
+        CompactVectorIndex.QuantizeQuery(query, qInt16, out float queryScale);
         var best = new Dictionary<(long FileId, ulong UnitHash, byte ChannelId), (long SegmentId, double Cosine)>();
         for (int c = 0; c < index.ChunkCount; c++)
         {
@@ -380,7 +382,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
                 ref readonly var m = ref metas[i];
                 if (m.FileId < 0 || !files.ContainsKey(m.FileId)) continue;
                 if (allowedSegmentIds is not null && !allowedSegmentIds.Contains(m.SegmentId)) continue;
-                double cosine = CompactVectorIndex.DotInt8(vecs.AsSpan(i * CompactVectorIndex.Dimension, CompactVectorIndex.Dimension), m.Scale, query);
+                double cosine = CompactVectorIndex.DotInt8PreQuantized(vecs.AsSpan(i * CompactVectorIndex.Dimension, CompactVectorIndex.Dimension), m.Scale, qInt16, queryScale);
                 var key = (m.FileId, m.UnitHash, m.ChannelId);
                 if (!best.TryGetValue(key, out var old) || cosine > old.Cosine)
                     best[key] = (m.SegmentId, cosine);

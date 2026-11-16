@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using WinSight.Core;
 using WinSight.Infrastructure.Indexing;
@@ -24,14 +25,22 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     private readonly Func<bool> isOnAcPower;
     private readonly TimeSpan policyPoll;
     private readonly object policyGate = new();
+    private readonly object delayedTimerGate = new();
+    private readonly SemaphoreSlim queueWorkGate = new(1, 1);
+    private readonly ConcurrentDictionary<long, Task> inflightOps = new();
+    private long nextInflightOpId;
     private readonly IncrementalIndexQueue? queue;
+    private readonly IncrementalIndexQueue? codeQueue;
     private readonly Func<IReadOnlyList<string>, IReadOnlyList<string>, bool, CancellationToken, Task>? indexPaths;
     private readonly HostSignals hostSignals;
     private readonly ResourceBudgetController budgetController;
     private CancellationTokenSource? activePolicyStop;
     private Task? activePolicyCancellation;
+    private Timer? delayedSignalTimer;
+    private long delayedSignalDueTick = long.MaxValue;
     private int disposed;
     private bool queueReconciled;
+    private bool codeQueueReconciled;
     private readonly Func<CancellationToken, Task>? releaseCaches;
     private async Task ReleaseCachesAsync()
     {
@@ -46,7 +55,8 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     public Task Completion => worker;
     public Exception? Failure => worker.Exception?.GetBaseException();
     public IncrementalIndexQueue? Queue => queue;
-    public long WatcherOverflows => queue?.WatcherOverflows ?? 0;
+    public IncrementalIndexQueue? CodeQueue => codeQueue;
+    public long WatcherOverflows => (queue?.WatcherOverflows ?? 0) + (codeQueue?.WatcherOverflows ?? 0);
     public ResourceBudgetController BudgetController => budgetController;
 
     public BackgroundIndexCoordinator(AppSettings settings, Func<IndexRequest, CancellationToken, Task> index,
@@ -58,7 +68,8 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         IncrementalIndexQueue? queue = null,
         HostSignals? hostSignals = null,
         ResourceBudgetController? budgetController = null,
-        Func<CancellationToken, Task>? releaseCaches = null)
+        Func<CancellationToken, Task>? releaseCaches = null,
+        IIndexRepository? codeRepository = null)
     {
         this.settings = settings;
         this.index = index;
@@ -71,6 +82,7 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         this.releaseCaches = releaseCaches;
         this.indexPaths = indexPaths;
         this.queue = queue ?? (repository != null ? new IncrementalIndexQueue(repository, indexPaths, onError, reconcileInterval: reconcile) : null);
+        this.codeQueue = codeRepository != null ? new IncrementalIndexQueue(codeRepository, indexPaths, onError, reconcileInterval: reconcile) : null;
         if (hostSignals != null)
         {
             this.hostSignals = hostSignals;
@@ -92,6 +104,10 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         {
             this.queue.IsBattery = () => !this.hostSignals.GetPowerInfo().IsAcPower;
         }
+        if (this.codeQueue != null)
+        {
+            this.codeQueue.IsBattery = () => !this.hostSignals.GetPowerInfo().IsAcPower;
+        }
         if (this.policyPoll <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(policyPoll));
         foreach (var root in settings.Folders.Concat(settings.CodeFolders).Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -112,8 +128,24 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
                 watcher.Renamed += Changed;
                 watcher.Error += (_, eventArgs) =>
                 {
-                    onError(eventArgs.GetException());
-                    queue?.OnWatcherError(root, eventArgs.GetException());
+                    var ex = eventArgs.GetException();
+                    onError(ex);
+                    if (this.queue != null)
+                    {
+                        foreach (var f in settings.Folders)
+                        {
+                            if (DesktopBackend.IsUnder(root, f) || DesktopBackend.IsUnder(f, root))
+                                this.queue.OnWatcherError(f, ex);
+                        }
+                    }
+                    if (this.codeQueue != null)
+                    {
+                        foreach (var f in settings.CodeFolders)
+                        {
+                            if (DesktopBackend.IsUnder(root, f) || DesktopBackend.IsUnder(f, root))
+                                this.codeQueue.OnWatcherError(f, ex);
+                        }
+                    }
                     Signal();
                 };
                 watchers.Add(watcher);
@@ -129,22 +161,131 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         Signal();
     }
 
+    private (bool IsCode, string Root)? MatchScope(string fullPath)
+    {
+        (bool IsCode, string Root, int Length)? best = null;
+        foreach (var f in settings.Folders)
+        {
+            if (DesktopBackend.IsUnder(fullPath, f) && (best is null || f.Length > best.Value.Length))
+                best = (false, f, f.Length);
+        }
+        foreach (var f in settings.CodeFolders)
+        {
+            if (DesktopBackend.IsUnder(fullPath, f) && (best is null || f.Length > best.Value.Length || (f.Length == best.Value.Length && !best.Value.IsCode)))
+                best = (true, f, f.Length);
+        }
+        return best is { } match ? (match.IsCode, match.Root) : null;
+    }
+
+    private void TrackInflight(Func<Task> start)
+    {
+        if (Volatile.Read(ref disposed) != 0) return;
+        long id = Interlocked.Increment(ref nextInflightOpId);
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        inflightOps[id] = done.Task;
+        _ = RunTrackedAsync(id, done, start);
+    }
+
+    private async Task RunTrackedAsync(long id, TaskCompletionSource done, Func<Task> start)
+    {
+        try
+        {
+            await start().ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            onError(error);
+        }
+        finally
+        {
+            inflightOps.TryRemove(id, out _);
+            done.TrySetResult();
+        }
+    }
+
+    private async Task EnqueueEventSafelyAsync(IncrementalIndexQueue targetQueue, string path, string root, bool isCode, WatcherChangeTypes changeType, string? oldPath)
+    {
+        try
+        {
+            await targetQueue.EnqueueEventAsync(path, root, isCode, changeType, oldPath, stop.Token).ConfigureAwait(false);
+            Signal();
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        catch (Exception error)
+        {
+            onError(error);
+        }
+    }
+
     private void Changed(object sender, FileSystemEventArgs args)
     {
         var ignored = ignoredRoots.Any(root => DesktopBackend.IsUnder(args.FullPath, root));
-        if (ignored && (args is not RenamedEventArgs renamed
-            || ignoredRoots.Any(root => DesktopBackend.IsUnder(renamed.OldFullPath, root)))) return;
-
-        if (queue != null)
+        if (ignored)
         {
-            var isCode = settings.CodeFolders.Any(f => DesktopBackend.IsUnder(args.FullPath, f));
-            var root = (isCode ? settings.CodeFolders : settings.Folders).FirstOrDefault(f => DesktopBackend.IsUnder(args.FullPath, f))
-                ?? Path.GetDirectoryName(args.FullPath) ?? args.FullPath;
-            _ = queue.EnqueueEventAsync(args.FullPath, root, isCode, args.ChangeType, (args as RenamedEventArgs)?.OldFullPath);
+            if (args is RenamedEventArgs renIgnored && !ignoredRoots.Any(root => DesktopBackend.IsUnder(renIgnored.OldFullPath, root)))
+            {
+                if (MatchScope(renIgnored.OldFullPath) is { } oldScope)
+                {
+                    var oldQueue = oldScope.IsCode ? codeQueue : queue;
+                    if (oldQueue != null)
+                        TrackInflight(() => EnqueueEventSafelyAsync(oldQueue, renIgnored.OldFullPath, oldScope.Root, oldScope.IsCode, WatcherChangeTypes.Deleted, null));
+                    else
+                        Signal();
+                }
+                else
+                {
+                    Signal();
+                }
+            }
+            return;
         }
-        Signal();
+
+        var newScope = MatchScope(args.FullPath);
+        if (args is RenamedEventArgs ren)
+        {
+            var oldScope = MatchScope(ren.OldFullPath);
+            if (oldScope is { } o && newScope is { } n && o.IsCode != n.IsCode)
+            {
+                var oldQueue = o.IsCode ? codeQueue : queue;
+                if (oldQueue != null) TrackInflight(() => EnqueueEventSafelyAsync(oldQueue, ren.OldFullPath, o.Root, o.IsCode, WatcherChangeTypes.Deleted, null));
+                var newQueue = n.IsCode ? codeQueue : queue;
+                if (newQueue != null) TrackInflight(() => EnqueueEventSafelyAsync(newQueue, args.FullPath, n.Root, n.IsCode, WatcherChangeTypes.Created, null));
+                return;
+            }
+        }
+
+        bool isCode = newScope?.IsCode ?? false;
+        var targetQueue = isCode ? codeQueue : queue;
+        if (targetQueue != null)
+        {
+            var root = newScope?.Root ?? Path.GetDirectoryName(args.FullPath) ?? args.FullPath;
+            TrackInflight(() => EnqueueEventSafelyAsync(targetQueue, args.FullPath, root, isCode, args.ChangeType, (args as RenamedEventArgs)?.OldFullPath));
+        }
+        else
+        {
+            Signal();
+        }
     }
     private void Signal() => signals.Writer.TryWrite(true);
+
+    private void ScheduleDelayedSignal(TimeSpan delay)
+    {
+        if (stop.IsCancellationRequested || Volatile.Read(ref disposed) != 0) return;
+        long target = Environment.TickCount64 + Math.Max(10L, (long)delay.TotalMilliseconds);
+        lock (delayedTimerGate)
+        {
+            if (stop.IsCancellationRequested || Volatile.Read(ref disposed) != 0) return;
+            if (target >= delayedSignalDueTick) return;
+            delayedSignalDueTick = target;
+            delayedSignalTimer ??= new Timer(_ =>
+            {
+                lock (delayedTimerGate) { delayedSignalDueTick = long.MaxValue; }
+                if (!stop.IsCancellationRequested && Volatile.Read(ref disposed) == 0) Signal();
+            }, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            delayedSignalTimer.Change(delay, Timeout.InfiniteTimeSpan);
+        }
+    }
+
     public void RequestReconciliation() => Signal();
 
     public void PreemptForInteractiveQuery() => budgetController.PreemptForInteractiveQuery();
@@ -160,19 +301,24 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
             }
         }
 
-        if (queue != null)
+        await queueWorkGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
             foreach (var code in new[] { false, true })
             {
+                var targetQueue = code ? codeQueue : queue;
+                if (targetQueue == null) continue;
                 var roots = code ? settings.CodeFolders : settings.Folders;
-                foreach (var root in roots)
+                var existingRoots = roots.Where(Directory.Exists).ToArray();
+                if (existingRoots.Length > 0)
                 {
-                    if (Directory.Exists(root))
-                    {
-                        await queue.ReconcileRootAsync(root, code, force: true, cancellationToken).ConfigureAwait(false);
-                    }
+                    await targetQueue.ReconcileRootsAsync(existingRoots, code, force: true, cancellationToken).ConfigureAwait(false);
                 }
             }
+        }
+        finally
+        {
+            queueWorkGate.Release();
         }
 
         budgetController.ComputeBudgets();
@@ -183,9 +329,31 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         var budgets = budgetController.ComputeBudgets();
-        if (queue != null)
+        if (queue != null || codeQueue != null)
         {
-            return await queue.GetIndexingQueueStatusAsync(budgets, cancellationToken).ConfigureAwait(false);
+            var docStatus = queue != null ? await queue.GetIndexingQueueStatusAsync(budgets, cancellationToken).ConfigureAwait(false) : null;
+            var codeStatus = codeQueue != null ? await codeQueue.GetIndexingQueueStatusAsync(budgets, cancellationToken).ConfigureAwait(false) : null;
+            if (docStatus != null && codeStatus == null) return docStatus;
+            if (codeStatus != null && docStatus == null) return codeStatus;
+            if (docStatus != null && codeStatus != null)
+            {
+                DateTimeOffset? latestReconcile = docStatus.LastReconcileUtc is null ? codeStatus.LastReconcileUtc
+                    : codeStatus.LastReconcileUtc is null ? docStatus.LastReconcileUtc
+                    : docStatus.LastReconcileUtc >= codeStatus.LastReconcileUtc ? docStatus.LastReconcileUtc : codeStatus.LastReconcileUtc;
+                string usnState = settings.Folders.Count > 0 ? docStatus.UsnState : codeStatus.UsnState;
+                return new IndexingQueueStatus(
+                    Pending: docStatus.Pending + codeStatus.Pending,
+                    Stabilizing: docStatus.Stabilizing + codeStatus.Stabilizing,
+                    Ready: docStatus.Ready + codeStatus.Ready,
+                    Running: docStatus.Running + codeStatus.Running,
+                    Failed: docStatus.Failed + codeStatus.Failed,
+                    Deferred: docStatus.Deferred + codeStatus.Deferred,
+                    Dropped: docStatus.Dropped + codeStatus.Dropped,
+                    WatcherOverflows: docStatus.WatcherOverflows + codeStatus.WatcherOverflows,
+                    LastReconcileUtc: latestReconcile,
+                    UsnState: usnState,
+                    Budgets: budgets);
+            }
         }
 
         return new IndexingQueueStatus(
@@ -235,50 +403,61 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
                 while (signals.Reader.TryRead(out _)) { }
                 if (!AllowedNow() || !indexingAllowed()) continue;
 
-                if (queue != null)
-                {
-                    // The first pass reconciles every root (offline changes); later passes only reconcile a
-                    // root after a watcher overflow, so ordinary saves stay on the per-file path.
-                    var force = !queueReconciled;
-                    foreach (var code in new[] { false, true })
-                    {
-                        var roots = code ? settings.CodeFolders : settings.Folders;
-                        foreach (var root in roots)
-                        {
-                            if (!AllowedNow() || !indexingAllowed()) break;
-                            await queue.ReconcileRootAsync(root, code, force, stop.Token).ConfigureAwait(false);
-                        }
-                    }
-                    queueReconciled = true;
-
-                    var processed = 0;
-                    try
-                    {
-                        SearchText.SetCurrentThreadQoS(highPerformance: false);
-                        processed = await queue.ProcessReadyTasksAsync(50, stop.Token).ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        SearchText.SetCurrentThreadQoS(highPerformance: true);
-                    }
-                    if (processed > 0 && indexPaths != null)
-                    {
-                        var remaining = await queue.GetTaskCountsAsync(stop.Token).ConfigureAwait(false);
-                        if (remaining.GetValueOrDefault("Pending") + remaining.GetValueOrDefault("Stabilizing") + remaining.GetValueOrDefault("Ready") > 0)
-                            Signal();
-                        continue;
-                    }
-                }
-
                 foreach (var code in new[] { false, true })
                 {
                     var roots = code ? settings.CodeFolders : settings.Folders;
                     if (roots.Count == 0) continue;
+                    var activeQueue = code ? codeQueue : queue;
                     using var policyStop = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
                     lock (policyGate) { activePolicyStop = policyStop; activePolicyCancellation = null; }
                     try
                     {
                         if (!AllowedNow() || !indexingAllowed()) break;
+                        if (activeQueue != null)
+                        {
+                            bool shouldContinue = false;
+                            await queueWorkGate.WaitAsync(policyStop.Token).ConfigureAwait(false);
+                            try
+                            {
+                                // Reconcile only on first pass, watcher overflow, or periodic interval.
+                                var force = code ? !codeQueueReconciled : !queueReconciled;
+                                if (AllowedNow() && indexingAllowed())
+                                {
+                                    await activeQueue.ReconcileRootsAsync(roots, code, force, policyStop.Token).ConfigureAwait(false);
+                                }
+                                if (AllowedNow() && indexingAllowed() && !policyStop.IsCancellationRequested)
+                                {
+                                    if (code) codeQueueReconciled = true;
+                                    else queueReconciled = true;
+                                }
+
+                                if (indexPaths != null)
+                                {
+                                    var processed = await activeQueue.ProcessReadyTasksAsync(50, policyStop.Token, batchSize: 16).ConfigureAwait(false);
+                                    var remaining = await activeQueue.GetTaskCountsAsync(policyStop.Token).ConfigureAwait(false);
+                                    if (processed > 0 && remaining.GetValueOrDefault("Ready") > 0)
+                                    {
+                                        Signal();
+                                    }
+                                    else if (remaining.GetValueOrDefault("Pending") + remaining.GetValueOrDefault("Stabilizing") + remaining.GetValueOrDefault("Ready") > 0)
+                                    {
+                                        // Tasks inside their quiet window or waiting on stabilization must be re-checked after a short delay, never triggering a full corpus walk.
+                                        ScheduleDelayedSignal(TimeSpan.FromMilliseconds(Math.Clamp(debounce.TotalMilliseconds, 100, 450)));
+                                    }
+                                    else if (await activeQueue.CountRetryableFailedTasksAsync(policyStop.Token).ConfigureAwait(false) > 0)
+                                    {
+                                        ScheduleDelayedSignal(TimeSpan.FromSeconds(5));
+                                    }
+                                    shouldContinue = true;
+                                }
+                            }
+                            finally
+                            {
+                                queueWorkGate.Release();
+                            }
+                            if (shouldContinue) continue;
+                        }
+
                         await index(new IndexRequest(roots.ToArray(), Code: code), policyStop.Token);
                     }
                     catch (OperationCanceledException) when (stop.IsCancellationRequested) { throw; }
@@ -323,7 +502,7 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
                 lastTickUtc = nowUtc;
                 if (gap > TimeSpan.FromSeconds(60))
                 {
-                    _ = HandleResumeAsync(stop.Token);
+                    TrackInflight(() => RunResumeSafelyAsync(stop.Token));
                 }
 
                 var allowed = AllowedNow();
@@ -348,9 +527,22 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
     }
 
+    private async Task RunResumeSafelyAsync(CancellationToken token)
+    {
+        try { await HandleResumeAsync(token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error) { onError(error); }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        lock (delayedTimerGate)
+        {
+            delayedSignalDueTick = long.MaxValue;
+            delayedSignalTimer?.Dispose();
+            delayedSignalTimer = null;
+        }
         var failures = new List<Exception>();
         foreach (var watcher in watchers)
         {
@@ -359,12 +551,24 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         }
         var cancellation = stop.CancelAsync();
         signals.Writer.TryComplete();
-        var settled = Task.WhenAll(worker, timer, cancellation);
+        async Task SettleAllAsync()
+        {
+            await Task.WhenAll(worker, timer, cancellation).ConfigureAwait(false);
+            while (!inflightOps.IsEmpty)
+            {
+                await Task.WhenAll(inflightOps.Values.ToArray()).ConfigureAwait(false);
+            }
+        }
+        var settled = SettleAllAsync();
         try { await settled.WaitAsync(TimeSpan.FromSeconds(10)); }
         catch (Exception error) { failures.Add(error); }
         finally
         {
-            if (settled.IsCompleted) stop.Dispose();
+            if (settled.IsCompleted)
+            {
+                stop.Dispose();
+                queueWorkGate.Dispose();
+            }
             else _ = RetireAsync(settled);
         }
         if (failures.Count != 0) throw new AggregateException("Background shutdown failed.", failures);
@@ -374,6 +578,10 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     {
         try { await settled; }
         catch (Exception error) { onError(error); }
-        finally { stop.Dispose(); }
+        finally
+        {
+            stop.Dispose();
+            queueWorkGate.Dispose();
+        }
     }
 }
