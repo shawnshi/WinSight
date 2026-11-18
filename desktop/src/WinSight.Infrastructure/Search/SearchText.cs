@@ -75,7 +75,7 @@ internal static partial class SearchText
 
         if (original.Length <= 256)
         {
-            if (NormalizedShortCache.Count > 16_384) NormalizedShortCache.Clear();
+            if (NormalizedShortCache.Count > 131_072) NormalizedShortCache.Clear();
             NormalizedShortCache[original] = result;
         }
         return result;
@@ -265,10 +265,29 @@ internal static partial class SearchText
         return string.Join(' ', tokens);
     }
 
-    // Single-character CJK function words. They match almost every Chinese unit, so counting them as query terms
-    // only dilutes coverage and drops units that contain the real content word.
+    // Single-character CJK function words and multi-character Chinese query/intent filler words.
+    // Filtering them from queries prevents high-frequency stopwords from diluting coverage or triggering slow FTS scans.
     private static readonly HashSet<string> CjkFunctionWords = new((
         "的 了 是 在 和 与 及 或 我 你 他 她 它 们 这 那 有 为 以 就 都 也 要 从 到 对 把 被 让 给 吗 呢 吧 啊 哦 之 其 而 且 等 并 但 若 则 么").Split(' '), StringComparer.Ordinal);
+
+    private static readonly HashSet<string> CjkQueryStopwords = new((
+        "帮我 帮忙 请问 查找 找一下 搜索 搜一下 查询 关于 相关 如何 怎么 怎样 为什么 哪些 哪个 什么 多少 一下 一些 一个 这个 那个 这些 那些 可以 能够 需要 应该 上周 本周 这周 上月 本月 今年 去年 最近 之前 之后 里面 其中").Split(' '), StringComparer.Ordinal);
+
+    internal static bool IsCjkFunctionWord(string token) => CjkFunctionWords.Contains(token) || CjkQueryStopwords.Contains(token);
+
+    internal static string[] CjkBigrams(string word)
+    {
+        var runes = word.EnumerateRunes().ToArray();
+        if (runes.Length < 2) return [];
+        var list = new List<string>(runes.Length - 1);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i + 1 < runes.Length; i++)
+        {
+            var term = runes[i].ToString() + runes[i + 1];
+            if (seen.Add(term)) list.Add(term);
+        }
+        return list.ToArray();
+    }
 
     /// <summary>
     /// Lexical query terms split by index: <c>Latin</c> terms go to the literal (porter) index, <c>Cjk</c> tokens come from
@@ -280,6 +299,7 @@ internal static partial class SearchText
         var latin = new List<string>();
         var cjk = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var cjkFallback = new List<string>();
         foreach (var word in Words(query).Where(w => (w.EnumerateRunes().Count() >= 2 || ContainsCjk(w) || w.All(char.IsDigit)) && !Stopwords.Contains(w)))
         {
             if (latin.Count + cjk.Count >= 64) break;
@@ -287,9 +307,17 @@ internal static partial class SearchText
             IReadOnlyList<string> tokens;
             try { tokens = NativeSegmenter.Segment(word); }
             catch (SegmenterUnavailableException) { if (seen.Add(word)) latin.Add(word); continue; }
-            var content = tokens.Where(t => t.Length != 0 && !(CjkFunctionWords.Contains(t))).ToArray();
-            foreach (var token in content.Length != 0 ? content : tokens)
-                if (token.Length != 0 && seen.Add(token)) cjk.Add(token);
+            foreach (var token in tokens)
+            {
+                if (token.Length == 0) continue;
+                if (IsCjkFunctionWord(token)) { cjkFallback.Add(token); continue; }
+                if (seen.Add(token)) cjk.Add(token);
+            }
+        }
+        if (latin.Count == 0 && cjk.Count == 0 && cjkFallback.Count > 0)
+        {
+            foreach (var token in cjkFallback)
+                if (seen.Add(token)) cjk.Add(token);
         }
         return (latin.ToArray(), cjk.ToArray());
     }

@@ -36,7 +36,7 @@ internal sealed class CompactVectorIndex
     internal CompactVectorIndex(Dictionary<long, IndexedFile> files)
     {
         this.files = files;
-        fileIdByPath = new Dictionary<string, long>(files.Count, StringComparer.OrdinalIgnoreCase);
+        fileIdByPath = new Dictionary<string, long>(files.Count, StringComparer.Ordinal);
         foreach (var kv in files)
             fileIdByPath[kv.Value.Path] = kv.Key;
     }
@@ -69,7 +69,7 @@ internal sealed class CompactVectorIndex
     {
         var copy = new CompactVectorIndex(
             new Dictionary<long, IndexedFile>(files),
-            new Dictionary<string, long>(fileIdByPath, StringComparer.OrdinalIgnoreCase),
+            new Dictionary<string, long>(fileIdByPath, StringComparer.Ordinal),
             new List<string>(channels),
             new Dictionary<string, byte>(channelIds, StringComparer.Ordinal),
             new List<sbyte[]>(vectorChunks),
@@ -114,6 +114,19 @@ internal sealed class CompactVectorIndex
         quantized.CopyTo(vectorChunks[chunkIdx].AsSpan(slotIdx * Dimension, Dimension));
         metaChunks[chunkIdx][slotIdx] = new VectorMeta(segmentId, fileId, scale, unitHash, channelId);
         count++;
+    }
+
+    internal void UpdateAnchorMeta(int globalIndex, ulong unitHash, byte channelId)
+    {
+        int c = globalIndex / ChunkCapacity;
+        int s = globalIndex % ChunkCapacity;
+        var metas = metaChunks[c];
+        if (ownedMetaChunks.Add(c))
+        {
+            metas = (VectorMeta[])metas.Clone();
+            metaChunks[c] = metas;
+        }
+        metas[s] = metas[s] with { UnitHash = unitHash, ChannelId = channelId };
     }
 
     internal void MarkFileRemoved(string path)
@@ -264,7 +277,9 @@ internal sealed class CompactVectorIndex
         }
     }
 
-    internal static ulong ComputeUnitHash(string unit)
+    internal static ulong ComputeUnitHash(string unit) => ComputeUnitHash(unit.AsSpan());
+
+    internal static ulong ComputeUnitHash(ReadOnlySpan<char> unit)
     {
         ulong hash = 14695981039346656037UL;
         foreach (char c in unit)

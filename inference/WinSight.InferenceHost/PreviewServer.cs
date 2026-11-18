@@ -249,9 +249,22 @@ internal static class PreviewServer
         private readonly BlockingCollection<(Action Run, TaskCompletionSource<object?> Done)> queue = new();
         private readonly Thread staThread;
         private readonly Timer idleTimer;
+        private readonly string warmCacheDir = Path.Combine(Path.GetTempPath(), $"ws-office-warm-{Environment.ProcessId}");
         private object? wordApp;
         private object? excelApp;
         private object? pptApp;
+        private string? warmWordSource, warmWordCopy;
+        private long warmWordSize;
+        private DateTime warmWordMtime;
+        private object? warmWordDoc;
+        private string? warmExcelSource, warmExcelCopy;
+        private long warmExcelSize;
+        private DateTime warmExcelMtime;
+        private object? warmExcelBook;
+        private string? warmPptSource, warmPptCopy;
+        private long warmPptSize;
+        private DateTime warmPptMtime;
+        private object? warmPptDeck;
         private bool ownsWord;
         private bool ownsExcel;
         private bool ownsPpt;
@@ -270,7 +283,7 @@ internal static class PreviewServer
 
         private void CheckIdle()
         {
-            if ((DateTime.UtcNow - lastActivity) < TimeSpan.FromSeconds(120)) return;
+            if ((DateTime.UtcNow - lastActivity) < TimeSpan.FromSeconds(240)) return;
             if (wordApp is null && excelApp is null && pptApp is null) return;
             if (queue.IsAddingCompleted || queue.Count > 0) return;
             if (Interlocked.CompareExchange(ref idleCheckQueued, 1, 0) != 0) return;
@@ -281,7 +294,7 @@ internal static class PreviewServer
                 {
                     try
                     {
-                        if ((DateTime.UtcNow - lastActivity) >= TimeSpan.FromSeconds(120))
+                        if ((DateTime.UtcNow - lastActivity) >= TimeSpan.FromSeconds(240))
                             ReleaseAllApps();
                     }
                     finally
@@ -337,154 +350,222 @@ internal static class PreviewServer
             }, TaskContinuationOptions.ExecuteSynchronously);
         }
 
+        private static void CloseWarmHandle(ref object? comHandle, ref string? source, ref string? copy, string closeMethod, params object?[] closeArgs)
+        {
+            var raw = comHandle;
+            var copyPath = copy;
+            comHandle = null;
+            source = null;
+            copy = null;
+            if (raw is not null)
+            {
+                var refs = new List<object>();
+                try
+                {
+                    var obj = new NativeMediaCommand.OfficeObject(raw, refs);
+                    obj.Call(closeMethod, closeArgs);
+                }
+                catch { }
+                finally
+                {
+                    for (int n = refs.Count - 1; n >= 0; n--)
+                        if (!ReferenceEquals(refs[n], raw) && Marshal.IsComObject(refs[n]))
+                            try { Marshal.FinalReleaseComObject(refs[n]); } catch { }
+                    if (Marshal.IsComObject(raw))
+                        try { Marshal.FinalReleaseComObject(raw); } catch { }
+                }
+            }
+            if (copyPath is not null) { try { File.Delete(copyPath); } catch { } }
+        }
+
         internal (int ResolvedPage, int TotalPages) ExportWordSlice(string input, string tempPdf, int pageNumber, int? paragraphNumber)
         {
-            string dir = Path.GetDirectoryName(tempPdf)!;
-            var copy = Path.Combine(dir, "input" + Path.GetExtension(input));
-            using (var sourceStream = NativeMediaCommand.OpenPinnedFilePublic(input, 256L * 1024 * 1024))
-            using (var copyStream = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                sourceStream.CopyTo(copyStream);
+            var fi = new FileInfo(input);
+            long sz = fi.Exists ? fi.Length : -1;
+            DateTime mt = fi.Exists ? fi.LastWriteTimeUtc : DateTime.MinValue;
 
-            try
+            for (int attempt = 0; attempt < 2; attempt++)
             {
-                for (int attempt = 0; attempt < 2; attempt++)
+                try
                 {
+                    var appObj = EnsureWord();
+                    var com = new List<object>();
                     try
                     {
-                        var appObj = EnsureWord();
-                        var com = new List<object>();
-                        try
+                        NativeMediaCommand.OfficeObject doc;
+                        if (warmWordDoc is not null && string.Equals(warmWordSource, input, StringComparison.OrdinalIgnoreCase)
+                            && warmWordSize == sz && warmWordMtime == mt && warmWordCopy is not null && File.Exists(warmWordCopy))
                         {
+                            doc = new NativeMediaCommand.OfficeObject(warmWordDoc, com);
+                        }
+                        else
+                        {
+                            CloseWarmHandle(ref warmWordDoc, ref warmWordSource, ref warmWordCopy, "Close", false);
+                            Directory.CreateDirectory(warmCacheDir);
+                            string copy = Path.Combine(warmCacheDir, $"word-{Guid.NewGuid():N}{Path.GetExtension(input)}");
+                            using (var sourceStream = NativeMediaCommand.OpenPinnedFilePublic(input, 256L * 1024 * 1024))
+                            using (var copyStream = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                                sourceStream.CopyTo(copyStream);
                             var app = new NativeMediaCommand.OfficeObject(appObj, com);
                             var docs = app.Object("Documents");
-                            var doc = docs.Object("Open", true, copy, false, true, false, "__winsight_invalid_pwd__", "__winsight_invalid_pwd__", Type.Missing, Type.Missing, Type.Missing, Type.Missing, Type.Missing, false);
-                            int resolvedPage = Math.Max(1, pageNumber);
-                            if (paragraphNumber is > 0)
-                            {
-                                try
-                                {
-                                    var paras = doc.Object("Paragraphs");
-                                    int paraCount = paras.Get<int>("Count");
-                                    if (paraCount > 0)
-                                    {
-                                        int targetPara = Math.Clamp(paragraphNumber.Value, 1, paraCount);
-                                        var para = paras.Object("Item", true, targetPara);
-                                        var range = para.Object("Range");
-                                        int p = Convert.ToInt32(range.Get<object>("Information", 3));
-                                        if (p >= 1) resolvedPage = p;
-                                    }
-                                }
-                                catch { }
-                            }
-                            int totalPages;
                             try
                             {
-                                doc.Call("ExportAsFixedFormat", tempPdf, 17, false, 1, 3, resolvedPage, resolvedPage);
-                                totalPages = resolvedPage;
+                                doc = docs.Object("Open", true, copy, false, true, false, "__winsight_invalid_pwd__", "__winsight_invalid_pwd__", Type.Missing, Type.Missing, Type.Missing, Type.Missing, Type.Missing, false);
+                                warmWordDoc = doc.Value;
+                                warmWordSource = input;
+                                warmWordCopy = copy;
+                                warmWordSize = sz;
+                                warmWordMtime = mt;
                             }
-                            catch when (resolvedPage > 1)
+                            catch
                             {
-                                resolvedPage = 1;
-                                totalPages = 1;
-                                doc.Call("ExportAsFixedFormat", tempPdf, 17, false, 1, 3, 1, 1);
+                                try { File.Delete(copy); } catch { }
+                                throw;
                             }
-                            try { doc.Call("Close", false); } catch { }
-                            return (resolvedPage, totalPages);
                         }
-                        finally
+
+                        int resolvedPage = Math.Max(1, pageNumber);
+                        if (paragraphNumber is > 0)
                         {
-                            for (int n = com.Count - 1; n >= 0; n--)
-                                if (!ReferenceEquals(com[n], wordApp) && Marshal.IsComObject(com[n]))
-                                    Marshal.FinalReleaseComObject(com[n]);
+                            try
+                            {
+                                var paras = doc.Object("Paragraphs");
+                                int paraCount = paras.Get<int>("Count");
+                                if (paraCount > 0)
+                                {
+                                    int targetPara = Math.Clamp(paragraphNumber.Value, 1, paraCount);
+                                    var para = paras.Object("Item", true, targetPara);
+                                    var range = para.Object("Range");
+                                    int p = Convert.ToInt32(range.Get<object>("Information", 3));
+                                    if (p >= 1) resolvedPage = p;
+                                }
+                            }
+                            catch { }
                         }
+                        int totalPages;
+                        try
+                        {
+                            doc.Call("ExportAsFixedFormat", tempPdf, 17, false, 1, 3, resolvedPage, resolvedPage);
+                            totalPages = resolvedPage;
+                        }
+                        catch when (resolvedPage > 1)
+                        {
+                            resolvedPage = 1;
+                            totalPages = 1;
+                            doc.Call("ExportAsFixedFormat", tempPdf, 17, false, 1, 3, 1, 1);
+                        }
+                        return (resolvedPage, totalPages);
                     }
-                    catch (COMException) when (attempt == 0)
+                    finally
                     {
-                        bool wasOwned = ownsWord;
-                        ownsWord = false;
-                        ReleaseCom(ref wordApp, quit: wasOwned, "Documents", saveFalseArg: true);
+                        for (int n = com.Count - 1; n >= 0; n--)
+                            if (!ReferenceEquals(com[n], wordApp) && !ReferenceEquals(com[n], warmWordDoc) && Marshal.IsComObject(com[n]))
+                                try { Marshal.FinalReleaseComObject(com[n]); } catch { }
                     }
                 }
-                throw new IOException("Word automation failed.");
+                catch (COMException) when (attempt == 0)
+                {
+                    CloseWarmHandle(ref warmWordDoc, ref warmWordSource, ref warmWordCopy, "Close", false);
+                    bool wasOwned = ownsWord;
+                    ownsWord = false;
+                    ReleaseCom(ref wordApp, quit: wasOwned, "Documents", saveFalseArg: true);
+                }
             }
-            finally
-            {
-                try { File.Delete(copy); } catch { }
-            }
+            throw new IOException("Word automation failed.");
         }
 
         internal void ExportExcelSlice(string input, string tempPdf, int pageNumber, string? sheetName)
         {
-            string dir = Path.GetDirectoryName(tempPdf)!;
-            var copy = Path.Combine(dir, "input" + Path.GetExtension(input));
-            using (var sourceStream = NativeMediaCommand.OpenPinnedFilePublic(input, 256L * 1024 * 1024))
-            using (var copyStream = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                sourceStream.CopyTo(copyStream);
+            var fi = new FileInfo(input);
+            long sz = fi.Exists ? fi.Length : -1;
+            DateTime mt = fi.Exists ? fi.LastWriteTimeUtc : DateTime.MinValue;
 
-            try
+            for (int attempt = 0; attempt < 2; attempt++)
             {
-                for (int attempt = 0; attempt < 2; attempt++)
+                try
                 {
+                    var appObj = EnsureExcel();
+                    var com = new List<object>();
                     try
                     {
-                        var appObj = EnsureExcel();
-                        var com = new List<object>();
-                        try
+                        NativeMediaCommand.OfficeObject book;
+                        if (warmExcelBook is not null && string.Equals(warmExcelSource, input, StringComparison.OrdinalIgnoreCase)
+                            && warmExcelSize == sz && warmExcelMtime == mt && warmExcelCopy is not null && File.Exists(warmExcelCopy))
                         {
+                            book = new NativeMediaCommand.OfficeObject(warmExcelBook, com);
+                        }
+                        else
+                        {
+                            CloseWarmHandle(ref warmExcelBook, ref warmExcelSource, ref warmExcelCopy, "Close", false);
+                            Directory.CreateDirectory(warmCacheDir);
+                            string copy = Path.Combine(warmCacheDir, $"excel-{Guid.NewGuid():N}{Path.GetExtension(input)}");
+                            using (var sourceStream = NativeMediaCommand.OpenPinnedFilePublic(input, 256L * 1024 * 1024))
+                            using (var copyStream = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                                sourceStream.CopyTo(copyStream);
                             var app = new NativeMediaCommand.OfficeObject(appObj, com);
                             var workbooks = app.Object("Workbooks");
-                            var book = workbooks.Object("Open", true, copy, 0, true, Type.Missing, "__winsight_invalid_pwd__");
-                            var target = book;
-                            if (!string.IsNullOrWhiteSpace(sheetName))
-                            {
-                                try
-                                {
-                                    var sheets = book.Object("Worksheets");
-                                    target = sheets.Object("Item", false, sheetName);
-                                }
-                                catch { target = book; }
-                            }
-                            int safePage = Math.Max(1, pageNumber);
                             try
                             {
-                                target.Call("ExportAsFixedFormat", 0, tempPdf, 0, true, true, safePage, safePage, false);
+                                book = workbooks.Object("Open", true, copy, 0, true, Type.Missing, "__winsight_invalid_pwd__");
+                                warmExcelBook = book.Value;
+                                warmExcelSource = input;
+                                warmExcelCopy = copy;
+                                warmExcelSize = sz;
+                                warmExcelMtime = mt;
                             }
                             catch
                             {
-                                if (safePage > 1)
-                                {
-                                    try { target.Call("ExportAsFixedFormat", 0, tempPdf, 0, true, true, 1, 1, false); }
-                                    catch { book.Call("ExportAsFixedFormat", 0, tempPdf, 0, true, true, 1, 1, false); }
-                                }
-                                else if (!ReferenceEquals(target, book))
-                                {
-                                    book.Call("ExportAsFixedFormat", 0, tempPdf, 0, true, true, 1, 1, false);
-                                }
-                                else throw;
+                                try { File.Delete(copy); } catch { }
+                                throw;
                             }
-                            try { book.Call("Close", false); } catch { }
-                            return;
                         }
-                        finally
+
+                        var target = book;
+                        if (!string.IsNullOrWhiteSpace(sheetName))
                         {
-                            for (int n = com.Count - 1; n >= 0; n--)
-                                if (!ReferenceEquals(com[n], excelApp) && Marshal.IsComObject(com[n]))
-                                    Marshal.FinalReleaseComObject(com[n]);
+                            try
+                            {
+                                var sheets = book.Object("Worksheets");
+                                target = sheets.Object("Item", false, sheetName);
+                            }
+                            catch { target = book; }
                         }
+                        int safePage = Math.Max(1, pageNumber);
+                        try
+                        {
+                            target.Call("ExportAsFixedFormat", 0, tempPdf, 0, true, true, safePage, safePage, false);
+                        }
+                        catch
+                        {
+                            if (safePage > 1)
+                            {
+                                try { target.Call("ExportAsFixedFormat", 0, tempPdf, 0, true, true, 1, 1, false); }
+                                catch { book.Call("ExportAsFixedFormat", 0, tempPdf, 0, true, true, 1, 1, false); }
+                            }
+                            else if (!ReferenceEquals(target, book))
+                            {
+                                book.Call("ExportAsFixedFormat", 0, tempPdf, 0, true, true, 1, 1, false);
+                            }
+                            else throw;
+                        }
+                        return;
                     }
-                    catch (COMException) when (attempt == 0)
+                    finally
                     {
-                        bool wasOwned = ownsExcel;
-                        ownsExcel = false;
-                        ReleaseCom(ref excelApp, quit: wasOwned, "Workbooks", saveFalseArg: false);
+                        for (int n = com.Count - 1; n >= 0; n--)
+                            if (!ReferenceEquals(com[n], excelApp) && !ReferenceEquals(com[n], warmExcelBook) && Marshal.IsComObject(com[n]))
+                                try { Marshal.FinalReleaseComObject(com[n]); } catch { }
                     }
                 }
-                throw new IOException("Excel automation failed.");
+                catch (COMException) when (attempt == 0)
+                {
+                    CloseWarmHandle(ref warmExcelBook, ref warmExcelSource, ref warmExcelCopy, "Close", false);
+                    bool wasOwned = ownsExcel;
+                    ownsExcel = false;
+                    ReleaseCom(ref excelApp, quit: wasOwned, "Workbooks", saveFalseArg: false);
+                }
             }
-            finally
-            {
-                try { File.Delete(copy); } catch { }
-            }
+            throw new IOException("Excel automation failed.");
         }
 
         internal object RenderPresentationSlide(string requestPath)
@@ -514,7 +595,9 @@ internal static class PreviewServer
             catch (AbandonedMutexException) { acquired = true; }
             if (!acquired) return Deferred("renderer-busy");
 
-            string? copy = null;
+            var fi = new FileInfo(input);
+            long sz = fi.Exists ? fi.Length : -1;
+            DateTime mt = fi.Exists ? fi.LastWriteTimeUtc : DateTime.MinValue;
             try
             {
                 if (!pptPublisherVerified)
@@ -524,10 +607,6 @@ internal static class PreviewServer
                 }
 
                 Directory.CreateDirectory(output);
-                copy = Path.Combine(output, "input.pptx");
-                source.Position = 0;
-                using (var writer = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                    source.CopyTo(writer);
 
                 for (int attempt = 0; attempt < 2; attempt++)
                 {
@@ -538,77 +617,95 @@ internal static class PreviewServer
                         try
                         {
                             var app = new NativeMediaCommand.OfficeObject(appObj, com);
-                            var decks = app.Object("Presentations");
-                            int security = app.Get<int>("AutomationSecurity");
                             NativeMediaCommand.OfficeObject deck;
-                            try
+                            if (warmPptDeck is not null && string.Equals(warmPptSource, input, StringComparison.OrdinalIgnoreCase)
+                                && warmPptSize == sz && warmPptMtime == mt && warmPptCopy is not null && File.Exists(warmPptCopy))
                             {
-                                app.Set("AutomationSecurity", 3);
-                                deck = decks.Object("Open", true, copy, -1, -1, 0);
+                                deck = new NativeMediaCommand.OfficeObject(warmPptDeck, com);
                             }
-                            finally
+                            else
                             {
-                                try { app.Set("AutomationSecurity", security); } catch { }
-                            }
-                            try
-                            {
-                                var slides = deck.Object("Slides");
-                                int count = slides.Get<int>("Count");
-                                if (count is < 1 or > 5000) throw new InvalidDataException("Unsupported presentation slide count.");
-                                int targetSlide = Math.Clamp(first, 1, count);
-                                var setup = deck.Object("PageSetup");
-                                double w = Convert.ToDouble(setup.Get<object>("SlideWidth"));
-                                double h = Convert.ToDouble(setup.Get<object>("SlideHeight"));
-                                double scale = edge / Math.Max(w, h);
-                                int width = Math.Max(1, (int)Math.Round(w * scale));
-                                int height = Math.Max(1, (int)Math.Round(h * scale));
-                                var slide = slides.Object("Item", true, targetSlide);
-                                var transition = slide.Object("SlideShowTransition");
-                                bool hidden = transition.Get<int>("Hidden") == -1;
-                                string path = Path.Combine(output, "page.png");
-                                var raw = Path.Combine(output, "raw.png");
-                                slide.Call("Export", raw, "PNG", width, height);
-                                var ihdr = new byte[24];
-                                using (var rawPin = NativeMediaCommand.OpenPinnedFilePublic(raw, 32L * 1024 * 1024))
+                                CloseWarmHandle(ref warmPptDeck, ref warmPptSource, ref warmPptCopy, "Close");
+                                Directory.CreateDirectory(warmCacheDir);
+                                string copy = Path.Combine(warmCacheDir, $"ppt-{Guid.NewGuid():N}.pptx");
+                                source.Position = 0;
+                                using (var writer = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                                    source.CopyTo(writer);
+                                var decks = app.Object("Presentations");
+                                int security = app.Get<int>("AutomationSecurity");
+                                try
                                 {
-                                    if (rawPin.Read(ihdr) < 24 || BinaryPrimitives.ReadInt32BigEndian(ihdr.AsSpan(16, 4)) != width || BinaryPrimitives.ReadInt32BigEndian(ihdr.AsSpan(20, 4)) != height)
-                                    {
-                                        rawPin.Dispose();
-                                        NativeMediaCommand.CanonicalSlidePublic(raw, path, width, height);
-                                        File.Delete(raw);
-                                    }
-                                    else
-                                    {
-                                        rawPin.Dispose();
-                                        File.Move(raw, path);
-                                    }
+                                    app.Set("AutomationSecurity", 3);
+                                    deck = decks.Object("Open", true, copy, -1, -1, 0);
+                                    warmPptDeck = deck.Value;
+                                    warmPptSource = input;
+                                    warmPptCopy = copy;
+                                    warmPptSize = sz;
+                                    warmPptMtime = mt;
                                 }
-                                return new
+                                catch
                                 {
-                                    protocol = 1,
-                                    inputPath = input,
-                                    state = "done",
-                                    reason = "",
-                                    officeVersion = version,
-                                    slideCount = count,
-                                    renderPolicy = "powerpoint-slide-export-png-v1",
-                                    slides = new[] { new { number = targetSlide, width, height, hidden, artifact = "page.png" } }
-                                };
+                                    try { File.Delete(copy); } catch { }
+                                    throw;
+                                }
+                                finally
+                                {
+                                    try { app.Set("AutomationSecurity", security); } catch { }
+                                }
                             }
-                            finally
+                            var slides = deck.Object("Slides");
+                            int count = slides.Get<int>("Count");
+                            if (count is < 1 or > 5000) throw new InvalidDataException("Unsupported presentation slide count.");
+                            int targetSlide = Math.Clamp(first, 1, count);
+                            var setup = deck.Object("PageSetup");
+                            double w = Convert.ToDouble(setup.Get<object>("SlideWidth"));
+                            double h = Convert.ToDouble(setup.Get<object>("SlideHeight"));
+                            double scale = edge / Math.Max(w, h);
+                            int width = Math.Max(1, (int)Math.Round(w * scale));
+                            int height = Math.Max(1, (int)Math.Round(h * scale));
+                            var slide = slides.Object("Item", true, targetSlide);
+                            var transition = slide.Object("SlideShowTransition");
+                            bool hidden = transition.Get<int>("Hidden") == -1;
+                            string path = Path.Combine(output, "page.png");
+                            var raw = Path.Combine(output, "raw.png");
+                            slide.Call("Export", raw, "PNG", width, height);
+                            var ihdr = new byte[24];
+                            using (var rawPin = NativeMediaCommand.OpenPinnedFilePublic(raw, 32L * 1024 * 1024))
                             {
-                                try { deck.Call("Close"); } catch { }
+                                if (rawPin.Read(ihdr) < 24 || BinaryPrimitives.ReadInt32BigEndian(ihdr.AsSpan(16, 4)) != width || BinaryPrimitives.ReadInt32BigEndian(ihdr.AsSpan(20, 4)) != height)
+                                {
+                                    rawPin.Dispose();
+                                    NativeMediaCommand.CanonicalSlidePublic(raw, path, width, height);
+                                    File.Delete(raw);
+                                }
+                                else
+                                {
+                                    rawPin.Dispose();
+                                    File.Move(raw, path);
+                                }
                             }
+                            return new
+                            {
+                                protocol = 1,
+                                inputPath = input,
+                                state = "done",
+                                reason = "",
+                                officeVersion = version,
+                                slideCount = count,
+                                renderPolicy = "powerpoint-slide-export-png-v1",
+                                slides = new[] { new { number = targetSlide, width, height, hidden, artifact = "page.png" } }
+                            };
                         }
                         finally
                         {
                             for (int n = com.Count - 1; n >= 0; n--)
-                                if (!ReferenceEquals(com[n], pptApp) && Marshal.IsComObject(com[n]))
-                                    Marshal.FinalReleaseComObject(com[n]);
+                                if (!ReferenceEquals(com[n], pptApp) && !ReferenceEquals(com[n], warmPptDeck) && Marshal.IsComObject(com[n]))
+                                    try { Marshal.FinalReleaseComObject(com[n]); } catch { }
                         }
                     }
                     catch (COMException) when (attempt == 0)
                     {
+                        CloseWarmHandle(ref warmPptDeck, ref warmPptSource, ref warmPptCopy, "Close");
                         bool wasOwned = ownsPpt;
                         ownsPpt = false;
                         ReleaseCom(ref pptApp, quit: wasOwned, "Presentations", saveFalseArg: false);
@@ -619,7 +716,6 @@ internal static class PreviewServer
             finally
             {
                 try { pptMutex.ReleaseMutex(); } catch { }
-                if (copy is not null) { try { File.Delete(copy); } catch { } }
             }
         }
 
@@ -740,10 +836,13 @@ internal static class PreviewServer
 
         private void ReleaseAllApps()
         {
+            CloseWarmHandle(ref warmWordDoc, ref warmWordSource, ref warmWordCopy, "Close", false);
             bool wasWord = ownsWord; ownsWord = false;
             ReleaseCom(ref wordApp, quit: wasWord, "Documents", saveFalseArg: true);
+            CloseWarmHandle(ref warmExcelBook, ref warmExcelSource, ref warmExcelCopy, "Close", false);
             bool wasExcel = ownsExcel; ownsExcel = false;
             ReleaseCom(ref excelApp, quit: wasExcel, "Workbooks", saveFalseArg: false);
+            CloseWarmHandle(ref warmPptDeck, ref warmPptSource, ref warmPptCopy, "Close");
             bool wasPpt = ownsPpt; ownsPpt = false;
             ReleaseCom(ref pptApp, quit: wasPpt, "Presentations", saveFalseArg: false);
         }
@@ -799,6 +898,7 @@ internal static class PreviewServer
                 CloseHandle(officeJobHandle);
                 officeJobHandle = IntPtr.Zero;
             }
+            try { if (Directory.Exists(warmCacheDir)) Directory.Delete(warmCacheDir, recursive: true); } catch { }
         }
 
         public void Dispose() => Shutdown();

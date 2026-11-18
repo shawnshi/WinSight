@@ -208,7 +208,7 @@ class NativeSourceTests(unittest.TestCase):
                 confined(ROOT, name)
 
     def test_license_attribution_is_retained(self):
-        for name in ("LICENSE", "NOTICE", "licenses/DigUp-MIT.txt", "licenses/DigUp-Acknowledgements.txt", "desktop/licenses/DigUp-MIT.txt", "licenses/historical/swift-LICENSE.txt"):
+        for name in ("LICENSE", "NOTICE", "desktop/THIRD-PARTY-NOTICES.txt", "docs/media-attribution.md"):
             self.assertTrue((ROOT / name).is_file(), name)
 
     def test_ci_targets_native_tokenizer_not_retired_shell(self):

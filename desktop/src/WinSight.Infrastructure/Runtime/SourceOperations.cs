@@ -115,6 +115,8 @@ public sealed partial class DesktopBackend
         catch { return false; }
     }
 
+    private (AppSettings Settings, AppSettings InMemRef, DateTime LastWriteUtc, long Length)? cachedPreviewSettings;
+
     private async Task<(IndexedFile File,SourceAnchor? Anchor,string Text,AppSettings Settings)> SourceSnapshotAsync(SearchHit hit,bool code,CancellationToken token)
     {
         ArgumentNullException.ThrowIfNull(hit);MediaTaskFiles.LocalPath(hit.Path);
@@ -122,7 +124,21 @@ public sealed partial class DesktopBackend
         try
         {
             ObjectDisposedException.ThrowIf(disposed||stopping!=0,this);
-            var fresh=await settingsStore.LoadAsync(token);
+            string settingsPath = Path.Combine(dataDirectory, "settings.json");
+            var settingsFi = new FileInfo(settingsPath);
+            DateTime mtime = settingsFi.Exists ? settingsFi.LastWriteTimeUtc : DateTime.MinValue;
+            long len = settingsFi.Exists ? settingsFi.Length : -1;
+            AppSettings fresh;
+            var currentMemSettings = settings;
+            if (cachedPreviewSettings is { } cs && ReferenceEquals(cs.InMemRef, currentMemSettings) && cs.LastWriteUtc == mtime && cs.Length == len)
+            {
+                fresh = cs.Settings;
+            }
+            else
+            {
+                fresh = await settingsStore.LoadAsync(token);
+                cachedPreviewSettings = (fresh, currentMemSettings, mtime, len);
+            }
             string freshIndex=fresh.IndexDirectory??Path.Combine(dataDirectory,"index");
             if(!PathsEqual(freshIndex,IndexDirectory))throw new InvalidOperationException("Index configuration changed; reload settings before preview.");
             bool allowed=!IsUnder(hit.Path,dataDirectory)&&!IsUnder(hit.Path,freshIndex)
@@ -131,7 +147,10 @@ public sealed partial class DesktopBackend
             if(!allowed||!code&&fresh.SkipTypes.Any(skip=>skip.TrimStart('.').Equals(extension,StringComparison.OrdinalIgnoreCase)||skip.Equals(hit.Kind,StringComparison.OrdinalIgnoreCase)))
                 throw new UnauthorizedAccessException("Source is outside the current authorized selection or excluded.");
             var repository=(await GetRepositoriesAsync(token))[code?1:0];
-            var file=await repository.GetFileAsync(hit.Path,token)??throw new InvalidOperationException("Source result is no longer indexed.");
+            var file=(repository is Storage.SqliteIndexRepository sqliteRepo
+                ? await sqliteRepo.GetFileWithoutVectorsAsync(hit.Path,token)
+                : await repository.GetFileAsync(hit.Path,token))
+                ??throw new InvalidOperationException("Source result is no longer indexed.");
             if(file.Id!=hit.FileId)throw new InvalidOperationException("Source result is stale; search again.");
             SourceAnchor? anchor=null;IReadOnlyList<IndexSegment> units=[];
             if(hit.Source is not null)
@@ -150,25 +169,170 @@ public sealed partial class DesktopBackend
         finally{lifecycle.Release();}
     }
     private sealed record CachedRasterEntry(string RasterPath, int PixelWidth, int PixelHeight, string Notice, string SourceText, DateTime CachedAt, int PageNumber = 1, int? TotalPages = null);
-    private static readonly ConcurrentDictionary<string, CachedRasterEntry> RasterLruCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, CachedRasterEntry> RasterLruCache = new(StringComparer.OrdinalIgnoreCase);
 
-    private static readonly ConcurrentDictionary<string, (long Size, double Mtime, bool Current)> VerifiedSourceFingerprints = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (long Size, double Mtime, ulong EdgeHash, string ExpectedSha256, bool Current)> VerifiedSourceFingerprints = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> PlainTextPreviewExtensions = FilePolicy.Set("txt text md markdown csv tsv log html htm json xml yaml yml toml ini cfg conf");
+    private readonly ConcurrentDictionary<long, Task> activePrefetches = new();
+    private long nextPrefetchId;
 
-    private static async Task<bool> CurrentSourceAsync(IndexedFile file,SafeFile pin,CancellationToken token)
+    private static ulong ComputeEdgeChecksum(Stream stream)
     {
-        if(file.Info is null)return false;
-        if(pin.Stream!.Length != file.Size) return false;
-        if(VerifiedSourceFingerprints.TryGetValue(file.Path, out var cached) && cached.Size == file.Size && Math.Abs(cached.Mtime - file.ModifiedTime) < 0.001)
-            return cached.Current;
+        const int edgeBytes = 4096;
+        long len = stream.Length;
+        Span<byte> buf = stackalloc byte[edgeBytes];
+        ulong hash = 14695981039346656037UL;
+        static ulong Mix(ulong h, ReadOnlySpan<byte> span)
+        {
+            foreach (byte b in span)
+            {
+                h ^= b;
+                h *= 1099511628211UL;
+            }
+            return h;
+        }
+        stream.Position = 0;
+        int headTarget = (int)Math.Min(edgeBytes, len);
+        int headRead = 0;
+        while (headRead < headTarget)
+        {
+            int n = stream.Read(buf.Slice(headRead, headTarget - headRead));
+            if (n <= 0) break;
+            headRead += n;
+        }
+        hash = Mix(hash, buf[..headRead]);
+        if (len > headTarget)
+        {
+            long tailPos = Math.Max(headTarget, len - edgeBytes);
+            stream.Position = tailPos;
+            int tailTarget = (int)Math.Min(edgeBytes, len - tailPos);
+            int tailRead = 0;
+            while (tailRead < tailTarget)
+            {
+                int n = stream.Read(buf.Slice(tailRead, tailTarget - tailRead));
+                if (n <= 0) break;
+                tailRead += n;
+            }
+            hash = Mix(hash, buf[..tailRead]);
+        }
+        stream.Position = 0;
+        return hash;
+    }
 
-        using var info=JsonDocument.Parse(file.Info);
-        if(!info.RootElement.TryGetProperty("sourceSha256V1",out var value)||value.ValueKind!=JsonValueKind.String||value.GetString() is not {Length:64} expected||!expected.All(Uri.IsHexDigit))return false;
-        pin.Stream.Position=0;var actual=await SHA256.HashDataAsync(pin.Stream,token);pin.Stream.Position=0;
-        bool matched = CryptographicOperations.FixedTimeEquals(actual,Convert.FromHexString(expected));
+    private async Task<bool> CurrentSourceAsync(IndexedFile file, SafeFile pin, CancellationToken token)
+    {
+        if (file.Info is null || pin.Stream is null) return false;
+        if (pin.Stream.Length != file.Size) return false;
+        double diskMtime = (File.GetLastWriteTimeUtc(pin.Stream.SafeFileHandle) - DateTime.UnixEpoch).TotalSeconds;
+        if (Math.Abs(diskMtime - file.ModifiedTime) >= 0.001) return false;
+
+        string expected;
+        using (var info = JsonDocument.Parse(file.Info))
+        {
+            if (!info.RootElement.TryGetProperty("sourceSha256V1", out var value)
+                || value.ValueKind != JsonValueKind.String
+                || value.GetString() is not { Length: 64 } hex
+                || !hex.All(Uri.IsHexDigit))
+            {
+                return false;
+            }
+            expected = hex;
+        }
+
+        ulong edgeHash = ComputeEdgeChecksum(pin.Stream);
+        if (VerifiedSourceFingerprints.TryGetValue(file.Path, out var cached)
+            && cached.Size == file.Size
+            && Math.Abs(cached.Mtime - diskMtime) < 0.001
+            && cached.EdgeHash == edgeHash
+            && string.Equals(cached.ExpectedSha256, expected, StringComparison.OrdinalIgnoreCase))
+        {
+            return cached.Current;
+        }
+
+        pin.Stream.Position = 0;
+        var actual = await SHA256.HashDataAsync(pin.Stream, token);
+        pin.Stream.Position = 0;
+        bool matched = CryptographicOperations.FixedTimeEquals(actual, Convert.FromHexString(expected));
         if (VerifiedSourceFingerprints.Count > 4096) VerifiedSourceFingerprints.Clear();
-        VerifiedSourceFingerprints[file.Path] = (file.Size, file.ModifiedTime, matched);
+        VerifiedSourceFingerprints[file.Path] = (file.Size, diskMtime, edgeHash, expected, matched);
         return matched;
     }
+    private readonly SemaphoreSlim prefetchGate = new(1, 1);
+
+    private static void ResolvePreviewTarget(string path, SourceLocation? location, double? hitLocation, int? overridePage,
+        out string extension, out int targetPage, out int? targetParagraph, out string? targetSheet)
+    {
+        extension = FilePolicy.Extension(path);
+        targetPage = overridePage ?? location?.Page ?? (extension is "docx" or "doc" ? 1 : (hitLocation.HasValue ? (int)Math.Round(hitLocation.Value) : 1));
+        if (targetPage < 1) targetPage = 1;
+        targetParagraph = overridePage.HasValue
+            ? null
+            : (extension is "docx" or "doc" ? (location?.Paragraph ?? (hitLocation.HasValue ? Math.Max(1, (int)Math.Round(hitLocation.Value)) : null)) : null);
+        targetSheet = extension is "xlsx" or "xls" ? location?.Sheet : null;
+    }
+
+    public bool HasCachedPreview(SearchHit hit, int? overridePage = null)
+    {
+        if (hit is null || string.IsNullOrWhiteSpace(hit.Path)) return false;
+        ResolvePreviewTarget(hit.Path, hit.Source?.Location, hit.Location, overridePage, out var extension, out int targetPage, out int? targetParagraph, out string? targetSheet);
+        if (hit.FileSize is not { } sz || hit.ModifiedTime is not { } mt) return false;
+        string cacheKey = $"{hit.Path}|{sz}|{mt:F3}|{targetPage}|{targetParagraph?.ToString() ?? ""}|{targetSheet ?? ""}";
+        if (RasterLruCache.TryGetValue(cacheKey, out var entry) && File.Exists(entry.RasterPath))
+            return true;
+        if (extension is not ("pdf" or "pptx" or "docx" or "doc" or "xlsx" or "xls"))
+            return false;
+        string cacheDir = Path.Combine(dataDirectory, "source-preview", "cache");
+        if (!Directory.Exists(cacheDir)) return false;
+        string cachePrefix = $"{HashCacheKey(cacheKey)}_{targetPage}";
+        return Directory.EnumerateFiles(cacheDir, $"{cachePrefix}_of_*.png").Any()
+            || File.Exists(Path.Combine(cacheDir, $"{cachePrefix}.png"));
+    }
+
+    public void PrefetchPreview(SearchHit hit, int? overridePage = null, bool code = false)
+    {
+        if (disposed || stopping != 0 || hit is null || string.IsNullOrWhiteSpace(hit.Path)) return;
+        string ext = FilePolicy.Extension(hit.Path);
+        if (ext is not ("pdf" or "pptx" or "docx" or "doc" or "xlsx" or "xls")) return;
+        if (HasCachedPreview(hit, overridePage)) return;
+        CancellationTokenSource linked;
+        try
+        {
+            linked = CancellationTokenSource.CreateLinkedTokenSource(lifetimeStop.Token, sourceOperationsStop.Token);
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+        long prefetchId = Interlocked.Increment(ref nextPrefetchId);
+        var task = Task.Run(async () =>
+        {
+            using var cts = linked;
+            var ct = cts.Token;
+            try
+            {
+                await Task.Delay(10, ct).ConfigureAwait(false);
+                if (disposed || stopping != 0) return;
+                if (!await prefetchGate.WaitAsync(0, ct).ConfigureAwait(false)) return;
+                try
+                {
+                    if (disposed || stopping != 0 || HasCachedPreview(hit, overridePage)) return;
+                    await using var _ = await PreviewSourceCoreAsync(hit, overridePage, code, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    prefetchGate.Release();
+                }
+            }
+            catch { /* speculative prefetch is best-effort */ }
+            finally
+            {
+                activePrefetches.TryRemove(prefetchId, out _);
+            }
+        });
+        activePrefetches[prefetchId] = task;
+        if (task.IsCompleted) activePrefetches.TryRemove(prefetchId, out _);
+    }
+
     public Task<ISourcePreview> PreviewSourceAsync(SearchHit hit,bool code=false,CancellationToken cancellationToken=default) =>
         PreviewSourceCoreAsync(hit, null, code, cancellationToken);
 
@@ -201,14 +365,9 @@ public sealed partial class DesktopBackend
                 string workspace=Path.Combine(dataDirectory,"source-preview");Directory.CreateDirectory(workspace);
                 string hostExe = source.Settings.InferenceExecutable ?? ResolveInferenceExecutable();
                 var client = GetPreviewServer(hostExe, workspace);
-                var location=source.Anchor?.Location;var extension=FilePolicy.Extension(source.File.Path);
-                int targetPage = overridePage ?? location?.Page ?? (extension is "docx" or "doc" ? 1 : (hit.Location.HasValue ? (int)Math.Round(hit.Location.Value) : 1));
-                if (targetPage < 1) targetPage = 1;
+                ResolvePreviewTarget(source.File.Path, source.Anchor?.Location, hit.Location, overridePage,
+                    out var extension, out int targetPage, out int? targetParagraph, out string? targetSheet);
                 resolvedPageNumber = targetPage;
-                int? targetParagraph = overridePage.HasValue
-                    ? null
-                    : (extension is "docx" or "doc" ? (location?.Paragraph ?? (hit.Location.HasValue ? Math.Max(1, (int)Math.Round(hit.Location.Value)) : null)) : null);
-                string? targetSheet = extension is "xlsx" or "xls" ? location?.Sheet : null;
                 string cacheKey = $"{source.File.Path}|{source.File.Size}|{source.File.ModifiedTime:F3}|{targetPage}|{targetParagraph?.ToString() ?? ""}|{targetSheet ?? ""}";
                 string cacheDir = Path.Combine(workspace, "cache");
                 string cachePrefix = $"{HashCacheKey(cacheKey)}_{targetPage}";
@@ -237,7 +396,6 @@ public sealed partial class DesktopBackend
                     width = cachedRaster.PixelWidth;
                     height = cachedRaster.PixelHeight;
                     notice = cachedRaster.Notice;
-                    sourceText = cachedRaster.SourceText;
                     resolvedPageNumber = cachedRaster.PageNumber;
                     totalPages = cachedRaster.TotalPages;
                 }
@@ -259,7 +417,7 @@ public sealed partial class DesktopBackend
                     {
                         if(extension=="pdf")
                         {
-                            var page=await client.RenderPdfPageAsync(new(source.File.Path,targetPage,2400),token);artifact=page;raster=page.ArtifactPath;width=page.PixelWidth;height=page.PixelHeight;resolvedPageNumber=page.PageNumber;totalPages=page.PageCount;notice=$"当前 PDF 第 {page.PageNumber} / {page.PageCount} 页画面；文字框标记为 OCR 提取位置。";
+                            var page=await client.RenderPdfPageAsync(new(source.File.Path,targetPage,1600),token);artifact=page;raster=page.ArtifactPath;width=page.PixelWidth;height=page.PixelHeight;resolvedPageNumber=page.PageNumber;totalPages=page.PageCount;notice=$"当前 PDF 第 {page.PageNumber} / {page.PageCount} 页画面；文字框标记为 OCR 提取位置。";
                         }
                         else if(extension=="pptx")
                         {
@@ -285,7 +443,7 @@ public sealed partial class DesktopBackend
                         {
                             try
                             {
-                                var wordPage = await client.RenderWordPageAsync(new(source.File.Path, targetPage, 2400, targetParagraph), token);
+                                var wordPage = await client.RenderWordPageAsync(new(source.File.Path, targetPage, 1600, targetParagraph), token);
                                 artifact = wordPage; raster = wordPage.ArtifactPath; width = wordPage.PixelWidth; height = wordPage.PixelHeight;
                                 totalPages = wordPage.PageCount > 1 ? wordPage.PageCount : null;
                                 notice = $"当前 Word 文档排版画面。";
@@ -305,7 +463,7 @@ public sealed partial class DesktopBackend
                         {
                             try
                             {
-                                var excelPage = await client.RenderExcelPageAsync(new(source.File.Path, targetPage, 2400, targetSheet), token);
+                                var excelPage = await client.RenderExcelPageAsync(new(source.File.Path, targetPage, 1600, targetSheet), token);
                                 artifact = excelPage; raster = excelPage.ArtifactPath; width = excelPage.PixelWidth; height = excelPage.PixelHeight;
                                 totalPages = excelPage.PageCount > 1 ? excelPage.PageCount : null;
                                 notice = string.IsNullOrWhiteSpace(targetSheet)
@@ -327,10 +485,16 @@ public sealed partial class DesktopBackend
                         {
                             var image=await client.RenderRasterPreviewAsync(new(source.File.Path),token);artifact=image;raster=image.ArtifactPath;width=image.PixelWidth;height=image.PixelHeight;notice="规范化当前图片；选框与索引 OCR 行坐标一致。";
                         }
+                        else if(source.File.Kind is "video" or "audio")
+                        {
+                            notice = source.File.Kind == "video"
+                                ? "已载入视频索引画面与字幕片段；点击“打开文件”播放视频。"
+                                : "已载入音频索引转录片段；点击“打开文件”播放音频。";
+                        }
                         else
                         {
-                            // 针对纯文本、Markdown、代码文件等，直接从磁盘读取前部文本以呈现完整预览（达到 Peek 效果）
-                            if (pin.Stream is not null && pin.Stream.CanRead)
+                            // 针对纯文本、Markdown、代码文件等，仅在安全文本扩展名或显式代码视图下从磁盘读取前部文本，避免将二进制旧格式读成乱码
+                            if ((PlainTextPreviewExtensions.Contains(extension) || code) && pin.Stream is not null && pin.Stream.CanRead)
                             {
                                 try
                                 {
@@ -339,7 +503,7 @@ public sealed partial class DesktopBackend
                                     var textBuf = new char[24576];
                                     int readChars = await textReader.ReadAsync(textBuf, token);
                                     pin.Stream.Position = 0;
-                                    if (readChars > 0)
+                                    if (readChars > 0 && !textBuf.AsSpan(0, readChars).Contains('\0'))
                                     {
                                         sourceText = new string(textBuf, 0, readChars);
                                         notice = $"文本 / Markdown 即时预览（已载入前 {readChars} 字符）；支持鼠标选中与复制。";
@@ -355,21 +519,38 @@ public sealed partial class DesktopBackend
                     catch(Exception e)when(e is IOException or InvalidDataException or NotSupportedException or ArgumentException)
                     {notice=$"光栅视图暂时不可用 ({e.GetType().Name})；已呈现正文内容。";}
 
-                    // 缓存渲染成功的单页图片到持久缓存目录，使后续秒开无需重复调度 Office（绝不把降级缩略图误缓存为指定页）
-                    if (!isFallbackThumbnail && !string.IsNullOrEmpty(raster) && File.Exists(raster))
+                    // 缓存渲染成功的单页文档图片到持久缓存目录，使后续秒开无需重复调度 Office（绝不把降级缩略图或图片误缓存到 source-preview/cache）
+                    bool cacheableDoc = extension is "pdf" or "pptx" or "docx" or "doc" or "xlsx" or "xls";
+                    if (cacheableDoc && !isFallbackThumbnail && !string.IsNullOrEmpty(raster) && File.Exists(raster))
                     {
                         try
                         {
                             Directory.CreateDirectory(cacheDir);
                             string savedDiskPath = Path.Combine(cacheDir, $"{cachePrefix}_of_{totalPages ?? 0}.png");
-                            File.Copy(raster, savedDiskPath, overwrite: true);
-                            if (RasterLruCache.Count > 64)
+                            if (!File.Exists(savedDiskPath))
                             {
-                                var oldest = RasterLruCache.OrderBy(kv => kv.Value.CachedAt).FirstOrDefault();
-                                if (oldest.Key is not null) RasterLruCache.TryRemove(oldest.Key, out _);
+                                string tmpDiskPath = Path.Combine(cacheDir, $"{cachePrefix}_{Guid.NewGuid():N}.tmp");
+                                try
+                                {
+                                    File.Copy(raster, tmpDiskPath, overwrite: true);
+                                    try { File.Move(tmpDiskPath, savedDiskPath, overwrite: false); }
+                                    catch (IOException) when (File.Exists(savedDiskPath)) { /* concurrent writer committed */ }
+                                }
+                                finally
+                                {
+                                    try { if (File.Exists(tmpDiskPath)) File.Delete(tmpDiskPath); } catch { }
+                                }
                             }
-                            RasterLruCache[cacheKey] = new(savedDiskPath, width, height, notice, sourceText, DateTime.UtcNow, resolvedPageNumber, totalPages);
-                            PruneDiskCache(cacheDir);
+                            if (File.Exists(savedDiskPath))
+                            {
+                                if (RasterLruCache.Count > 64)
+                                {
+                                    var oldest = RasterLruCache.OrderBy(kv => kv.Value.CachedAt).FirstOrDefault();
+                                    if (oldest.Key is not null) RasterLruCache.TryRemove(oldest.Key, out _);
+                                }
+                                RasterLruCache[cacheKey] = new(savedDiskPath, width, height, notice, string.Empty, DateTime.UtcNow, resolvedPageNumber, totalPages);
+                                PruneDiskCache(cacheDir);
+                            }
                         }
                         catch { /* non-fatal cache persistence */ }
                     }
@@ -444,6 +625,12 @@ public sealed partial class DesktopBackend
     {
         var oldStop = Interlocked.Exchange(ref sourceOperationsStop, new());
         oldStop.Cancel();
+        var pendingPrefetches = activePrefetches.Values.ToArray();
+        if (pendingPrefetches.Length > 0)
+        {
+            try { await Task.WhenAll(pendingPrefetches).ConfigureAwait(false); }
+            catch { /* best-effort prefetch drain */ }
+        }
         await sourceOperationsGate.WaitAsync().ConfigureAwait(false);
         try
         {

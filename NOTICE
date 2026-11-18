@@ -7,15 +7,11 @@ Local source checkpoint: 7db9537712995d14e50e0e44baa00f721b98f1c6
 
 The WinSight repository retains its Apache License 2.0 in LICENSE.
 Inherited DigUp portions remain subject to the original MIT copyright and
-permission notice, reproduced without changes in desktop/licenses/DigUp-MIT.txt
-and licenses/DigUp-MIT.txt. This notice does not remove or relicense those
-upstream notices.
+permission notice. This notice does not remove or relicense upstream notices.
 
-licenses/DigUp-Acknowledgements.txt retains the upstream acknowledgements for
-the legacy components. It is historical attribution, not a statement that every
-listed component is included in the current native preview or a complete bill
-of materials for a distributable package. See also desktop/THIRD-PARTY-NOTICES.txt
-and docs/media-attribution.md.
+See desktop/THIRD-PARTY-NOTICES.txt and docs/media-attribution.md for retained
+third-party software notices and experimental media provenance notes (not a
+complete bill of materials for a distributable package).
 
 WinSight changes include the Windows/native migration, project naming, current
 README, indexing/search fixes, image OCR/EXIF integration and controlled installer

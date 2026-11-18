@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Text;
@@ -23,20 +24,26 @@ internal static class StdioServer
             return 1;
         }
         using (engine)
-        using (var input = new BufferedStream(Console.OpenStandardInput(), 65536))
+        using (var input = Console.OpenStandardInput())
+        using (var lineBuffer = new MemoryStream(4096))
         {
+            var readChunk = new byte[65536];
+            int chunkPos = 0, chunkAvail = 0;
             var loadSeconds = clock.Elapsed.TotalSeconds;
             var capabilities = new { text = true, image = !textOnly, audio = !textOnly };
             Emit(new { ready = true, info = Info(engine, loadSeconds, textOnly), capabilities, protocol = 1 });
             while (true)
             {
-                var (bytes, oversized) = ReadLine(input);
-                if (bytes is null) return 0;
+                var (hasLine, oversized) = ReadLine(input, readChunk, ref chunkPos, ref chunkAvail, lineBuffer);
+                if (!hasLine) return 0;
                 object? id = null;
                 try
                 {
                     if (oversized) throw new ArgumentException("JSONL line exceeds 1 MiB");
-                    using var document = JsonDocument.Parse(StrictUtf8.GetString(bytes), new JsonDocumentOptions { MaxDepth = 16 });
+                    var lineBytes = lineBuffer.GetBuffer();
+                    var lineLength = (int)lineBuffer.Length;
+                    _ = StrictUtf8.GetCharCount(lineBytes, 0, lineLength);
+                    using var document = JsonDocument.Parse(lineBytes.AsMemory(0, lineLength), new JsonDocumentOptions { MaxDepth = 16 });
                     var request = document.RootElement;
                     if (request.ValueKind != JsonValueKind.Object) throw new ArgumentException("Request must be a JSON object");
                     if (request.EnumerateObject().Select(property => property.Name).Distinct(StringComparer.Ordinal).Count() != request.EnumerateObject().Count())
@@ -79,7 +86,7 @@ internal static class StdioServer
     private static object Info(EmbeddingEngine engine, double loadSeconds, bool textOnly) => new
     {
         model = ModelManifest.Repository, revision = ModelManifest.Revision,
-        runtime = "windows-ml-ort-" + OrtEnv.Instance().GetVersionString(), dtype = "q4", dim = EmbeddingEngine.Dimension,
+        runtime = "windows-ml-ort-" + OrtEnv.Instance().GetVersionString(), dtype = "q4", quantization_profile = engine.QuantizationProfile, dim = EmbeddingEngine.Dimension,
         text_only = textOnly,
         graph_capabilities = new[] { "text", "vision_features", "audio_features" },
         media_preprocessor = MediaPreprocessor.ProfileVersion, validation = "unverified-source-integration", profile_id = engine.Profile,
@@ -138,7 +145,7 @@ internal static class StdioServer
         {
             int effectiveBudget = engine.IsModernPlatform ? Math.Min(budget, 140) : budget;
             var image = MediaPreprocessor.LoadImage(input, effectiveBudget);
-            var validPatches = image.Positions.Where((value, index) => index % 2 == 0 && value >= 0).Count();
+            var validPatches = EmbeddingEngine.CountValidPatches(image.Positions);
             var features = engine.EncodeVision(image.Pixels, image.Positions, image.PatchCount);
             if (validPatches <= 0 || validPatches % 9 != 0 || features.Length != validPatches / 9 * 512)
                 throw new InvalidDataException("Vision feature count differs from valid, unpadded patch count");
@@ -150,17 +157,42 @@ internal static class StdioServer
         return engine.EmbedFeatures(rows, "audio");
     }
 
-    private static (byte[]? Bytes, bool Oversized) ReadLine(Stream input)
+    private static (bool HasLine, bool Oversized) ReadLine(Stream input, byte[] chunk, ref int pos, ref int avail, MemoryStream buffer)
     {
-        using var buffer = new MemoryStream();
+        buffer.SetLength(0);
+        if (buffer.Capacity > 65536) buffer.Capacity = 4096;
         var oversized = false;
         while (true)
         {
-            var value = input.ReadByte();
-            if (value == -1 && buffer.Length == 0 && !oversized) return (null, false);
-            if (value is -1 or 10) return (buffer.ToArray(), oversized);
-            if (buffer.Length < MaxLineBytes) buffer.WriteByte((byte)value);
-            else oversized = true; // Drain to newline before accepting another request.
+            if (pos == avail)
+            {
+                avail = input.Read(chunk, 0, chunk.Length);
+                pos = 0;
+                if (avail == 0)
+                {
+                    return (buffer.Length > 0 || oversized, oversized);
+                }
+            }
+            var span = chunk.AsSpan(pos, avail - pos);
+            int nl = span.IndexOf((byte)10);
+            int copyCount = nl >= 0 ? nl : span.Length;
+            if (!oversized && copyCount > 0)
+            {
+                if (buffer.Length + copyCount <= MaxLineBytes)
+                {
+                    buffer.Write(chunk, pos, copyCount);
+                }
+                else
+                {
+                    oversized = true;
+                }
+            }
+            if (nl >= 0)
+            {
+                pos += nl + 1;
+                return (true, oversized);
+            }
+            pos = avail;
         }
     }
 

@@ -36,6 +36,7 @@ public interface IUsnJournalReader
     SafeFileHandle? OpenVolumeForBatch(string volumePath) => null;
     string? ResolvePath(string volumePath, ulong fileReferenceNumber, ulong parentFileReferenceNumber, string fileName, SafeFileHandle? volumeHandle) =>
         ResolvePath(volumePath, fileReferenceNumber, parentFileReferenceNumber, fileName);
+    void ClearCache() { }
 }
 
 public class UsnJournalReader : IUsnJournalReader
@@ -51,6 +52,9 @@ public class UsnJournalReader : IUsnJournalReader
 
     public const uint FSCTL_QUERY_USN_JOURNAL = 0x000900F4;
     public const uint FSCTL_READ_USN_JOURNAL = 0x000900BB;
+    public const uint FSCTL_READ_UNPRIVILEGED_USN_JOURNAL = 0x0009036B;
+    public const uint RelevantReasonMask = USN_REASON_DATA_OVERWRITE | USN_REASON_DATA_EXTEND | USN_REASON_DATA_TRUNCATION
+        | USN_REASON_FILE_CREATE | USN_REASON_FILE_DELETE | USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME | USN_REASON_CLOSE;
 
     public const int ERROR_ACCESS_DENIED = 5;
     public const int ERROR_INVALID_PARAMETER = 87;
@@ -138,19 +142,44 @@ public class UsnJournalReader : IUsnJournalReader
         uint dwFlags);
 
     private readonly Func<string, SafeFileHandle>? handleOpener;
-    private readonly ConcurrentDictionary<ulong, string> parentPathCache = new();
+    private readonly ConcurrentDictionary<(string Volume, ulong Frn), string> parentPathCache = new();
+    private long cacheGeneration;
 
     public UsnJournalReader(Func<string, SafeFileHandle>? handleOpener = null)
     {
         this.handleOpener = handleOpener;
     }
 
+    public void ClearCache()
+    {
+        Interlocked.Increment(ref cacheGeneration);
+        parentPathCache.Clear();
+    }
+
     public static string NormalizeVolumePath(string path)
     {
-        if (string.IsNullOrWhiteSpace(path)) return "C:";
-        var root = Path.GetPathRoot(path);
-        if (string.IsNullOrEmpty(root)) return "C:";
-        return root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException("Volume path must be rooted.", nameof(path));
+
+        var trimmed = path.Trim();
+        if (trimmed.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = @"\\" + trimmed.Substring(8);
+        }
+        else if (trimmed.StartsWith(@"\\?\", StringComparison.Ordinal) || trimmed.StartsWith(@"\\.\", StringComparison.Ordinal))
+        {
+            trimmed = trimmed.Substring(4);
+        }
+
+        if (trimmed.Length >= 2 && char.IsAsciiLetter(trimmed[0]) && trimmed[1] == ':')
+        {
+            return trimmed.Substring(0, 2).ToUpperInvariant();
+        }
+
+        var root = Path.GetPathRoot(trimmed);
+        if (string.IsNullOrEmpty(root))
+            throw new ArgumentException("Volume path must be rooted.", nameof(path));
+        return root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).ToUpperInvariant();
     }
 
     public static string GetVolumeDevicePath(string volumePath)
@@ -187,6 +216,14 @@ public class UsnJournalReader : IUsnJournalReader
         if (handle.IsInvalid)
         {
             win32Error = Marshal.GetLastWin32Error();
+            if (win32Error == ERROR_ACCESS_DENIED)
+            {
+                handle.Dispose();
+                win32Error = 0;
+                handle = CreateFileW(devicePath, 0x00000080 /* FILE_READ_ATTRIBUTES */, share, IntPtr.Zero, 3 /* OPEN_EXISTING */, 0, IntPtr.Zero);
+                if (handle.IsInvalid)
+                    win32Error = Marshal.GetLastWin32Error();
+            }
         }
         return handle;
     }
@@ -263,12 +300,13 @@ public class UsnJournalReader : IUsnJournalReader
 
         try
         {
+            uint readIoctl = FSCTL_READ_USN_JOURNAL;
             while (results.Count < maxRecords)
             {
                 var input = new READ_USN_JOURNAL_DATA_V0
                 {
                     StartUsn = currentUsn,
-                    ReasonMask = 0xFFFFFFFF,
+                    ReasonMask = RelevantReasonMask,
                     ReturnOnlyOnClose = 0,
                     Timeout = 0,
                     BytesToWaitFor = 0,
@@ -276,7 +314,12 @@ public class UsnJournalReader : IUsnJournalReader
                 };
                 Marshal.StructureToPtr(input, pIn, false);
 
-                bool ok = DeviceIoControl(handle, FSCTL_READ_USN_JOURNAL, pIn, (uint)inputSize, pOut, (uint)bufferSize, out uint bytesReturned, IntPtr.Zero);
+                bool ok = DeviceIoControl(handle, readIoctl, pIn, (uint)inputSize, pOut, (uint)bufferSize, out uint bytesReturned, IntPtr.Zero);
+                if (!ok && readIoctl == FSCTL_READ_USN_JOURNAL && Marshal.GetLastWin32Error() == ERROR_ACCESS_DENIED)
+                {
+                    readIoctl = FSCTL_READ_UNPRIVILEGED_USN_JOURNAL;
+                    ok = DeviceIoControl(handle, readIoctl, pIn, (uint)inputSize, pOut, (uint)bufferSize, out bytesReturned, IntPtr.Zero);
+                }
                 if (!ok)
                 {
                     int err = Marshal.GetLastWin32Error();
@@ -288,79 +331,29 @@ public class UsnJournalReader : IUsnJournalReader
                     break;
                 }
 
-                long nextUsn = Marshal.ReadInt64(pOut);
-                if (bytesReturned == 8)
+                var parseRes = ParseRecordBuffer(pOut, bytesReturned, currentUsn, maxRecords, results);
+                if (parseRes.DirTopologyChanged)
                 {
-                    currentUsn = nextUsn;
+                    ClearCache();
+                }
+                if (!parseRes.Ok)
+                {
+                    return (false, results, startUsn, parseRes.ErrorReason);
+                }
+
+                if (parseRes.HitMax)
+                {
+                    currentUsn = parseRes.NextUsn;
                     break;
                 }
 
-                int offset = 8;
-                int batchCount = 0;
-                bool hitMax = false;
-
-                while (offset + 60 <= bytesReturned)
+                if (bytesReturned == 8 || parseRes.NextUsn <= currentUsn || parseRes.BatchCount == 0)
                 {
-                    uint recordLength = (uint)Marshal.ReadInt32(pOut + offset);
-                    if (recordLength == 0 || offset + recordLength > bytesReturned)
-                    {
-                        break;
-                    }
-
-                    ushort major = (ushort)Marshal.ReadInt16(pOut + offset + 4);
-                    if (major == 2)
-                    {
-                        long usn = Marshal.ReadInt64(pOut + offset + 24);
-                        if (results.Count >= maxRecords)
-                        {
-                            currentUsn = usn;
-                            hitMax = true;
-                            break;
-                        }
-
-                        ulong frn = (ulong)Marshal.ReadInt64(pOut + offset + 8);
-                        ulong pfrn = (ulong)Marshal.ReadInt64(pOut + offset + 16);
-                        long timeStamp = Marshal.ReadInt64(pOut + offset + 32);
-                        uint reason = (uint)Marshal.ReadInt32(pOut + offset + 40);
-                        uint fileAttributes = (uint)Marshal.ReadInt32(pOut + offset + 52);
-                        ushort fnLen = (ushort)Marshal.ReadInt16(pOut + offset + 56);
-                        ushort fnOff = (ushort)Marshal.ReadInt16(pOut + offset + 58);
-
-                        string fileName = string.Empty;
-                        if (fnOff > 0 && fnLen > 0 && offset + fnOff + fnLen <= bytesReturned)
-                        {
-                            fileName = Marshal.PtrToStringUni(pOut + offset + fnOff, fnLen / 2) ?? string.Empty;
-                        }
-
-                        DateTimeOffset ts;
-                        try { ts = DateTimeOffset.FromFileTime(timeStamp); }
-                        catch { ts = DateTimeOffset.UtcNow; }
-
-                        if ((fileAttributes & 0x10) != 0 &&
-                            (reason & (USN_REASON_FILE_DELETE | USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME)) != 0)
-                        {
-                            parentPathCache.Clear();
-                        }
-
-                        results.Add(new UsnChangeRecord(usn, frn, pfrn, reason, fileName, ts, fileAttributes));
-                        batchCount++;
-                    }
-
-                    offset += (int)recordLength;
-                }
-
-                if (hitMax)
-                {
+                    currentUsn = parseRes.NextUsn;
                     break;
                 }
 
-                if (nextUsn <= currentUsn || batchCount == 0)
-                {
-                    currentUsn = nextUsn;
-                    break;
-                }
-
-                currentUsn = nextUsn;
+                currentUsn = parseRes.NextUsn;
             }
 
             return (true, results, currentUsn, null);
@@ -370,6 +363,106 @@ public class UsnJournalReader : IUsnJournalReader
             Marshal.FreeHGlobal(pIn);
             Marshal.FreeHGlobal(pOut);
         }
+    }
+
+    public static (bool Ok, int BatchCount, long NextUsn, bool HitMax, bool DirTopologyChanged, string? ErrorReason) ParseRecordBuffer(
+        IntPtr pOut,
+        uint bytesReturned,
+        long currentUsn,
+        int maxRecords,
+        List<UsnChangeRecord> results)
+    {
+        if (bytesReturned < 8)
+            return (true, 0, currentUsn, false, false, null);
+
+        long nextUsn = Marshal.ReadInt64(pOut);
+        if (bytesReturned == 8)
+            return (true, 0, nextUsn, false, false, null);
+
+        int offset = 8;
+        int batchCount = 0;
+        bool hitMax = false;
+        bool dirTopologyChanged = false;
+
+        while (offset + 8 <= bytesReturned)
+        {
+            uint recordLength = (uint)Marshal.ReadInt32(pOut + offset);
+            if (recordLength < 8 || offset + recordLength > bytesReturned)
+            {
+                break;
+            }
+
+            ushort major = (ushort)Marshal.ReadInt16(pOut + offset + 4);
+            long usn;
+            ulong frn, pfrn;
+            long timeStamp;
+            uint reason, fileAttributes;
+            ushort fnLen, fnOff;
+
+            if (major == 2)
+            {
+                if (recordLength < 60 || offset + 60 > bytesReturned)
+                    return (false, batchCount, currentUsn, false, dirTopologyChanged, "truncated-v2-record");
+                usn = Marshal.ReadInt64(pOut + offset + 24);
+                frn = (ulong)Marshal.ReadInt64(pOut + offset + 8);
+                pfrn = (ulong)Marshal.ReadInt64(pOut + offset + 16);
+                timeStamp = Marshal.ReadInt64(pOut + offset + 32);
+                reason = (uint)Marshal.ReadInt32(pOut + offset + 40);
+                fileAttributes = (uint)Marshal.ReadInt32(pOut + offset + 52);
+                fnLen = (ushort)Marshal.ReadInt16(pOut + offset + 56);
+                fnOff = (ushort)Marshal.ReadInt16(pOut + offset + 58);
+            }
+            else if (major == 3)
+            {
+                if (recordLength < 76 || offset + 76 > bytesReturned)
+                    return (false, batchCount, currentUsn, false, dirTopologyChanged, "truncated-v3-record");
+                ulong frnHigh = (ulong)Marshal.ReadInt64(pOut + offset + 16);
+                ulong pfrnHigh = (ulong)Marshal.ReadInt64(pOut + offset + 32);
+                if (frnHigh != 0 || pfrnHigh != 0)
+                    return (false, batchCount, currentUsn, false, dirTopologyChanged, "unsupported-128bit-frn");
+                frn = (ulong)Marshal.ReadInt64(pOut + offset + 8);
+                pfrn = (ulong)Marshal.ReadInt64(pOut + offset + 24);
+                usn = Marshal.ReadInt64(pOut + offset + 40);
+                timeStamp = Marshal.ReadInt64(pOut + offset + 48);
+                reason = (uint)Marshal.ReadInt32(pOut + offset + 56);
+                fileAttributes = (uint)Marshal.ReadInt32(pOut + offset + 68);
+                fnLen = (ushort)Marshal.ReadInt16(pOut + offset + 72);
+                fnOff = (ushort)Marshal.ReadInt16(pOut + offset + 74);
+            }
+            else
+            {
+                return (false, batchCount, currentUsn, false, dirTopologyChanged, $"unsupported-record-v{major}");
+            }
+
+            if (results.Count >= maxRecords)
+            {
+                nextUsn = usn;
+                hitMax = true;
+                break;
+            }
+
+            string fileName = string.Empty;
+            if (fnOff > 0 && fnLen > 0 && offset + fnOff + fnLen <= bytesReturned)
+            {
+                fileName = Marshal.PtrToStringUni(pOut + offset + fnOff, fnLen / 2) ?? string.Empty;
+            }
+
+            DateTimeOffset ts;
+            try { ts = DateTimeOffset.FromFileTime(timeStamp); }
+            catch { ts = DateTimeOffset.UtcNow; }
+
+            if ((fileAttributes & 0x10) != 0 &&
+                (reason & (USN_REASON_FILE_DELETE | USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME)) != 0)
+            {
+                dirTopologyChanged = true;
+            }
+
+            results.Add(new UsnChangeRecord(usn, frn, pfrn, reason, fileName, ts, fileAttributes));
+            batchCount++;
+            offset += (int)recordLength;
+        }
+
+        return (true, batchCount, nextUsn, hitMax, dirTopologyChanged, null);
     }
 
     public SafeFileHandle? OpenVolumeForBatch(string volumePath)
@@ -391,12 +484,14 @@ public class UsnJournalReader : IUsnJournalReader
     {
         if (string.IsNullOrEmpty(fileName)) return null;
 
-        if (parentPathCache.TryGetValue(parentFileReferenceNumber, out var cachedParent))
+        var cacheKey = (NormalizeVolumePath(volumePath), parentFileReferenceNumber);
+        if (parentPathCache.TryGetValue(cacheKey, out var cachedParent))
         {
             return Path.Combine(cachedParent, fileName);
         }
 
         if (!OperatingSystem.IsWindows()) return null;
+        long gen = Volatile.Read(ref cacheGeneration);
 
         SafeFileHandle? ownedHandle = null;
         SafeFileHandle handle;
@@ -431,6 +526,11 @@ public class UsnJournalReader : IUsnJournalReader
             {
                 var sb = new StringBuilder(1024);
                 uint len = GetFinalPathNameByHandleW(hDir, sb, (uint)sb.Capacity, 0);
+                if (len >= sb.Capacity)
+                {
+                    sb = new StringBuilder(checked((int)len + 1));
+                    len = GetFinalPathNameByHandleW(hDir, sb, (uint)sb.Capacity, 0);
+                }
                 if (len > 0 && len < sb.Capacity)
                 {
                     var dirPath = sb.ToString();
@@ -443,11 +543,14 @@ public class UsnJournalReader : IUsnJournalReader
                         dirPath = dirPath.Substring(4);
                     }
 
-                    if (parentPathCache.Count >= 16384)
+                    if (Volatile.Read(ref cacheGeneration) == gen)
                     {
-                        parentPathCache.Clear();
+                        if (parentPathCache.Count >= 16384)
+                        {
+                            parentPathCache.Clear();
+                        }
+                        parentPathCache[cacheKey] = dirPath;
                     }
-                    parentPathCache[parentFileReferenceNumber] = dirPath;
                     return Path.Combine(dirPath, fileName);
                 }
             }

@@ -1,9 +1,21 @@
 # Local dev runs: indexes, models and settings
 .dev/
 
-# Python build/check scripts
+# Python / linter caches and temporary scratch workspace
 __pycache__/
 *.pyc
+.ruff_cache/
+scratch/
+
+# IDE and user-specific files
+.vs/
+*.user
+*.suo
+
+# Ephemeral test fixture and run directories under test binaries
+desktop/tests/**/fixtures-*/
+desktop/tests/**/synthetic/
+desktop/tests/**/synthetic-runs/
 
 # Evals that name your own files
 evals/*.local.json

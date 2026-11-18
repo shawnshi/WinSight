@@ -301,6 +301,80 @@ internal static class IncrementalQueueBehaviourTests
             var page3 = await repo.ReadPendingEmbeddingSegmentsAsync(1, page2[^1].Id);
             Require(page3.Count == 0, "Cursor page 3 must terminate cleanly when past all pending segments.");
         });
+
+        await test("S1-P1-SCHED-BATCH-STABILIZE-AND-PRUNE 20 concurrent new files settle in one 300ms batch, reset Attempts on lock recovery, and cap burst maps", async () =>
+        {
+            var sandbox = Sandbox(root);
+            await using var repo = new SqliteIndexRepository(Path.Combine(sandbox, "sched.sqlite"));
+            await repo.InitializeAsync();
+            var indexedBatches = new List<string>();
+            string? throwForPath = null;
+            await using var queue = new IncrementalIndexQueue(
+                repo,
+                indexPaths: (roots, paths, code, token) =>
+                {
+                    if (throwForPath is not null && paths.Any(p => string.Equals(p, throwForPath, StringComparison.OrdinalIgnoreCase)))
+                        throw new IOException("simulated transient parse failure");
+                    lock (indexedBatches) indexedBatches.AddRange(paths);
+                    return Task.CompletedTask;
+                },
+                quietPeriod: TimeSpan.FromMilliseconds(20),
+                maxWait: TimeSpan.FromSeconds(10));
+            await queue.InitializeAsync();
+
+            var files = new List<string>(20);
+            var pastDue = DateTimeOffset.UtcNow.AddSeconds(-1);
+            for (int i = 0; i < 20; i++)
+            {
+                var p = Path.Combine(sandbox, $"batch-{i:D2}.txt");
+                await File.WriteAllTextAsync(p, $"payload-{i}");
+                files.Add(FilePolicy.Normalize(p));
+                await repo.EnqueueIndexTaskAsync(new IndexTask(files[i], sandbox, false, "Add", null, "Stabilizing", 0, pastDue, DateTimeOffset.UtcNow));
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var processed = await queue.ProcessReadyTasksAsync(50, batchSize: 16);
+            sw.Stop();
+
+            Require(processed == 20, $"Expected 20 processed files, got {processed}.");
+            Require(indexedBatches.Count == 20, $"Expected 20 delivered paths, got {indexedBatches.Count}.");
+            Require(sw.ElapsedMilliseconds < 2500, $"Batch stabilization should share one ~300ms delay (took {sw.ElapsedMilliseconds}ms, serial would be >6000ms).");
+
+            // BLOCKER-5 regression: task with Attempts=4, Reason='locked' that stabilizes cleanly must reset in-memory Attempts=0
+            // so a subsequent single extraction error transitions to Failed(Attempts=1), NOT premature terminal Attempts=8.
+            var recovered = Path.Combine(sandbox, "recovered-after-lock.txt");
+            await File.WriteAllTextAsync(recovered, "recovered");
+            var normRecovered = FilePolicy.Normalize(recovered);
+            await repo.EnqueueIndexTaskAsync(new IndexTask(normRecovered, sandbox, false, "Update", null, "Stabilizing", 4, pastDue, DateTimeOffset.UtcNow, "locked"));
+            throwForPath = normRecovered;
+            await queue.ProcessReadyTasksAsync(10, batchSize: 1);
+            throwForPath = null;
+            var afterFail = await repo.GetTaskAsync(normRecovered);
+            Require(afterFail is not null && afterFail.State == "Failed" && afterFail.Attempts == 1,
+                $"Expected Failed(Attempts=1) after lock-recovery stabilization reset, got State={afterFail?.State}, Attempts={afterFail?.Attempts}.");
+
+            // Verify expired pendingDeletes (>2s) are pruned on subsequent Created event.
+            var staleDelete = Path.Combine(sandbox, "stale-deleted.txt");
+            await queue.EnqueueEventAsync(staleDelete, sandbox, false, WatcherChangeTypes.Deleted);
+            var pendingDeletesField = typeof(IncrementalIndexQueue).GetField("pendingDeletes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            var pendingDeletesMap = pendingDeletesField.GetValue(queue)!;
+            var countProp = pendingDeletesMap.GetType().GetProperty("Count")!;
+            Require((int)countProp.GetValue(pendingDeletesMap)! >= 1, "Deleted event should enter pendingDeletes.");
+
+            await Task.Delay(2100);
+            var triggerCreate = Path.Combine(sandbox, "trigger-prune.txt");
+            await File.WriteAllTextAsync(triggerCreate, "new");
+            await queue.EnqueueEventAsync(triggerCreate, sandbox, false, WatcherChangeTypes.Created);
+            Require((int)countProp.GetValue(pendingDeletesMap)! == 0, "Expired pendingDeletes entry should be pruned on subsequent Created event.");
+
+            // MAJOR-6 regression: rapid <5s delete burst must be bounded by MaxTransientEntries (<= 1024).
+            for (int i = 0; i < 1100; i++)
+            {
+                await queue.EnqueueEventAsync(Path.Combine(sandbox, $"burst-del-{i}.txt"), sandbox, false, WatcherChangeTypes.Deleted);
+            }
+            int burstCount = (int)countProp.GetValue(pendingDeletesMap)!;
+            Require(burstCount <= 1024, $"Expected burst pendingDeletes capped <= 1024, got {burstCount}.");
+        });
     }
 
 

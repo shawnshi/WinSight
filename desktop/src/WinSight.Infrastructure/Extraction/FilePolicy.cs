@@ -1,7 +1,11 @@
+using System.Text.Json;
+
 namespace WinSight.Infrastructure.Extraction;
 
 internal static class FilePolicy
 {
+    internal const string SampledInlineBackfillDetail = "Semantic vectors sampled inline (64 chunks); remaining chunks queued for background vector backfill.";
+    internal const string SemanticUnavailableDetail = "Semantic extraction unavailable: no embedding service or required modality capability; keyword content retained.";
     /// <summary>OLE/BIFF Office files and WPS equivalents: recognised so they are reported honestly (and stay findable by name), not extracted.</summary>
     internal static readonly HashSet<string> LegacyBinaryOffice = Set("doc dot xls xlt ppt pot pps wps et dps");
     /// <summary>The legacy formats the isolated host can read; WPS (.wps/.et/.dps) stays unsupported.</summary>
@@ -63,5 +67,54 @@ internal static class FilePolicy
             (indexProfile.StartsWith("6058d511", StringComparison.OrdinalIgnoreCase) || indexProfile.StartsWith("c5d19a34", StringComparison.OrdinalIgnoreCase)))
             return true;
         return false;
+    }
+
+    internal static string Prefix(string text, int length)
+    {
+        if (text.Length <= length) return text;
+        if (length > 0 && char.IsHighSurrogate(text[length - 1])) length--;
+        return text[..length];
+    }
+
+    internal static string Title(string path)
+    {
+        // Only inspect ancestors' marker existence; never read repository contents or credentials for a title.
+        var folder = Path.GetDirectoryName(path);
+        while (folder is not null)
+        {
+            if (ProjectMarkers.Any(marker => File.Exists(Path.Combine(folder, marker)) || Directory.Exists(Path.Combine(folder, marker))))
+                return Path.GetFileName(folder) + "/" + Path.GetRelativePath(folder, path).Replace('\\', '/');
+            folder = Path.GetDirectoryName(folder);
+        }
+        return Path.GetFileName(path);
+    }
+
+    internal static string ResolveEmbeddingTitle(string path, bool code, string? info)
+    {
+        var title = code ? Title(path) : Path.GetFileNameWithoutExtension(path);
+        if (info is not null)
+        {
+            try
+            {
+                using var metadata = JsonDocument.Parse(info);
+                if (metadata.RootElement.ValueKind == JsonValueKind.Object && metadata.RootElement.TryGetProperty("title", out var value)
+                    && value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString()))
+                {
+                    title = Prefix(value.GetString()!, 1024);
+                }
+            }
+            catch (JsonException) { /* Info is opaque for third-party extractors, not necessarily JSON. */ }
+        }
+        return title;
+    }
+
+    internal const int DefaultMaxNonPageEmbeddingChars = 4000;
+
+    internal static string FormatTextEmbeddingPrompt(string title, string excerpt, string kind, int? maxNonPageChars = DefaultMaxNonPageEmbeddingChars)
+    {
+        var body = kind == "page"
+            ? Prefix(excerpt, 1000)
+            : maxNonPageChars is int cap ? Prefix(excerpt, cap) : excerpt;
+        return $"title: {title} | text: {body}";
     }
 }

@@ -31,6 +31,8 @@ internal sealed class SafeFile : IDisposable
         }
     }
 
+    [ThreadStatic]
+    private static StringBuilder? sharedPathBuilder;
     private readonly List<SafeFileHandle> directories = [];
     internal FileStream? Stream { get; private set; }
     internal string Identity { get; private set; } = string.Empty;
@@ -54,8 +56,6 @@ internal sealed class SafeFile : IDisposable
             while (parents.TryPop(out var folder))
             {
                 bool isAncestor = !string.Equals(folder, path, StringComparison.OrdinalIgnoreCase);
-                using var metadata = OpenHandle(folder, false, directory: true, isAncestor: isAncestor);
-                Validate(metadata, folder, true);
                 var handle = OpenHandle(folder, false, directory: true, isAncestor: isAncestor);
                 lease.directories.Add(handle);
                 Validate(handle, folder, true);
@@ -106,7 +106,9 @@ internal sealed class SafeFile : IDisposable
             throw new IOException("Cannot inspect open file attributes.", new Win32Exception(Marshal.GetLastWin32Error()));
         if (FilePolicy.Unsafe((FileAttributes)info.Attributes) || ((info.Attributes & 16) != 0) != directory)
             throw new IOException("Reparse points, cloud placeholders and non-regular files are not read.");
-        var name = new StringBuilder(32768);
+        var name = sharedPathBuilder ??= new StringBuilder(32768);
+        name.Clear();
+        if (name.Capacity < 32768) name.EnsureCapacity(32768);
         var length = GetFinalPathNameByHandleW(handle, name, (uint)name.Capacity, 0);
         if (length == 0 || length >= name.Capacity) throw new IOException("Cannot resolve open file path.");
         var actual = name.ToString();

@@ -17,7 +17,7 @@ namespace WinSight.Infrastructure.Extraction;
 
 internal static class OfficeDocumentExtractor
 {
-    internal const string Revision = "office-source-units-v1";
+    internal const string Revision = "office-source-units-v2";
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(1);
     internal static string Identity(DocumentExtractionOptions options) => $"{Revision};comments={options.IncludeWordComments};headers={options.IncludeWordHeadersFooters}";
 
@@ -97,28 +97,76 @@ internal static class OfficeDocumentExtractor
 
     private static void WordPart(OpenXmlElement root, string part, Collector output)
     {
+        const int CoalesceThresholdParagraphs = 16;
+        const int CoalescedChunkChars = 1200;
         int number = 0;
         var emittedRows = new HashSet<W.TableRow>();
+        var tableHeaders = new Dictionary<W.Table, string[]>();
+        var items = new List<(int Number, bool IsTableRow, string Text, IReadOnlyList<SearchField>? Fields)>();
         foreach (var paragraph in root.Descendants<W.Paragraph>())
         {
             output.Check();
-            if (output.Full) break;
             number++;
             if (paragraph.Ancestors().Any(a => a.LocalName is "del" or "moveFrom")) continue;
             var row = paragraph.Ancestors<W.TableRow>().FirstOrDefault();
             string text;
             IReadOnlyList<SearchField>? fields = null;
+            bool isTableRow = row is not null;
             if (row is not null)
             {
                 if (!emittedRows.Add(row)) continue;
                 var table = row.Ancestors<W.Table>().First();
-                var headers = table.Elements<W.TableRow>().FirstOrDefault()?.Elements<W.TableCell>().Select(WordText).ToArray() ?? [];
+                if (!tableHeaders.TryGetValue(table, out var headers))
+                {
+                    headers = table.Elements<W.TableRow>().FirstOrDefault()?.Elements<W.TableCell>().Select(WordText).ToArray() ?? [];
+                    tableHeaders[table] = headers;
+                }
                 var values = row.Elements<W.TableCell>().Select(WordText).ToArray();
                 (text, fields) = RowContext(headers, values);
             }
             else text = WordText(paragraph);
-            output.Add(text, new(new("paragraph", Paragraph: number, Part: part), "body", fields), "chunk", number);
+            if (string.IsNullOrWhiteSpace(text)) continue;
+            items.Add((number, isTableRow, text, fields));
         }
+
+        if (items.Count <= CoalesceThresholdParagraphs)
+        {
+            foreach (var item in items)
+            {
+                if (output.Full) break;
+                output.Add(item.Text, new(new("paragraph", Paragraph: item.Number, Part: part), "body", item.Fields), "chunk", item.Number);
+            }
+            return;
+        }
+
+        int firstNumber = 0;
+        var buffer = new StringBuilder();
+        void Flush()
+        {
+            if (buffer.Length == 0 || output.Full) return;
+            output.Add(buffer.ToString(), new(new("paragraph", Paragraph: firstNumber, Part: part), "body", null), "chunk", firstNumber);
+            buffer.Clear();
+            firstNumber = 0;
+        }
+
+        foreach (var item in items)
+        {
+            if (output.Full) break;
+            if (item.IsTableRow)
+            {
+                Flush();
+                if (output.Full) break;
+                output.Add(item.Text, new(new("paragraph", Paragraph: item.Number, Part: part), "body", item.Fields), "chunk", item.Number);
+                continue;
+            }
+            if (buffer.Length > 0 && buffer.Length + 1 + item.Text.Length > CoalescedChunkChars)
+                Flush();
+            if (output.Full) break;
+            if (firstNumber == 0) firstNumber = item.Number;
+            else buffer.Append('\n');
+            buffer.Append(item.Text);
+        }
+        Flush();
     }
 
     private static string WordText(OpenXmlElement node) => node is W.Paragraph
@@ -141,29 +189,74 @@ internal static class OfficeDocumentExtractor
                 throw new InvalidDataException("PPTX slide relationship is invalid.");
             var location = new SourceLocation("slide", Page: number);
             var slideRoot = slide.Slide ?? throw new InvalidDataException("PPTX slide has no XML root.");
+            var bodyBuffer = new StringBuilder();
+            void FlushSlideBody(SourceLocation loc, int slideNum)
+            {
+                if (bodyBuffer.Length > 0)
+                {
+                    output.Add(bodyBuffer.ToString(), new(loc), "page", slideNum);
+                    bodyBuffer.Clear();
+                }
+            }
+            void AppendSlideBody(string chunk, SourceLocation loc, int slideNum)
+            {
+                if (bodyBuffer.Length > 0 && bodyBuffer.Length + 1 + chunk.Length > 1200)
+                    FlushSlideBody(loc, slideNum);
+                if (bodyBuffer.Length > 0) bodyBuffer.Append('\n');
+                bodyBuffer.Append(chunk);
+            }
             foreach (var shape in slideRoot.Descendants<P.Shape>())
             {
                 var text = DrawingText(shape);
+                if (string.IsNullOrWhiteSpace(text)) continue;
                 var title = shape.NonVisualShapeProperties?.ApplicationNonVisualDrawingProperties?.GetFirstChild<P.PlaceholderShape>()?.Type?.Value;
                 if (title == P.PlaceholderValues.Title || title == P.PlaceholderValues.CenteredTitle) text = "Title: " + text;
-                output.Add(text, new(location), "page", number);
+                AppendSlideBody(text, location, number);
             }
+            FlushSlideBody(location, number);
             foreach (var table in slideRoot.Descendants<A.Table>())
             {
                 var headers = table.Elements<A.TableRow>().FirstOrDefault()?.Elements<A.TableCell>().Select(DrawingText).ToArray() ?? [];
                 foreach (var row in table.Elements<A.TableRow>())
                 {
                     var (text, fields) = RowContext(headers, row.Elements<A.TableCell>().Select(DrawingText).ToArray());
-                    output.Add(text, new(location, "body", fields), "page", number);
+                    if (string.IsNullOrWhiteSpace(text)) continue;
+                    if (fields.Count > 0)
+                    {
+                        FlushSlideBody(location, number);
+                        output.Add(text, new(location, "body", fields), "page", number);
+                    }
+                    else
+                    {
+                        AppendSlideBody(text, location, number);
+                    }
                 }
             }
+            FlushSlideBody(location, number);
             if (slide.NotesSlidePart?.NotesSlide is { } notes)
+            {
+                var notesBuffer = new StringBuilder();
+                void FlushSlideNotes(SourceLocation loc, int slideNum)
+                {
+                    if (notesBuffer.Length > 0)
+                    {
+                        output.Add(notesBuffer.ToString(), new(loc, "notes"), "page", slideNum);
+                        notesBuffer.Clear();
+                    }
+                }
                 foreach (var shape in notes.Descendants<P.Shape>())
                 {
                     var placeholder = shape.NonVisualShapeProperties?.ApplicationNonVisualDrawingProperties?.GetFirstChild<P.PlaceholderShape>()?.Type?.Value;
                     if (placeholder == P.PlaceholderValues.SlideNumber || placeholder == P.PlaceholderValues.Header || placeholder == P.PlaceholderValues.Footer || placeholder == P.PlaceholderValues.DateAndTime || placeholder == P.PlaceholderValues.SlideImage) continue;
-                    output.Add(DrawingText(shape), new(location, "notes"), "page", number);
+                    var noteText = DrawingText(shape);
+                    if (string.IsNullOrWhiteSpace(noteText)) continue;
+                    if (notesBuffer.Length > 0 && notesBuffer.Length + 1 + noteText.Length > 1200)
+                        FlushSlideNotes(location, number);
+                    if (notesBuffer.Length > 0) notesBuffer.Append('\n');
+                    notesBuffer.Append(noteText);
                 }
+                FlushSlideNotes(location, number);
+            }
         }
         return slides.Elements<P.SlideId>().Count();
     }

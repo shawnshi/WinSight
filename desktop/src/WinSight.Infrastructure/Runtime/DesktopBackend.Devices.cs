@@ -256,11 +256,18 @@ public async Task<EmbeddingInfo> GetEmbeddingInfoAsync(CancellationToken cancell
     /// Embeddings run on the unified inference host (Windows ML ORT 1.27), supporting CPU, DirectML (GPU)
     /// and NPU execution. The choice is stable per accelerator setting.
     /// </summary>
-    private IEmbeddingService GetEmbeddings() => embeddings ??= new InferenceHostClient(
-        settings.InferenceExecutable ?? ResolveInferenceExecutable(),
-        settings.ModelDirectory ?? ResolveModelDirectory(),
-        settings.ManifestPath ?? ResolveManifestPath(),
-        settings.Accelerator);
+    private IEmbeddingService GetEmbeddings()
+    {
+        lock (embeddingsSync)
+        {
+            ObjectDisposedException.ThrowIf(disposed || stopping != 0, this);
+            return embeddings ??= new InferenceHostClient(
+                settings.InferenceExecutable ?? ResolveInferenceExecutable(),
+                settings.ModelDirectory ?? ResolveModelDirectory(),
+                settings.ManifestPath ?? ResolveManifestPath(),
+                settings.Accelerator);
+        }
+    }
 
     private string ResolveInferenceExecutable()
     {

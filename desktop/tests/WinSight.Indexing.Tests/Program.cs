@@ -297,7 +297,75 @@ internal sealed partial class Suite
         });
         await ReviewRegressionsAsync();
         await ChunkingRegressionsAsync();
-        Console.WriteLine($"RESULT {passed} passed; 0 failed. Synthetic fixtures retained at {fixtures}");
+        if (Environment.GetEnvironmentVariable("WINSIGHT_KEEP_TEST_ARTIFACTS") == "1")
+        {
+            Console.WriteLine($"RESULT {passed} passed; 0 failed. Synthetic fixtures retained at {fixtures}");
+        }
+        else
+        {
+            CleanupDirectory(fixtures);
+            Console.WriteLine($"RESULT {passed} passed; 0 failed. Synthetic fixtures cleaned.");
+        }
+    }
+
+    private static void CleanupDirectory(string path)
+    {
+        if (!Directory.Exists(path)) return;
+
+        static string LongPath(string p)
+        {
+            var full = Path.GetFullPath(p);
+            if (!OperatingSystem.IsWindows() || full.StartsWith(@"\\?\", StringComparison.Ordinal))
+                return full;
+            return full.StartsWith(@"\\", StringComparison.Ordinal)
+                ? @"\\?\UNC\" + full[2..]
+                : @"\\?\" + full;
+        }
+
+        static void RemoveRecursive(string dirPath)
+        {
+            var lp = LongPath(dirPath);
+            var attrs = File.GetAttributes(lp);
+            if ((attrs & FileAttributes.ReparsePoint) != 0)
+            {
+                if ((attrs & FileAttributes.ReadOnly) != 0)
+                    File.SetAttributes(lp, attrs & ~FileAttributes.ReadOnly);
+                Directory.Delete(lp, recursive: false);
+                return;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(lp))
+            {
+                var fAttrs = File.GetAttributes(file);
+                if ((fAttrs & (FileAttributes.ReadOnly | FileAttributes.Hidden | FileAttributes.System | FileAttributes.Offline)) != 0)
+                    File.SetAttributes(file, FileAttributes.Normal);
+                File.Delete(file);
+            }
+
+            foreach (var subDir in Directory.EnumerateDirectories(lp))
+                RemoveRecursive(subDir);
+
+            if ((attrs & (FileAttributes.ReadOnly | FileAttributes.Hidden | FileAttributes.System)) != 0)
+                File.SetAttributes(lp, FileAttributes.Directory);
+            Directory.Delete(lp, recursive: false);
+        }
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                RemoveRecursive(path);
+                return;
+            }
+            catch (IOException) when (attempt < 2)
+            {
+                Thread.Sleep(50);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 2)
+            {
+                Thread.Sleep(50);
+            }
+        }
     }
     private static void MakePdf(string path, string text)
     {

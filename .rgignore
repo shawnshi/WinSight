@@ -1,0 +1,4 @@
+.dev/
+models/
+releases/*.bin
+releases/*.exe

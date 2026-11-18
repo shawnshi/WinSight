@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -32,22 +33,44 @@ internal sealed class NativeTokenizer : SafeHandleZeroOrMinusOneIsInvalid
     internal long[] Encode(string text, bool addSpecialTokens = true)
     {
         ObjectDisposedException.ThrowIf(IsClosed, this);
-        var bytes = StrictUtf8.GetBytes(text);
-        var byteCount = bytes.Length;
-        // Even empty text needs a valid address; its semantic length remains zero.
-        if (byteCount == 0) bytes = [0];
-        var status = ws_tokenizer_encode(this, bytes, (nuint)byteCount,
-            addSpecialTokens ? (byte)1 : (byte)0, out var ids, out var count, out var error);
+        int byteCount = StrictUtf8.GetByteCount(text);
+        // Even empty text needs a valid non-null address; its semantic length remains zero.
+        var rentedUtf8 = ArrayPool<byte>.Shared.Rent(Math.Max(1, byteCount));
+        nint ids = 0;
+        nuint count = 0;
         try
         {
+            if (byteCount > 0)
+            {
+                int written = StrictUtf8.GetBytes(text.AsSpan(), rentedUtf8.AsSpan());
+                if (written != byteCount) throw new InvalidDataException("UTF-8 encoding length mismatch");
+            }
+            var status = ws_tokenizer_encode(this, rentedUtf8, (nuint)byteCount,
+                addSpecialTokens ? (byte)1 : (byte)0, out ids, out count, out var error);
             Check(status, error);
             if (count > 1024 * 1024 || (count != 0 && ids == 0))
                 throw new InvalidDataException("Invalid native tokenizer result");
-            var signed = new int[(int)count];
-            Marshal.Copy(ids, signed, 0, signed.Length);
-            return signed.Select(id => (long)(uint)id).ToArray();
+            int len = (int)count;
+            if (len == 0) return [];
+            var result = new long[len];
+            var rentedIds = ArrayPool<int>.Shared.Rent(len);
+            try
+            {
+                Marshal.Copy(ids, rentedIds, 0, len);
+                for (int i = 0; i < len; i++)
+                    result[i] = (uint)rentedIds[i];
+                return result;
+            }
+            finally
+            {
+                ArrayPool<int>.Shared.Return(rentedIds);
+            }
         }
-        finally { ws_tokenizer_ids_free(ids, count); }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rentedUtf8);
+            ws_tokenizer_ids_free(ids, count);
+        }
     }
 
     private static void Check(int status, nint error)

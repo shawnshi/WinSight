@@ -5,7 +5,7 @@
 The maintained, canonical installation path for WinSight is **`WinSight.iss`** (aliased by `WinSight.Simple.iss`), compiled via **`scripts/Build-NativeInstaller.ps1`** (or `scripts/Build-SimpleInstaller.ps1`) using Inno Setup 7 (Inno Setup 6 still works).
 
 ### Key Architectural Characteristics
-- **One installer per CPU vendor**: `WinSight-<version>-x64-amd-setup.exe` ships `models\RyzenAI`, `WinSight-<version>-x64-intel-setup.exe` ships `models\IntelOpenVINO`; both carry the same common payload. `InitializeSetup` refuses to run on the other vendor's CPU (`/IGNORECPUVENDOR` bypasses this for tests). Build one with `-Vendor amd` or `-Vendor intel`; the default builds both.
+- **Unified Shape B by default & optional per-vendor mode**: By default (`-Vendor all`), `Build-NativeInstaller.ps1` produces a single unified Shape B installer (`WinSight-<version>-x64-setup.exe` + `WinSight-<version>-x64-setup-1.bin`) with `solidbreak`-separated common, shared, AMD (`models\RyzenAI`), and Intel (`models\IntelOpenVINO`) streams so setup extracts only the current CPU vendor's models at zero wasted disk cost. Individual vendor-locked packages (`WinSight-<version>-x64-amd-setup.exe` / `WinSight-<version>-x64-intel-setup.exe`) remain selectable via `-Vendor amd|intel`, where `InitializeSetup` enforces the CPU vendor check (`/IGNORECPUVENDOR` bypasses it for tests).
 - **Shared private .NET runtime**: every host (`WinSight.App`, `winsight-native`, `bridge`, `inference`, `inference\ocr`) is published framework-dependent with `AppHostRelativeDotNet`, so all of them load the single runtime in `{app}\runtime\` (`host\fxr` + `shared\Microsoft.NETCore.App\<version>`) and never a global .NET install. Host directories and launch paths are unchanged. On upgrade, generated `[InstallDelete]` entries remove the per-host runtime copies and the retired `inference\winml\` host left by earlier releases.
 - **Payload storage**: the `[Files]` list is generated per file; content-identical files are stored once, and model weights are LZMA2-compressed (no `nocompression`).
 - **Scope & Privileges**: `PrivilegesRequired=admin` with `PrivilegesRequiredOverridesAllowed=commandline`. The default install is per-machine and shows one UAC prompt; `WinSight-<version>-x64-<vendor>-setup.exe /CURRENTUSER` installs for the current user only (no elevation).
@@ -28,12 +28,6 @@ The maintained, canonical installation path for WinSight is **`WinSight.iss`** (
 # 1. Prepare stage payload (platform models are required for the vendor installers)
 ./scripts/Prepare-NativeRelease.ps1 -StageDirectory <stage-dir> -IncludePlatformModels -OcrModelDirectory <ocr-dir>
 
-# 2. Build the AMD and Intel installers with optional Authenticode signing
-./scripts/Build-NativeInstaller.ps1 -StageDirectory <stage-dir> [-Vendor amd|intel] [-CompilerPath "C:\Program Files\Inno Setup 7\ISCC.exe"] [-CertificateThumbprint <sha1>]
+# 2. Build the unified Shape B installer (or per-vendor amd/intel installers) with optional Authenticode signing
+./scripts/Build-NativeInstaller.ps1 -StageDirectory <stage-dir> [-Vendor all|amd|intel] [-OutputDirectory releases] [-CompilerPath "C:\Program Files\Inno Setup 7\ISCC.exe"] [-CertificateThumbprint <sha1>]
 ```
-
----
-
-## Historical Coordinator Archive (`legacy/`)
-
-The `legacy/` subfolder contains archived templates from an earlier experimental multi-stage transaction coordinator (`NativeInstallCoordinator.psm1`, `Start-WinSightNative.ps1`, etc.). These files are preserved exclusively to satisfy frozen regression checks (`desktop/installer/tests/Test-NativeInstallFixes.ps1`). They are not active deployment code. Do not base new deployment work on them.

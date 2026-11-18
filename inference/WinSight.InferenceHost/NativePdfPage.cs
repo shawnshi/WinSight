@@ -12,6 +12,7 @@ internal sealed record NativePdfPageResult(int Protocol, string InputPath, int P
 internal static partial class NativeMediaCommand
 {
     private const string PdfRenderPolicy = "winrt-pdf-dip-normalized-v1";
+    private static double cachedPdfDipRatio;
     internal static async Task<NativePdfPageResult> RenderPdfPageRequestAsync(string requestPath, CancellationToken token = default)
     {
         using var requestLease = OpenPinnedFile(ValidateLocalPath(requestPath, GetDriveType), MaxRequestBytes);
@@ -50,15 +51,20 @@ internal static partial class NativeMediaCommand
         var scale = edge / Math.Max(size.Width, size.Height);
         var width = Math.Max(1u, (uint)Math.Round(size.Width * scale));
         var height = Math.Max(1u, (uint)Math.Round(size.Height * scale));
-        using var measure = new InMemoryRandomAccessStream();
-        uint measureWidth = Math.Max(1u, (uint)Math.Round(size.Width * 256 / Math.Max(size.Width, size.Height)));
-        uint measureHeight = Math.Max(1u, (uint)Math.Round(size.Height * 256 / Math.Max(size.Width, size.Height)));
-        await page.RenderToStreamAsync(measure, new PdfPageRenderOptions
-        { DestinationWidth = measureWidth, DestinationHeight = measureHeight, IsIgnoringHighContrast = true }).AsTask(token);
-        var measured = await BitmapDecoder.CreateAsync(measure).AsTask(token);
-        ValidatePdfRaster(measure, measured);
-        var ratio = Math.Max((double)measured.PixelWidth / measureWidth, (double)measured.PixelHeight / measureHeight);
-        if (!double.IsFinite(ratio) || ratio <= 0) throw new InvalidDataException("PDF raster scale is invalid.");
+        double ratio = Volatile.Read(ref cachedPdfDipRatio);
+        if (!(ratio > 0))
+        {
+            using var measure = new InMemoryRandomAccessStream();
+            uint measureWidth = Math.Max(1u, (uint)Math.Round(size.Width * 256 / Math.Max(size.Width, size.Height)));
+            uint measureHeight = Math.Max(1u, (uint)Math.Round(size.Height * 256 / Math.Max(size.Width, size.Height)));
+            await page.RenderToStreamAsync(measure, new PdfPageRenderOptions
+            { DestinationWidth = measureWidth, DestinationHeight = measureHeight, IsIgnoringHighContrast = true }).AsTask(token);
+            var measured = await BitmapDecoder.CreateAsync(measure).AsTask(token);
+            ValidatePdfRaster(measure, measured);
+            ratio = Math.Max((double)measured.PixelWidth / measureWidth, (double)measured.PixelHeight / measureHeight);
+            if (!double.IsFinite(ratio) || ratio <= 0) throw new InvalidDataException("PDF raster scale is invalid.");
+            Volatile.Write(ref cachedPdfDipRatio, ratio);
+        }
         using var rendered = new InMemoryRandomAccessStream();
         // Render destinations are DIPs. A small first render measures the host scale; canonical pixels are encoded below.
         await page.RenderToStreamAsync(rendered, new PdfPageRenderOptions

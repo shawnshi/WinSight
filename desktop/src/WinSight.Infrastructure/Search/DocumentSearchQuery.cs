@@ -22,7 +22,9 @@ internal sealed class DocumentSearchQuery
     internal IReadOnlyList<SearchField> Filters { get; }
     internal string[] Literals { get; }
     internal bool HasFilters => Filters.Count != 0;
-    internal bool HasSegmentLevelFilters => Literals.Length > 0 || Filters.Any(f => f.Name is not ("name" or "folder" or "folder1" or "folder2" or "folder3"));
+    internal bool HasStructuredSegmentFilters => Filters.Any(f => f.Name is not ("name" or "folder" or "folder1" or "folder2" or "folder3"));
+    internal bool HasSegmentLevelFilters => Literals.Length > 0 || HasStructuredSegmentFilters;
+    internal string FilterSignature { get; }
     internal DocumentSearchQuery(string input, IReadOnlyList<SearchField>? filters)
     {
         var list = new List<SearchField>();
@@ -44,23 +46,86 @@ internal sealed class DocumentSearchQuery
         Filters = list;
         Literals = AllLiteralTokens(Text);
         if (Literals.Length > 32) throw new ArgumentException("At most32 literal identifiers are supported per query.");
+        FilterSignature = (Filters.Count == 0 && Literals.Length == 0)
+            ? ""
+            : string.Join('\x01', Filters.Select(f => f.Name + "=" + f.Value)) + "\x02" + string.Join('\x01', Literals);
     }
 
     private static string[] AllLiteralTokens(string value) => Tokens.Matches(SearchText.Normalize(value)).Select(m => m.Value)
         .Where(t => t.Any(char.IsDigit))
         .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     internal static string[] LiteralTokens(string value) => AllLiteralTokens(value).Take(32).ToArray();
-    internal static long LiteralMask(string? text, string? path, string[] literals)
+    internal static long PathLiteralMask(string? path, string[] literals)
     {
-        var tokens = AllLiteralTokens(text ?? "").Concat(PathLiterals(path ?? "")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (literals.Length == 0 || string.IsNullOrEmpty(path)) return 0;
+        if (!NeedsNormalizationForAsciiLiterals(path) && !ContainsAnyLiteral(path, literals, 0)) return 0;
         long mask = 0;
-        for (int i = 0; i < literals.Length; i++) if (tokens.Contains(literals[i])) mask |= 1L << i;
+        long fullMask = literals.Length >= 64 ? -1L : (1L << literals.Length) - 1;
+        foreach (var token in PathLiterals(path))
+        {
+            for (int i = 0; i < literals.Length; i++)
+            {
+                if ((mask & (1L << i)) == 0 && string.Equals(token, literals[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    mask |= 1L << i;
+                    if (mask == fullMask) return mask;
+                }
+            }
+        }
         return mask;
+    }
+
+    internal static long LiteralMask(string? text, string? path, string[] literals, long? precomputedPathMask = null)
+    {
+        if (literals.Length == 0) return 0;
+        long mask = precomputedPathMask ?? PathLiteralMask(path, literals);
+        long fullMask = literals.Length >= 64 ? -1L : (1L << literals.Length) - 1;
+
+        if (mask == fullMask || string.IsNullOrEmpty(text)) return mask;
+
+        string normText = NeedsNormalizationForAsciiLiterals(text) ? SearchText.Normalize(text) : text;
+        if (!ContainsAnyLiteral(normText, literals, mask)) return mask;
+
+        foreach (Match match in Tokens.Matches(normText))
+        {
+            string value = match.Value;
+            for (int i = 0; i < literals.Length; i++)
+            {
+                if ((mask & (1L << i)) == 0 && string.Equals(value, literals[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    mask |= 1L << i;
+                    if (mask == fullMask) return mask;
+                }
+            }
+        }
+        return mask;
+    }
+
+    private static bool NeedsNormalizationForAsciiLiterals(string value)
+    {
+        foreach (char c in value)
+        {
+            if (c < '\u0080') continue;
+            if (c is >= '\u3400' and <= '\u9fff' or >= '\u3001' and <= '\u303f') continue;
+            return true;
+        }
+        return false;
+    }
+
+    private static bool ContainsAnyLiteral(string value, string[] literals, long currentMask)
+    {
+        for (int i = 0; i < literals.Length; i++)
+        {
+            if ((currentMask & (1L << i)) == 0 && value.Contains(literals[i], StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
     private static IEnumerable<string> PathLiterals(string path) => FolderLiterals(path).Concat(AllLiteralTokens(Path.GetFileNameWithoutExtension(path)));
     private static IEnumerable<string> FolderLiterals(string path) => (Path.GetDirectoryName(path) ?? "").Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).SelectMany(AllLiteralTokens);
     internal bool NameLiteralsMatch(string path) => Literals.All(AllLiteralTokens(Path.GetFileNameWithoutExtension(path)).ToHashSet(StringComparer.OrdinalIgnoreCase).Contains);
     internal bool FolderLiteralsMatch(string path) => Literals.All(FolderLiterals(path).ToHashSet(StringComparer.OrdinalIgnoreCase).Contains);
+    internal bool PathLiteralsMatch(string path) => Literals.Length == 0 || Literals.All(PathLiterals(path).ToHashSet(StringComparer.OrdinalIgnoreCase).Contains);
 
     internal static string? HeaderField(string label)
     {
@@ -94,7 +159,8 @@ internal sealed class DocumentSearchQuery
         // Nothing to verify: skip field extraction (a regex scan of the excerpt) on the per-segment hot path.
         if (Filters.Count == 0 && (!checkLiterals || Literals.Length == 0)) return true;
         // Fast pre-filter: if a literal is required, the substring must appear in excerpt or path before running expensive regex field extraction.
-        if (checkLiterals && Literals.Length > 0 && excerpt is not null)
+        if (checkLiterals && Literals.Length > 0 && source?.Fields is null && excerpt is not null &&
+            !NeedsNormalizationForAsciiLiterals(excerpt) && !NeedsNormalizationForAsciiLiterals(path))
         {
             foreach (var literal in Literals)
             {

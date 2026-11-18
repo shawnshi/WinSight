@@ -42,14 +42,42 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
     private bool queueReconciled;
     private bool codeQueueReconciled;
     private readonly Func<CancellationToken, Task>? releaseCaches;
+    private int releasingCaches;
+    private long lastCacheReleaseTick = long.MinValue;
+    private const long CacheReleaseCooldownMs = 5_000;
+
+    private bool IsStoppingOrDisposed()
+    {
+        if (Volatile.Read(ref disposed) != 0) return true;
+        try { return stop.IsCancellationRequested; }
+        catch (ObjectDisposedException) { return true; }
+    }
+
+    private void OnMemoryPressureTriggered()
+    {
+        if (IsStoppingOrDisposed() || releaseCaches is null) return;
+        var now = Environment.TickCount64;
+        var last = Interlocked.Read(ref lastCacheReleaseTick);
+        if (last != long.MinValue && (now - last) < CacheReleaseCooldownMs) return;
+        if (Interlocked.CompareExchange(ref releasingCaches, 1, 0) != 0) return;
+        Interlocked.Exchange(ref lastCacheReleaseTick, now);
+        TrackInflight(ReleaseCachesAsync);
+    }
+
     private async Task ReleaseCachesAsync()
     {
         try
         {
-            if (releaseCaches is not null) await releaseCaches(stop.Token).ConfigureAwait(false);
+            if (IsStoppingOrDisposed() || releaseCaches is null) return;
+            await releaseCaches(stop.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (IsStoppingOrDisposed()) { }
+        catch (ObjectDisposedException) when (Volatile.Read(ref disposed) != 0) { }
         catch (Exception error) { onError(error); }
+        finally
+        {
+            Interlocked.Exchange(ref releasingCaches, 0);
+        }
     }
 
     public Task Completion => worker;
@@ -81,8 +109,29 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         this.policyPoll = policyPoll ?? TimeSpan.FromSeconds(30);
         this.releaseCaches = releaseCaches;
         this.indexPaths = indexPaths;
-        this.queue = queue ?? (repository != null ? new IncrementalIndexQueue(repository, indexPaths, onError, reconcileInterval: reconcile) : null);
-        this.codeQueue = codeRepository != null ? new IncrementalIndexQueue(codeRepository, indexPaths, onError, reconcileInterval: reconcile) : null;
+        var skipExtensions = (settings.SkipTypes ?? [])
+            .SelectMany(s => s.Split([',', ' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+            .Select(s => s.TrimStart('*', '.'))
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var docExcluded = (settings.Skipped ?? []).Concat(this.ignoredRoots).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var codeExcluded = (settings.CodeSkipped ?? []).Concat(this.ignoredRoots).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        this.queue = queue ?? (repository != null
+            ? new IncrementalIndexQueue(repository, indexPaths, onError, reconcileInterval: reconcile)
+            {
+                AuthorizedRoots = settings.Folders,
+                ExcludedRoots = docExcluded,
+                SkipExtensions = skipExtensions
+            }
+            : null);
+        this.codeQueue = codeRepository != null
+            ? new IncrementalIndexQueue(codeRepository, indexPaths, onError, reconcileInterval: reconcile)
+            {
+                AuthorizedRoots = settings.CodeFolders,
+                ExcludedRoots = codeExcluded,
+                SkipExtensions = skipExtensions
+            }
+            : null;
         if (hostSignals != null)
         {
             this.hostSignals = hostSignals;
@@ -99,7 +148,7 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
         }
 
         this.budgetController = budgetController ?? new ResourceBudgetController(this.hostSignals,
-            onMemoryPressure: releaseCaches is null ? null : () => _ = ReleaseCachesAsync());
+            onMemoryPressure: releaseCaches is null ? null : OnMemoryPressureTriggered);
         if (this.queue != null)
         {
             this.queue.IsBattery = () => !this.hostSignals.GetPowerInfo().IsAcPower;
@@ -120,7 +169,7 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
                 {
                     IncludeSubdirectories = true,
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
-                    InternalBufferSize = 16 * 1024
+                    InternalBufferSize = 64 * 1024
                 };
                 watcher.Changed += Changed;
                 watcher.Created += Changed;
@@ -270,17 +319,17 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
 
     private void ScheduleDelayedSignal(TimeSpan delay)
     {
-        if (stop.IsCancellationRequested || Volatile.Read(ref disposed) != 0) return;
+        if (IsStoppingOrDisposed()) return;
         long target = Environment.TickCount64 + Math.Max(10L, (long)delay.TotalMilliseconds);
         lock (delayedTimerGate)
         {
-            if (stop.IsCancellationRequested || Volatile.Read(ref disposed) != 0) return;
+            if (IsStoppingOrDisposed()) return;
             if (target >= delayedSignalDueTick) return;
             delayedSignalDueTick = target;
             delayedSignalTimer ??= new Timer(_ =>
             {
                 lock (delayedTimerGate) { delayedSignalDueTick = long.MaxValue; }
-                if (!stop.IsCancellationRequested && Volatile.Read(ref disposed) == 0) Signal();
+                if (!IsStoppingOrDisposed()) Signal();
             }, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             delayedSignalTimer.Change(delay, Timeout.InfiniteTimeSpan);
         }
@@ -433,7 +482,13 @@ public sealed class BackgroundIndexCoordinator : IAsyncDisposable
 
                                 if (indexPaths != null)
                                 {
-                                    var processed = await activeQueue.ProcessReadyTasksAsync(50, policyStop.Token, batchSize: 16).ConfigureAwait(false);
+                                    var budgets = budgetController.ComputeBudgets();
+                                    var newFileBudget = budgets.FirstOrDefault(b => b.Class == "NewFileIndex");
+                                    bool memoryConstrained = newFileBudget is not null && newFileBudget.State.EndsWith(":memory", StringComparison.Ordinal);
+                                    int limit = memoryConstrained ? 8 : 50;
+                                    int batchSize = memoryConstrained ? 4 : 16;
+
+                                    var processed = await activeQueue.ProcessReadyTasksAsync(limit, policyStop.Token, batchSize: batchSize).ConfigureAwait(false);
                                     var remaining = await activeQueue.GetTaskCountsAsync(policyStop.Token).ConfigureAwait(false);
                                     if (processed > 0 && remaining.GetValueOrDefault("Ready") > 0)
                                     {

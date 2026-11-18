@@ -30,17 +30,17 @@ public sealed class ResourceBudgetController
 
     public void PreemptForInteractiveQuery()
     {
+        CancellationTokenSource oldBackfill;
+        CancellationTokenSource oldComplex;
         lock (sync)
         {
-            var oldBackfill = backfillInferenceCts;
-            var oldComplex = complexParseInferenceCts;
+            oldBackfill = backfillInferenceCts;
+            oldComplex = complexParseInferenceCts;
             backfillInferenceCts = new();
             complexParseInferenceCts = new();
-            oldBackfill.Cancel();
-            oldComplex.Cancel();
-            oldBackfill.Dispose();
-            oldComplex.Dispose();
         }
+        oldBackfill.Cancel();
+        oldComplex.Cancel();
     }
 
     public IReadOnlyList<IndexBudgetState> ComputeBudgets()

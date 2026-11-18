@@ -7,7 +7,7 @@ using WinSight.Core;
 namespace WinSight.Infrastructure.Inference;
 
 /// <summary>Owns one lazy, serialized JSONL host. Callers supply task prompts verbatim.</summary>
-public sealed class InferenceHostClient : IEmbeddingService
+public sealed class InferenceHostClient : IHostEmbeddingService
 {
     internal const int MaxLineBytes = 1024 * 1024;
     private const int MaxPending = 32;
@@ -20,10 +20,13 @@ public sealed class InferenceHostClient : IEmbeddingService
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
     private readonly TaskCompletionSource disposedCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private Session? session;
+    private volatile Session? session;
     private EmbeddingInfo? identity;
+    private volatile EmbeddingInfo? verifiedIdentity;
     private int pending, disposed, interactiveWaiting;
     private long nextId, lastInteractiveTick = -10000;
+
+    internal bool HasPendingInteractiveRequest => Volatile.Read(ref interactiveWaiting) > 0;
 
     public InferenceHostClient(string executable, string modelDirectory, string manifestPath,
         string accelerator = "auto")
@@ -57,13 +60,37 @@ public sealed class InferenceHostClient : IEmbeddingService
         : this(executable, modelDirectory, manifestPath, automaticProviders ? "auto" : "cpu",
             startupTimeout, requestTimeout) { }
 
-    public Task<EmbeddingInfo> GetInfoAsync(CancellationToken cancellationToken = default) => ExecuteAsync(async token =>
+    public bool TryGetVerifiedIdentity(out EmbeddingInfo info)
+    {
+        if (Volatile.Read(ref disposed) == 0 && session is not null && verifiedIdentity is { } current)
+        {
+            info = current;
+            return true;
+        }
+        info = null!;
+        return false;
+    }
+
+    public Task<EmbeddingInfo> GetOrStartInfoAsync(bool interactive, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (TryGetVerifiedIdentity(out var cached))
+            return Task.FromResult(cached);
+        return GetInfoAsync(interactive, cancellationToken);
+    }
+
+    public Task<EmbeddingInfo> GetInfoAsync(CancellationToken cancellationToken = default) =>
+        GetInfoAsync(interactive: true, cancellationToken);
+
+    internal Task<EmbeddingInfo> GetInfoAsync(bool interactive, CancellationToken cancellationToken = default) => ExecuteAsync(async token =>
     {
         using var reply = await ExchangeAsync(new { id = ++nextId, op = "info" }, nextId, token);
         var info = ReadInfo(reply.RootElement);
         CheckIdentity(info);
+        verifiedIdentity = info;
         return info;
-    }, cancellationToken, start: true, interactive: true);
+    }, cancellationToken, start: true, interactive: interactive);
 
     public async Task TrimIdleSessionsAsync(CancellationToken cancellationToken = default)
     {
@@ -72,6 +99,7 @@ public sealed class InferenceHostClient : IEmbeddingService
         {
             await ExecuteAsync(async token =>
             {
+                if (session is null) return 0;
                 using var reply = await ExchangeAsync(new { id = ++nextId, op = "trim" }, nextId, token);
                 return 0;
             }, cancellationToken, start: false, interactive: false).ConfigureAwait(false);
@@ -82,6 +110,9 @@ public sealed class InferenceHostClient : IEmbeddingService
     public Task<IReadOnlyList<EmbeddingResult>> EmbedAsync(IReadOnlyList<EmbeddingInput> inputs, CancellationToken cancellationToken = default) =>
         EmbedCoreAsync(inputs, interactive: false, cancellationToken);
 
+    public Task<IReadOnlyList<EmbeddingResult>> EmbedAsync(IReadOnlyList<EmbeddingInput> inputs, CancellationToken cancellationToken, CancellationToken preemptToken) =>
+        EmbedCoreAsync(inputs, interactive: false, cancellationToken, preemptToken);
+
     /// <summary>
     /// User-query path. It overtakes queued bulk batches and, once the host has accepted the request, a caller that stops
     /// waiting (the next keystroke) abandons only its own wait: the host finishes the short request, the reply is consumed,
@@ -90,7 +121,7 @@ public sealed class InferenceHostClient : IEmbeddingService
     public Task<IReadOnlyList<EmbeddingResult>> EmbedInteractiveAsync(IReadOnlyList<EmbeddingInput> inputs, CancellationToken cancellationToken = default) =>
         EmbedCoreAsync(inputs, interactive: true, cancellationToken);
 
-    private async Task<IReadOnlyList<EmbeddingResult>> EmbedCoreAsync(IReadOnlyList<EmbeddingInput> inputs, bool interactive, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<EmbeddingResult>> EmbedCoreAsync(IReadOnlyList<EmbeddingInput> inputs, bool interactive, CancellationToken cancellationToken, CancellationToken preemptToken = default)
     {
         ArgumentNullException.ThrowIfNull(inputs);
         if (inputs.Count > 4096) throw new ArgumentOutOfRangeException(nameof(inputs), "At most 4096 items per call.");
@@ -107,7 +138,7 @@ public sealed class InferenceHostClient : IEmbeddingService
         {
             // Preserve the historical contract: an empty call still observes disposal and cancellation.
             return await ExecuteAsync<IReadOnlyList<EmbeddingResult>>(_ => Task.FromResult<IReadOnlyList<EmbeddingResult>>([]),
-                cancellationToken, start: false, interactive).ConfigureAwait(false);
+                cancellationToken, start: false, interactive, preemptToken).ConfigureAwait(false);
         }
         // Each wire batch takes the host separately, so a waiting user query can slip in between two bulk batches.
         var results = new List<EmbeddingResult>(snapshot.Length);
@@ -119,8 +150,11 @@ public sealed class InferenceHostClient : IEmbeddingService
                 var first = snapshot[from];
                 if (!identity!.Capabilities.Contains(first.Operation, StringComparer.Ordinal))
                     throw new NotSupportedException($"Host does not advertise {first.Operation} capability.");
+                var maxBatch = !interactive && (Volatile.Read(ref interactiveWaiting) > 0
+                    || (Interlocked.Read(ref lastInteractiveTick) is >= 0 and var tick && Environment.TickCount64 - tick < 500))
+                    ? 4 : 32;
                 var size = 1;
-                while (size < 32 && from + size < snapshot.Length && snapshot[from + size].Operation == first.Operation
+                while (size < maxBatch && from + size < snapshot.Length && snapshot[from + size].Operation == first.Operation
                     && snapshot[from + size].Budget == first.Budget) size++;
                 var id = ++nextId;
                 byte[] payload;
@@ -134,23 +168,24 @@ public sealed class InferenceHostClient : IEmbeddingService
                 }
                 using var reply = await ExchangeBytesAsync(payload, id, token).ConfigureAwait(false);
                 return (ReadBatch(reply.RootElement, size), size);
-            }, cancellationToken, start: true, interactive).ConfigureAwait(false);
+            }, cancellationToken, start: true, interactive, preemptToken).ConfigureAwait(false);
             results.AddRange(batch);
             offset += count;
         }
         return results;
     }
 
-    private async Task<T> ExecuteAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken, bool start = true, bool interactive = false)
+    private async Task<T> ExecuteAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken, bool start = true, bool interactive = false, CancellationToken preemptToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
+        preemptToken.ThrowIfCancellationRequested();
         if (Interlocked.Increment(ref pending) > MaxPending)
         {
             Interlocked.Decrement(ref pending);
             throw new InvalidOperationException("Inference request admission limit reached.");
         }
-        if (!interactive) return await RunSerializedAsync(action, cancellationToken, start, interactive: false).ConfigureAwait(false);
+        if (!interactive) return await RunSerializedAsync(action, cancellationToken, start, interactive: false, preemptToken).ConfigureAwait(false);
         // The work runs to completion once the host owns it; only this caller's wait is abandoned on cancellation.
         Interlocked.Increment(ref interactiveWaiting);
         var work = RunSerializedAsync(action, cancellationToken, start, interactive: true);
@@ -163,22 +198,29 @@ public sealed class InferenceHostClient : IEmbeddingService
         }
     }
 
-    private async Task<T> RunSerializedAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken callerToken, bool start, bool interactive)
+    private async Task<T> RunSerializedAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken callerToken, bool start, bool interactive, CancellationToken preemptToken = default)
     {
-        // Interactive work is shielded from caller cancellation once the gate is taken; it still ends with the client and the request timeout.
-        using var queueLink = CancellationTokenSource.CreateLinkedTokenSource(callerToken, lifetime.Token);
-        using var shielded = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-        var linked = interactive ? shielded : queueLink;
+        CancellationTokenSource? waitLink = null;
+        CancellationTokenSource? activeLink = null;
+        CancellationTokenSource? shielded = null;
         var acquired = false;
         var counted = interactive;
         try
         {
+            waitLink = preemptToken.CanBeCanceled && !interactive
+                ? CancellationTokenSource.CreateLinkedTokenSource(callerToken, lifetime.Token, preemptToken)
+                : CancellationTokenSource.CreateLinkedTokenSource(callerToken, lifetime.Token);
+            activeLink = CancellationTokenSource.CreateLinkedTokenSource(callerToken, lifetime.Token);
+            // Interactive work is shielded from caller cancellation once the gate is taken; it still ends with the client and the request timeout.
+            shielded = interactive ? CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token) : activeLink;
+
+            var yieldDeadline = Environment.TickCount64 + MaxInteractiveYieldMilliseconds;
             while (true)
             {
-                if (!interactive) await YieldToInteractiveAsync(queueLink.Token).ConfigureAwait(false);
+                if (!interactive) await YieldToInteractiveAsync(waitLink.Token, yieldDeadline).ConfigureAwait(false);
                 // Queueing is bounded in both size and time; cancelling a waiter must not reset another caller's child.
-                if (!await gate.WaitAsync(requestTimeout, queueLink.Token).ConfigureAwait(false)) throw new TimeoutException("Inference queue wait timed out.");
-                if (!interactive && Volatile.Read(ref interactiveWaiting) > 0)
+                if (!await gate.WaitAsync(requestTimeout, waitLink.Token).ConfigureAwait(false)) throw new TimeoutException("Inference queue wait timed out.");
+                if (!interactive && Volatile.Read(ref interactiveWaiting) > 0 && Environment.TickCount64 < yieldDeadline)
                 {
                     gate.Release();
                     continue;
@@ -186,9 +228,10 @@ public sealed class InferenceHostClient : IEmbeddingService
                 acquired = true;
                 break;
             }
-            linked.Token.ThrowIfCancellationRequested();
-            if (start) await EnsureStartedAsync(linked.Token).ConfigureAwait(false);
-            return await action(linked.Token).ConfigureAwait(false);
+            shielded.Token.ThrowIfCancellationRequested();
+            if (start) await EnsureStartedAsync(shielded.Token).ConfigureAwait(false);
+            if (interactive) session?.SetInteractiveBoost(true);
+            return await action(shielded.Token).ConfigureAwait(false);
         }
         catch
         {
@@ -197,22 +240,23 @@ public sealed class InferenceHostClient : IEmbeddingService
         }
         finally
         {
+            if (interactive) shielded?.Dispose();
+            activeLink?.Dispose();
+            waitLink?.Dispose();
             if (interactive) Interlocked.Exchange(ref lastInteractiveTick, Environment.TickCount64);
-            if (counted) Interlocked.Decrement(ref interactiveWaiting);
+            if (counted && Interlocked.Decrement(ref interactiveWaiting) == 0) session?.SetInteractiveBoost(false);
             if (acquired) gate.Release();
             Interlocked.Decrement(ref pending);
         }
     }
 
     /// <summary>Bulk batches step aside while a user query is queued; the wait is capped so a typing burst cannot starve indexing.</summary>
-    private async Task YieldToInteractiveAsync(CancellationToken token)
+    private async Task YieldToInteractiveAsync(CancellationToken token, long yieldDeadlineTick)
     {
-        var waited = 0;
         while ((Volatile.Read(ref interactiveWaiting) > 0 || Environment.TickCount64 - Interlocked.Read(ref lastInteractiveTick) < 35)
-               && waited < MaxInteractiveYieldMilliseconds)
+               && Environment.TickCount64 < yieldDeadlineTick)
         {
             await Task.Delay(YieldPollMilliseconds, token).ConfigureAwait(false);
-            waited += YieldPollMilliseconds;
         }
     }
 
@@ -257,6 +301,7 @@ public sealed class InferenceHostClient : IEmbeddingService
             var info = ReadInfo(root);
             CheckIdentity(info);
             identity ??= info;
+            verifiedIdentity = info;
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         {
@@ -306,7 +351,7 @@ public sealed class InferenceHostClient : IEmbeddingService
         var model = Text(info, "model");
         var revision = Text(info, "revision");
         Require(model == "onnx-community/embeddinggemma-2-ONNX" && revision == "daa72c51243991dfcaf9f9137d2c573d8f7790c0", "Host model identity mismatch.");
-        Require(Text(info, "dtype") == "q4", "Host dtype mismatch.");
+        Require(Text(info, "dtype") is "q4" or "fp32-static" or "int8-fp32", "Host dtype mismatch.");
         var runtime = Text(info, "runtime");
         Require(runtime.StartsWith("windows-ml-ort-", StringComparison.Ordinal) && runtime.Length > 15, "Invalid host runtime.");
         var provider = Text(info, "requested_provider");
@@ -419,6 +464,7 @@ public sealed class InferenceHostClient : IEmbeddingService
 
     private void Reset()
     {
+        verifiedIdentity = null;
         var old = session;
         session = null;
         old?.Dispose();
@@ -470,7 +516,9 @@ public sealed class InferenceHostClient : IEmbeddingService
         {
             Process = process;
             output = process.StandardOutput.BaseStream;
-            var lowPriority = Environment.GetEnvironmentVariable("WINSIGHT_INFERENCE_LOW_PRIORITY") is "1" or "true";
+            var lowEnv = Environment.GetEnvironmentVariable("WINSIGHT_INFERENCE_LOW_PRIORITY");
+            var lowPriority = !string.Equals(lowEnv, "0", StringComparison.Ordinal)
+                && !string.Equals(lowEnv, "false", StringComparison.OrdinalIgnoreCase);
             if (OperatingSystem.IsWindows()) job = WindowsChildJob.Attach(process, lowPriority: lowPriority);
             stderr = DrainAsync(process.StandardError.BaseStream);
             onExit = (_, _) => Kill();
@@ -495,6 +543,11 @@ public sealed class InferenceHostClient : IEmbeddingService
             }
         }
 
+        internal void SetInteractiveBoost(bool boost)
+        {
+            if (OperatingSystem.IsWindows()) job?.SetInteractiveBoost(boost);
+        }
+
         internal async Task<JsonDocument> ReadAsync(CancellationToken token)
         {
             using var line = new MemoryStream();
@@ -506,15 +559,25 @@ public sealed class InferenceHostClient : IEmbeddingService
                     position = 0;
                     if (available == 0) throw new EndOfStreamException("Inference host stdout ended before a complete JSONL reply.");
                 }
-                var value = chunk[position++];
-                if (value == 10) break;
-                Require(line.Length < MaxLineBytes, "Inference reply exceeds 1 MiB.");
-                line.WriteByte(value);
+                var span = chunk.AsSpan(position, available - position);
+                int nl = span.IndexOf((byte)10);
+                int copyCount = nl >= 0 ? nl : span.Length;
+                Require(line.Length + copyCount <= MaxLineBytes, "Inference reply exceeds 1 MiB.");
+                if (copyCount > 0) line.Write(chunk, position, copyCount);
+                if (nl >= 0)
+                {
+                    position += nl + 1;
+                    break;
+                }
+                position = available;
             }
             JsonDocument? document = null;
             try
             {
-                document = JsonDocument.Parse(StrictUtf8.GetString(line.GetBuffer(), 0, (int)line.Length), new JsonDocumentOptions { MaxDepth = 16 });
+                var buffer = line.GetBuffer();
+                var length = (int)line.Length;
+                _ = StrictUtf8.GetCharCount(buffer, 0, length);
+                document = JsonDocument.Parse(buffer.AsMemory(0, length), new JsonDocumentOptions { MaxDepth = 16 });
                 Require(document.RootElement.ValueKind == JsonValueKind.Object, "Inference reply must be an object.");
                 CheckDuplicates(document.RootElement);
                 return document;

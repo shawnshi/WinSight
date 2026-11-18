@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace WinSight.Infrastructure.Media;
 
-public sealed record NativeWordPageRequest(string SourcePath, int PageNumber = 1, int MaxEdge = 2400, int? ParagraphNumber = null)
+public sealed record NativeWordPageRequest(string SourcePath, int PageNumber = 1, int MaxEdge = 1600, int? ParagraphNumber = null)
 {
     internal void Validate()
     {

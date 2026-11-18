@@ -21,8 +21,10 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
     private long watcherOverflows;
     private long enqueueCounter;
+    private long pruneCounter;
     private int overflowDropped;
     private DateTimeOffset? lastReconcileUtc;
+    private const int MaxTransientEntries = 1024;
 
     private readonly ConcurrentDictionary<string, (string Path, DateTimeOffset Time, string? FileId)> pendingDeletes = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, bool> dirtyRoots = new(StringComparer.OrdinalIgnoreCase);
@@ -34,6 +36,29 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
     public string UsnState { get; private set; } = "not-attempted";
     // Optional budget signal: the coordinator sets this so queue-side work can honour battery state.
     public Func<bool>? IsBattery { get; set; }
+
+    private IReadOnlyList<string> excludedRoots = Array.Empty<string>();
+    public IReadOnlyList<string> ExcludedRoots
+    {
+        get => excludedRoots;
+        init => excludedRoots = value?.Where(s => !string.IsNullOrWhiteSpace(s)).Select(FilePolicy.Normalize).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? Array.Empty<string>();
+    }
+
+    private IReadOnlySet<string> skipExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlySet<string> SkipExtensions
+    {
+        get => skipExtensions;
+        init => skipExtensions = value is null
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : value.Select(s => s.Trim().TrimStart('*', '.')).Where(s => !string.IsNullOrWhiteSpace(s)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private IReadOnlyList<string> authorizedRoots = Array.Empty<string>();
+    public IReadOnlyList<string> AuthorizedRoots
+    {
+        get => authorizedRoots;
+        init => authorizedRoots = value?.Where(s => !string.IsNullOrWhiteSpace(s)).Select(FilePolicy.Normalize).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? Array.Empty<string>();
+    }
 
     public IncrementalIndexQueue(
         IIndexRepository repository,
@@ -72,16 +97,43 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         return false;
     }
 
+    private bool ShouldQueuePath(string normPath, string normRoot, bool code)
+    {
+        if (IsTemporaryFile(normPath)) return false;
+        if (FilePolicy.Kind(normPath, code) is null) return false;
+        if (skipExtensions.Count > 0 && skipExtensions.Contains(FilePolicy.Extension(normPath))) return false;
+        var effectiveRoot = normRoot;
+        foreach (var authRoot in authorizedRoots)
+        {
+            if (authRoot.Length > effectiveRoot.Length && FilePolicy.Under(normPath, authRoot))
+                effectiveRoot = authRoot;
+        }
+        foreach (var ex in excludedRoots)
+        {
+            if (FilePolicy.Under(normPath, ex) && !FilePolicy.Under(effectiveRoot, ex)) return false;
+        }
+        var dir = Path.GetDirectoryName(normPath);
+        while (!string.IsNullOrEmpty(dir) && dir.Length > effectiveRoot.Length && FilePolicy.Inside(dir, effectiveRoot))
+        {
+            if (FilePolicy.SkipFolder(dir, code)) return false;
+            dir = Path.GetDirectoryName(dir);
+        }
+        return true;
+    }
+
     public async Task EnqueueEventAsync(string path, string root, bool code, WatcherChangeTypes changeType, string? oldPath = null, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (IsTemporaryFile(path) && (oldPath == null || IsTemporaryFile(oldPath))) return;
 
         var now = DateTimeOffset.UtcNow;
+        PruneTransientMaps(now);
+        var normRoot = FilePolicy.Normalize(root);
         var normPath = FilePolicy.Normalize(path);
 
         if (changeType == WatcherChangeTypes.Deleted)
         {
+            if (!ShouldQueuePath(normPath, normRoot, code)) return;
             var fileId = FileIdentityResolver.GetFileId(normPath);
             pendingDeletes[normPath] = (normPath, now, fileId);
             var task = new IndexTask(normPath, root, code, "Delete", null, "Stabilizing", 0, now + TimeSpan.FromSeconds(2), now);
@@ -92,6 +144,10 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         if (changeType == WatcherChangeTypes.Renamed && oldPath != null)
         {
             var normOld = FilePolicy.Normalize(oldPath);
+            bool oldValid = ShouldQueuePath(normOld, normRoot, code);
+            bool newValid = ShouldQueuePath(normPath, normRoot, code);
+            if (!oldValid && !newValid) return;
+
             var moveKey = normOld + "->" + normPath;
             if (recentMoves.TryGetValue(moveKey, out var moveTime) && (now - moveTime).TotalSeconds < 2)
             {
@@ -99,20 +155,43 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
             }
             recentMoves[moveKey] = now;
 
-            if (File.Exists(normPath))
+            if (oldValid && newValid)
             {
-                var task = new IndexTask(normPath, root, code, "Move", normOld, "Stabilizing", 0, now + quietPeriod, now);
-                await EnqueueWithCoalescingAsync(task, cancellationToken).ConfigureAwait(false);
+                if (string.Equals(normOld, normPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (File.Exists(normPath))
+                    {
+                        var task = new IndexTask(normOld, root, code, "Update", null, "Stabilizing", 0, now + quietPeriod, now);
+                        await EnqueueWithCoalescingAsync(task, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                else if (File.Exists(normPath))
+                {
+                    var task = new IndexTask(normPath, root, code, "Move", normOld, "Stabilizing", 0, now + quietPeriod, now);
+                    await EnqueueWithCoalescingAsync(task, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var delTask = new IndexTask(normOld, root, code, "Delete", null, "Stabilizing", 0, now + quietPeriod, now);
+                    await EnqueueWithCoalescingAsync(delTask, cancellationToken).ConfigureAwait(false);
+                    var addTask = new IndexTask(normPath, root, code, "Add", null, "Stabilizing", 0, now + quietPeriod, now);
+                    await EnqueueWithCoalescingAsync(addTask, cancellationToken).ConfigureAwait(false);
+                }
             }
-            else
+            else if (oldValid)
             {
                 var delTask = new IndexTask(normOld, root, code, "Delete", null, "Stabilizing", 0, now + quietPeriod, now);
                 await EnqueueWithCoalescingAsync(delTask, cancellationToken).ConfigureAwait(false);
+            }
+            else if (File.Exists(normPath))
+            {
                 var addTask = new IndexTask(normPath, root, code, "Add", null, "Stabilizing", 0, now + quietPeriod, now);
                 await EnqueueWithCoalescingAsync(addTask, cancellationToken).ConfigureAwait(false);
             }
             return;
         }
+
+        if (!ShouldQueuePath(normPath, normRoot, code)) return;
 
         string kind = changeType == WatcherChangeTypes.Created ? "Add" : "Update";
         string? pairedTombstone = null;
@@ -123,11 +202,16 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
             {
                 foreach (var pair in pendingDeletes)
                 {
-                    if ((now - pair.Value.Time).TotalSeconds <= 2.0 && string.Equals(pair.Value.FileId, targetId, StringComparison.Ordinal))
+                    if ((now - pair.Value.Time).TotalSeconds > 2.0)
+                    {
+                        pendingDeletes.TryRemove(pair);
+                        continue;
+                    }
+                    if (string.Equals(pair.Value.FileId, targetId, StringComparison.Ordinal))
                     {
                         pairedTombstone = pair.Key;
                         kind = "Move";
-                        pendingDeletes.TryRemove(pair.Key, out _);
+                        pendingDeletes.TryRemove(pair);
                         break;
                     }
                 }
@@ -136,6 +220,46 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
         var enqueueTask = new IndexTask(normPath, root, code, kind, pairedTombstone, "Stabilizing", 0, now + quietPeriod, now);
         await EnqueueWithCoalescingAsync(enqueueTask, cancellationToken).ConfigureAwait(false);
+    }
+
+    private void PruneTransientMaps(DateTimeOffset now)
+    {
+        if (pendingDeletes.Count <= MaxTransientEntries && recentMoves.Count <= MaxTransientEntries && (Interlocked.Increment(ref pruneCounter) & 63) != 0)
+            return;
+
+        if (!pendingDeletes.IsEmpty)
+        {
+            foreach (var pair in pendingDeletes)
+            {
+                if ((now - pair.Value.Time).TotalSeconds > 5.0)
+                    pendingDeletes.TryRemove(pair);
+            }
+            if (pendingDeletes.Count > MaxTransientEntries)
+            {
+                int excess = pendingDeletes.Count - 512;
+                foreach (var pair in pendingDeletes.ToArray().OrderBy(p => p.Value.Time).Take(excess))
+                {
+                    pendingDeletes.TryRemove(pair);
+                }
+            }
+        }
+
+        if (!recentMoves.IsEmpty)
+        {
+            foreach (var pair in recentMoves)
+            {
+                if ((now - pair.Value).TotalSeconds > 5.0)
+                    recentMoves.TryRemove(pair);
+            }
+            if (recentMoves.Count > MaxTransientEntries)
+            {
+                int excess = recentMoves.Count - 512;
+                foreach (var pair in recentMoves.ToArray().OrderBy(p => p.Value).Take(excess))
+                {
+                    recentMoves.TryRemove(pair);
+                }
+            }
+        }
     }
 
     private async Task EnqueueWithCoalescingAsync(IndexTask task, CancellationToken cancellationToken)
@@ -184,104 +308,89 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         onError?.Invoke(error);
     }
 
-    public async Task<bool> CheckStabilizationAsync(IndexTask task, CancellationToken cancellationToken = default)
+    public async Task<bool> CheckStabilizationAsync(IndexTask task, CancellationToken cancellationToken = default) =>
+        (await CheckStabilizationBatchAsync([task], cancellationToken).ConfigureAwait(false)).Count == 1;
+
+    private async Task<List<IndexTask>> CheckStabilizationBatchAsync(IReadOnlyList<IndexTask> candidates, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        var ready = new List<IndexTask>();
+        var firstSamples = new List<(IndexTask Task, long Len1, DateTime Time1)>();
         var now = DateTimeOffset.UtcNow;
 
-        if (now - task.SeenUtc >= maxWait)
+        foreach (var task in candidates)
         {
-            await repository.UpdateTaskStateAsync(task.Path, "Ready", task.Attempts, now, "still-changing", cancellationToken).ConfigureAwait(false);
-            return true;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (now - task.SeenUtc >= maxWait)
+            {
+                await repository.UpdateTaskStateAsync(task.Path, "Ready", task.Attempts, now, "still-changing", cancellationToken).ConfigureAwait(false);
+                ready.Add(task with { State = "Ready", Reason = "still-changing" });
+                continue;
+            }
+
+            if (now < task.DueUtc) continue;
+
+            if (task.Kind == "Delete" || !File.Exists(task.Path))
+            {
+                await repository.UpdateTaskStateAsync(task.Path, "Ready", task.Attempts, now, null, cancellationToken).ConfigureAwait(false);
+                ready.Add(task with { State = "Ready", Reason = null });
+                continue;
+            }
+
+            try
+            {
+                var fi1 = new FileInfo(task.Path);
+                firstSamples.Add((task, fi1.Length, fi1.LastWriteTimeUtc));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                await HandleLockOrErrorAsync(task, ex, cancellationToken).ConfigureAwait(false);
+            }
         }
 
-        if (now < task.DueUtc) return false;
-
-        if (task.Kind == "Delete")
-        {
-            await repository.UpdateTaskStateAsync(task.Path, "Ready", task.Attempts, now, null, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (!File.Exists(task.Path))
-        {
-            await repository.UpdateTaskStateAsync(task.Path, "Ready", task.Attempts, now, null, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        long len1;
-        DateTime time1;
-        try
-        {
-            var fi1 = new FileInfo(task.Path);
-            len1 = fi1.Length;
-            time1 = fi1.LastWriteTimeUtc;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return await HandleLockOrErrorAsync(task, ex, cancellationToken).ConfigureAwait(false);
-        }
+        if (firstSamples.Count == 0) return ready;
 
         await Task.Delay(300, cancellationToken).ConfigureAwait(false);
 
-        long len2;
-        DateTime time2;
-        try
+        foreach (var (task, len1, time1) in firstSamples)
         {
-            var fi2 = new FileInfo(task.Path);
-            len2 = fi2.Length;
-            time2 = fi2.LastWriteTimeUtc;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return await HandleLockOrErrorAsync(task, ex, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            long len2;
+            DateTime time2;
+            try
+            {
+                var fi2 = new FileInfo(task.Path);
+                len2 = fi2.Length;
+                time2 = fi2.LastWriteTimeUtc;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                await HandleLockOrErrorAsync(task, ex, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            if (len1 != len2 || time1 != time2)
+            {
+                var newDue = DateTimeOffset.UtcNow + quietPeriod;
+                if (newDue > task.SeenUtc + maxWait) newDue = task.SeenUtc + maxWait;
+                await repository.UpdateTaskStateAsync(task.Path, "Stabilizing", task.Attempts, newDue, "sampling-mismatch", cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            try
+            {
+                using (var stream = new FileStream(task.Path, FileMode.Open, FileAccess.Read, FileShare.None))
+                {
+                }
+                await repository.UpdateTaskStateAsync(task.Path, "Ready", 0, DateTimeOffset.UtcNow, null, cancellationToken).ConfigureAwait(false);
+                ready.Add(task with { State = "Ready", Attempts = 0, Reason = null });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                await HandleLockOrErrorAsync(task, ex, cancellationToken).ConfigureAwait(false);
+            }
         }
 
-        if (len1 != len2 || time1 != time2)
-        {
-            var newDue = DateTimeOffset.UtcNow + quietPeriod;
-            if (newDue > task.SeenUtc + maxWait) newDue = task.SeenUtc + maxWait;
-            await repository.UpdateTaskStateAsync(task.Path, "Stabilizing", task.Attempts, newDue, "sampling-mismatch", cancellationToken).ConfigureAwait(false);
-            return false;
-        }
-
-        try
-        {
-            using (var stream = new FileStream(task.Path, FileMode.Open, FileAccess.Read, FileShare.None))
-            {
-            }
-            await repository.UpdateTaskStateAsync(task.Path, "Ready", 0, DateTimeOffset.UtcNow, null, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-        catch (IOException ex) when (IsSharingOrLockViolation(ex))
-        {
-            var attempts = task.Attempts + 1;
-            if (attempts > 5)
-            {
-                await repository.UpdateTaskStateAsync(task.Path, "Deferred", attempts, DateTimeOffset.UtcNow + TimeSpan.FromMinutes(10), "locked", cancellationToken).ConfigureAwait(false);
-                return false;
-            }
-            else
-            {
-                double backoffSec = 0.5 * Math.Pow(2, attempts - 1);
-                var due = DateTimeOffset.UtcNow.AddSeconds(backoffSec);
-                await repository.UpdateTaskStateAsync(task.Path, "Stabilizing", attempts, due, "locked", cancellationToken).ConfigureAwait(false);
-                return false;
-            }
-        }
-        catch (Exception ex)
-        {
-            var attempts = task.Attempts + 1;
-            if (attempts >= 3)
-            {
-                await repository.UpdateTaskStateAsync(task.Path, "Deferred", attempts, DateTimeOffset.UtcNow + TimeSpan.FromMinutes(5), ex.Message, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await repository.UpdateTaskStateAsync(task.Path, "Failed", attempts, DateTimeOffset.UtcNow.AddSeconds(5), ex.Message, cancellationToken).ConfigureAwait(false);
-            }
-            return false;
-        }
+        return ready;
     }
 
     private async Task<bool> HandleLockOrErrorAsync(IndexTask task, Exception ex, CancellationToken cancellationToken)
@@ -389,11 +498,15 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
         if (fallbackRoots.Count > 0)
         {
+            var allNormRoots = validRoots.Select(FilePolicy.Normalize)
+                .Concat(authorizedRoots)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
             var existingFiles = await repository.ReadFileHeadersAsync(cancellationToken).ConfigureAwait(false);
             foreach (var (rawRoot, normRoot) in fallbackRoots)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await ReconcileSingleFallbackRootAsync(rawRoot, normRoot, code, requireStabilization, upgradePageImages, existingFiles, cancellationToken).ConfigureAwait(false);
+                await ReconcileSingleFallbackRootAsync(rawRoot, normRoot, code, requireStabilization, upgradePageImages, allNormRoots, existingFiles, cancellationToken).ConfigureAwait(false);
                 anyReconciled = true;
             }
         }
@@ -407,21 +520,48 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         bool code,
         bool requireStabilization,
         bool upgradePageImages,
+        IReadOnlyList<string> allNormRoots,
         IReadOnlyList<IndexedFile> existingFiles,
         CancellationToken cancellationToken)
     {
+        bool IsDelegatedToNestedRoot(string filePath)
+        {
+            foreach (var r in allNormRoots)
+            {
+                if (r.Length > normRoot.Length && FilePolicy.Under(filePath, r))
+                {
+                    foreach (var ex in excludedRoots)
+                    {
+                        if (FilePolicy.Under(r, ex) && !FilePolicy.Under(normRoot, ex))
+                            return true;
+                    }
+                    var dir = r;
+                    while (!string.IsNullOrEmpty(dir) && dir.Length > normRoot.Length && FilePolicy.Inside(dir, normRoot))
+                    {
+                        var name = Path.GetFileName(dir);
+                        if ((name.Length > 0 && name[0] == '.') || FilePolicy.SkipFolder(dir, code))
+                            return true;
+                        dir = Path.GetDirectoryName(dir);
+                    }
+                }
+            }
+            return false;
+        }
+
         var indexMap = existingFiles
-            .Where(f => FilePolicy.Under(f.Path, normRoot))
+            .Where(f => FilePolicy.Under(f.Path, normRoot) && !IsDelegatedToNestedRoot(f.Path))
             .ToDictionary(f => FilePolicy.Normalize(f.Path), StringComparer.OrdinalIgnoreCase);
 
         var diskPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var pending = new List<IndexTask>();
+        int totalEnqueued = 0;
         // A manual pass enumerates settled files; marking them Ready avoids a 300 ms probe per file.
         var enqueueState = requireStabilization ? "Pending" : "Ready";
         async Task FlushAsync(bool flushAll)
         {
             if (pending.Count == 0 || (!flushAll && pending.Count < 500)) return;
             await repository.EnqueueIndexTasksAsync(pending.ToArray(), cancellationToken).ConfigureAwait(false);
+            totalEnqueued += pending.Count;
             pending.Clear();
         }
 
@@ -437,14 +577,23 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                 indexMap.Remove(norm);
                 bool needsPageImageUpgrade = upgradePageImages && indexed.State == "partial" &&
                     indexed.Detail?.StartsWith("Text-only PDF:", StringComparison.Ordinal) == true;
+                bool isMediaOrImage = indexed.Kind is "image" or "screenshot" or "audio" or "video";
                 bool needsEmbeddingUpgrade = indexed.State == "partial" &&
-                    (indexed.Detail?.Contains("Semantic extraction unavailable", StringComparison.OrdinalIgnoreCase) == true
-                     || indexed.Detail?.Contains("no embedding service", StringComparison.OrdinalIgnoreCase) == true);
-                if (!needsPageImageUpgrade && !needsEmbeddingUpgrade && indexed.State != "failed" && indexed.State != "pending" && indexed.Size == file.Length && Math.Abs(indexed.ModifiedTime - mtime) < 0.001)
+                    (indexed.Detail?.Contains("Vision feature count differs", StringComparison.OrdinalIgnoreCase) == true
+                     || indexed.Detail?.Contains("Native image inspection is not configured", StringComparison.OrdinalIgnoreCase) == true
+                     || indexed.Detail?.Contains("visual embedding failed", StringComparison.OrdinalIgnoreCase) == true
+                     || (isMediaOrImage && (indexed.Detail?.Contains("Semantic extraction unavailable", StringComparison.OrdinalIgnoreCase) == true
+                         || indexed.Detail?.Contains("no embedding service", StringComparison.OrdinalIgnoreCase) == true)));
+                bool needsHostRetry = indexed.State == "skipped" &&
+                    indexed.Detail?.Contains("because the isolated reader host is unavailable", StringComparison.OrdinalIgnoreCase) == true;
+                bool needsOfficeRevisionUpgrade = !code &&
+                    FilePolicy.Extension(norm) is "docx" or "pptx" or "xlsx" &&
+                    indexed.Info?.Contains("\"sourceRevision\":\"office-source-units-v1", StringComparison.Ordinal) == true;
+                if (!needsPageImageUpgrade && !needsEmbeddingUpgrade && !needsHostRetry && !needsOfficeRevisionUpgrade && indexed.State != "failed" && indexed.State != "pending" && indexed.Size == file.Length && Math.Abs(indexed.ModifiedTime - mtime) < 0.001)
                 {
                     continue;
                 }
-                pending.Add(new IndexTask(norm, normRoot, code, "Update", null, enqueueState, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill"));
+                pending.Add(new IndexTask(FilePolicy.Normalize(indexed.Path), normRoot, code, "Update", null, enqueueState, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "reconcile_backfill"));
                 await FlushAsync(false).ConfigureAwait(false);
             }
             else
@@ -464,6 +613,11 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         await TryRecordUsnCheckpointAsync(normRoot, cancellationToken).ConfigureAwait(false);
 
         await FlushAsync(true).ConfigureAwait(false);
+        if (totalEnqueued > 0)
+        {
+            var dropped = await repository.TrimTasksAsync(maxQueueTasks, cancellationToken).ConfigureAwait(false);
+            if (dropped > 0) Interlocked.Add(ref overflowDropped, dropped);
+        }
         dirtyRoots.TryRemove(rawRoot, out _);
         lastReconcileUtc = DateTimeOffset.UtcNow;
     }
@@ -482,147 +636,180 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
 
         string probeRoot = volumeRoots[0].NormRoot;
 
-        (string JournalId, string NextUsn, DateTimeOffset ReconcileUtc)? checkpoint;
         try
         {
-            checkpoint = await checkpointRepo.GetUsnCheckpointAsync(volumeSerial, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            UsnState = $"usn_unavailable(checkpoint-read-failed: {ex.Message})";
-            return false;
-        }
-
-        if (checkpoint == null)
-        {
-            UsnState = "usn_unavailable(missing-checkpoint)";
-            return false;
-        }
-
-        var (queryOk, queryInfo, queryErr) = usnReader.QueryJournal(probeRoot);
-        if (!queryOk || queryInfo == null)
-        {
-            UsnState = $"usn_unavailable({queryErr ?? "query-failed"})";
-            return false;
-        }
-
-        string currentJournalIdHex = queryInfo.JournalId.ToString("X16");
-        if (!string.Equals(checkpoint.Value.JournalId, currentJournalIdHex, StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(checkpoint.Value.JournalId, queryInfo.JournalId.ToString(), StringComparison.OrdinalIgnoreCase))
-        {
-            UsnState = "usn_unavailable(journal-id-mismatch)";
-            return false;
-        }
-
-        if (!long.TryParse(checkpoint.Value.NextUsn, out var startUsn))
-        {
-            UsnState = "usn_unavailable(corrupted-checkpoint-usn)";
-            return false;
-        }
-
-        if (startUsn < queryInfo.LowestValidUsn)
-        {
-            UsnState = "usn_unavailable(journal-truncated)";
-            return false;
-        }
-
-        var (readOk, records, nextUsn, readErr) = usnReader.ReadIncrements(probeRoot, queryInfo.JournalId, startUsn);
-        if (!readOk)
-        {
-            UsnState = $"usn_unavailable({readErr ?? "read-failed"})";
-            return false;
-        }
-
-        const uint DirAttr = 0x10;
-        const uint DirTopologyReasons = UsnJournalReader.USN_REASON_FILE_DELETE
-            | UsnJournalReader.USN_REASON_RENAME_OLD_NAME
-            | UsnJournalReader.USN_REASON_RENAME_NEW_NAME;
-
-        foreach (var record in records)
-        {
-            if ((record.FileAttributes & DirAttr) != 0 && (record.Reason & DirTopologyReasons) != 0)
+            (string JournalId, string NextUsn, DateTimeOffset ReconcileUtc)? checkpoint;
+            try
             {
-                UsnState = "usn_unavailable(dir-rename-or-delete)";
+                checkpoint = await checkpointRepo.GetUsnCheckpointAsync(volumeSerial, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                UsnState = $"usn_unavailable(checkpoint-read-failed: {ex.Message})";
                 return false;
             }
-        }
 
-        int matchedCount = 0;
-        var now = DateTimeOffset.UtcNow;
-        var orderedRoots = volumeRoots.OrderByDescending(r => r.NormRoot.Length).ToArray();
-        using var volumeHandle = usnReader.OpenVolumeForBatch(probeRoot);
-        var batch = new List<IndexTask>();
-
-        foreach (var record in records)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var resolvedPath = usnReader.ResolvePath(probeRoot, record.FileReferenceNumber, record.ParentFileReferenceNumber, record.FileName, volumeHandle);
-            if (resolvedPath == null) continue;
-
-            var normPath = FilePolicy.Normalize(resolvedPath);
-            string? matchedRoot = null;
-            foreach (var candidate in orderedRoots)
+            if (checkpoint == null)
             {
-                if (FilePolicy.Under(normPath, candidate.NormRoot))
+                UsnState = "usn_unavailable(missing-checkpoint)";
+                return false;
+            }
+
+            var (queryOk, queryInfo, queryErr) = usnReader.QueryJournal(probeRoot);
+            if (!queryOk || queryInfo == null)
+            {
+                UsnState = $"usn_unavailable({queryErr ?? "query-failed"})";
+                return false;
+            }
+
+            string currentJournalIdHex = queryInfo.JournalId.ToString("X16");
+            if (!string.Equals(checkpoint.Value.JournalId, currentJournalIdHex, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(checkpoint.Value.JournalId, queryInfo.JournalId.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                UsnState = "usn_unavailable(journal-id-mismatch)";
+                return false;
+            }
+
+            if (!long.TryParse(checkpoint.Value.NextUsn, out var startUsn))
+            {
+                UsnState = "usn_unavailable(corrupted-checkpoint-usn)";
+                return false;
+            }
+
+            if (startUsn < queryInfo.LowestValidUsn)
+            {
+                UsnState = "usn_unavailable(journal-truncated)";
+                return false;
+            }
+
+            const int PageSize = 5000;
+            const int MaxCatchUpPages = 40;
+            var allRecords = new List<UsnChangeRecord>();
+            long cursorUsn = startUsn;
+            long nextUsn = startUsn;
+            bool caughtUp = false;
+            for (int page = 0; page < MaxCatchUpPages; page++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var (readOk, pageRecords, pageNextUsn, readErr) = usnReader.ReadIncrements(probeRoot, queryInfo.JournalId, cursorUsn, PageSize);
+                if (!readOk)
                 {
-                    matchedRoot = candidate.NormRoot;
+                    UsnState = $"usn_unavailable({readErr ?? "read-failed"})";
+                    return false;
+                }
+                allRecords.AddRange(pageRecords);
+                nextUsn = pageNextUsn;
+                if (pageRecords.Count < PageSize || pageNextUsn >= queryInfo.NextUsn || pageNextUsn <= cursorUsn)
+                {
+                    caughtUp = true;
                     break;
                 }
-            }
-            if (matchedRoot == null) continue;
-            if (IsTemporaryFile(normPath)) continue;
-            if (FilePolicy.Kind(normPath, code) == null) continue;
-
-            string kind;
-            if ((record.Reason & UsnJournalReader.USN_REASON_FILE_DELETE) != 0)
-            {
-                kind = "Delete";
-            }
-            else if ((record.Reason & UsnJournalReader.USN_REASON_RENAME_NEW_NAME) != 0)
-            {
-                kind = "Add";
-            }
-            else
-            {
-                kind = "Update";
+                cursorUsn = pageNextUsn;
             }
 
-            batch.Add(new IndexTask(normPath, matchedRoot, code, kind, null, "Pending", 0, now, now, "usn_catch_up"));
-            matchedCount++;
-        }
-
-        if (batch.Count > 0)
-        {
-            await repository.EnqueueIndexTasksAsync(batch, cancellationToken).ConfigureAwait(false);
-            if (maxQueueTasks < 500 || (Interlocked.Increment(ref enqueueCounter) & 63) == 0 || batch.Count >= 64)
+            if (!caughtUp && nextUsn < queryInfo.NextUsn)
             {
+                UsnState = "usn_unavailable(backlog-exceeded)";
+                return false;
+            }
+
+            const uint DirAttr = 0x10;
+            const uint DirTopologyReasons = UsnJournalReader.USN_REASON_FILE_DELETE
+                | UsnJournalReader.USN_REASON_RENAME_OLD_NAME
+                | UsnJournalReader.USN_REASON_RENAME_NEW_NAME;
+
+            foreach (var record in allRecords)
+            {
+                if ((record.FileAttributes & DirAttr) != 0 && (record.Reason & DirTopologyReasons) != 0)
+                {
+                    UsnState = "usn_unavailable(dir-rename-or-delete)";
+                    return false;
+                }
+            }
+
+            int matchedCount = 0;
+            var now = DateTimeOffset.UtcNow;
+            var orderedRoots = volumeRoots.OrderByDescending(r => r.NormRoot.Length).ToArray();
+            using var volumeHandle = usnReader.OpenVolumeForBatch(probeRoot);
+            var byPath = new Dictionary<string, IndexTask>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var record in allRecords)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var resolvedPath = usnReader.ResolvePath(probeRoot, record.FileReferenceNumber, record.ParentFileReferenceNumber, record.FileName, volumeHandle);
+                if (resolvedPath == null) continue;
+
+                var normPath = FilePolicy.Normalize(resolvedPath);
+                string? matchedRoot = null;
+                foreach (var candidate in orderedRoots)
+                {
+                    if (FilePolicy.Under(normPath, candidate.NormRoot))
+                    {
+                        matchedRoot = candidate.NormRoot;
+                        break;
+                    }
+                }
+                if (matchedRoot == null) continue;
+                if (!ShouldQueuePath(normPath, matchedRoot, code)) continue;
+
+                string kind;
+                if ((record.Reason & UsnJournalReader.USN_REASON_FILE_DELETE) != 0)
+                {
+                    kind = "Delete";
+                }
+                else if ((record.Reason & UsnJournalReader.USN_REASON_RENAME_NEW_NAME) != 0)
+                {
+                    kind = "Add";
+                }
+                else
+                {
+                    kind = "Update";
+                }
+
+                if (byPath.TryGetValue(normPath, out var existingTask))
+                {
+                    if (existingTask.Kind == "Add" && kind == "Update") kind = "Add";
+                }
+                byPath[normPath] = new IndexTask(normPath, matchedRoot, code, kind, null, "Pending", 0, now, now, "usn_catch_up");
+                matchedCount++;
+            }
+
+            var batch = byPath.Values.ToList();
+            if (batch.Count > 0)
+            {
+                await repository.EnqueueIndexTasksAsync(batch, cancellationToken).ConfigureAwait(false);
                 var dropped = await repository.TrimTasksAsync(maxQueueTasks, cancellationToken).ConfigureAwait(false);
                 if (dropped > 0) Interlocked.Add(ref overflowDropped, dropped);
             }
-        }
 
-        try
-        {
-            await checkpointRepo.SaveUsnCheckpointAsync(volumeSerial, currentJournalIdHex, nextUsn.ToString(), now, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            onError?.Invoke(ex);
-        }
+            try
+            {
+                await checkpointRepo.SaveUsnCheckpointAsync(volumeSerial, currentJournalIdHex, nextUsn.ToString(), now, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                onError?.Invoke(ex);
+            }
 
-        foreach (var (rawRoot, _) in volumeRoots)
-        {
-            dirtyRoots.TryRemove(rawRoot, out _);
+            foreach (var (rawRoot, _) in volumeRoots)
+            {
+                dirtyRoots.TryRemove(rawRoot, out _);
+            }
+            lastReconcileUtc = now;
+            UsnState = $"usn_caught_up({matchedCount} records)";
+            return true;
         }
-        lastReconcileUtc = now;
-        UsnState = $"usn_caught_up({matchedCount} records)";
-        return true;
+        finally
+        {
+            usnReader.ClearCache();
+        }
     }
 
     private async Task TryRecordUsnCheckpointAsync(string normRoot, CancellationToken cancellationToken)
     {
         try
         {
+            usnReader.ClearCache();
             if (repository is IUsnCheckpointRepository checkpointRepo &&
                 usnReader.IsNtfsVolume(normRoot, out var volumeSerial) &&
                 !string.IsNullOrEmpty(volumeSerial))
@@ -656,21 +843,24 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         }
     }
 
-    private static IEnumerable<(string FullName, long Length, double Mtime)> EnumerateFilesFast(string rootPath, bool code)
+    private IEnumerable<(string FullName, long Length, double Mtime)> EnumerateFilesFast(string rootPath, bool code)
     {
+        var normRoot = FilePolicy.Normalize(rootPath);
         var options = new EnumerationOptions
         {
             RecurseSubdirectories = true,
             IgnoreInaccessible = true,
-            AttributesToSkip = FileAttributes.System | FileAttributes.Device | FileAttributes.Offline
+            AttributesToSkip = FileAttributes.Hidden | FileAttributes.System | FileAttributes.Device | FileAttributes.Offline | FileAttributes.ReparsePoint | (FileAttributes)0x00440000
         };
         var enumerable = new System.IO.Enumeration.FileSystemEnumerable<(string FullName, long Length, double Mtime, bool Valid)>(
             rootPath,
             (ref System.IO.Enumeration.FileSystemEntry entry) =>
             {
-                if (entry.IsDirectory) return (string.Empty, 0L, 0.0, false);
+                if (entry.IsDirectory || (entry.FileName.Length > 0 && entry.FileName[0] == '.'))
+                    return (string.Empty, 0L, 0.0, false);
                 var full = entry.ToFullPath();
-                if (IsTemporaryFile(full) || FilePolicy.Kind(full, code) is null)
+                var norm = FilePolicy.Normalize(full);
+                if (!ShouldQueuePath(norm, normRoot, code))
                     return (string.Empty, 0L, 0.0, false);
                 double mtime = entry.LastWriteTimeUtc.ToUnixTimeMilliseconds() / 1000.0;
                 return (full, entry.Length, mtime, true);
@@ -679,7 +869,17 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         {
             ShouldIncludePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) => !entry.IsDirectory,
             ShouldRecursePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) =>
-                !FilePolicy.SkipFolder(entry.ToFullPath(), code)
+            {
+                if (entry.FileName.Length > 0 && entry.FileName[0] == '.') return false;
+                var dir = entry.ToFullPath();
+                if (FilePolicy.SkipFolder(dir, code)) return false;
+                var normDir = FilePolicy.Normalize(dir);
+                foreach (var ex in excludedRoots)
+                {
+                    if (FilePolicy.Under(normDir, ex) && !FilePolicy.Under(normRoot, ex)) return false;
+                }
+                return true;
+            }
         };
 
         foreach (var item in enumerable)
@@ -724,6 +924,7 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         }
         var processed = 0;
         var ready = new List<IndexTask>();
+        var toStabilize = new List<IndexTask>();
 
         foreach (var task in dueTasks)
         {
@@ -765,10 +966,15 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                     ready.Add(task with { State = "Ready" });
                 }
             }
-            else if (await CheckStabilizationAsync(task, cancellationToken).ConfigureAwait(false))
+            else
             {
-                ready.Add(task);
+                toStabilize.Add(task);
             }
+        }
+
+        if (toStabilize.Count > 0)
+        {
+            ready.AddRange(await CheckStabilizationBatchAsync(toStabilize, cancellationToken).ConfigureAwait(false));
         }
 
         // Group by (root, scope) so one indexer call covers a batch: IndexPathsAsync reloads the
@@ -777,15 +983,23 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             var deletes = group.Where(t => t.Kind == "Delete").ToArray();
-            foreach (var task in deletes)
+            if (deletes.Length > 0)
             {
-                try
+                var existingDeletes = await repository.ReadFileHeadersByPathsAsync(deletes.Select(t => t.Path).ToArray(), cancellationToken).ConfigureAwait(false);
+                var deletePathMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var f in existingDeletes)
+                    deletePathMap[FilePolicy.Normalize(f.Path)] = f.Path;
+                foreach (var task in deletes)
                 {
-                    await repository.AckTaskWithDeleteAsync(task.Path, task.Path, cancellationToken).ConfigureAwait(false);
-                    processed++;
+                    try
+                    {
+                        var filePath = deletePathMap.TryGetValue(FilePolicy.Normalize(task.Path), out var storedPath) ? storedPath : task.Path;
+                        await repository.AckTaskWithDeleteAsync(filePath, task.Path, cancellationToken).ConfigureAwait(false);
+                        processed++;
+                    }
+                    catch (Exception ex) when (ex is IndexingPausedException or OperationCanceledException) { throw; }
+                    catch (Exception ex) { await RecordFailureAsync(task, ex, cancellationToken).ConfigureAwait(false); }
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception ex) { await RecordFailureAsync(task, ex, cancellationToken).ConfigureAwait(false); }
             }
 
             var work = group.Where(t => t.Kind != "Delete").ToArray();
@@ -793,24 +1007,36 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var chunk = work.Skip(offset).Take(batchSize).ToArray();
-                foreach (var task in chunk)
-                {
-                    await repository.UpdateTaskStateAsync(task.Path, "Running", task.Attempts, DateTimeOffset.UtcNow, task.Reason, cancellationToken).ConfigureAwait(false);
-                }
+                await repository.UpdateTasksStateAsync(chunk, "Running", DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
                 try
                 {
                     if (indexPaths != null)
                     {
                         await indexPaths([group.Key.Root], chunk.Select(t => t.Path).ToArray(), group.Key.Code, cancellationToken).ConfigureAwait(false);
+                        var tombstonePaths = chunk
+                            .Where(t => !string.IsNullOrEmpty(t.Tombstone) && !string.Equals(t.Tombstone, t.Path, StringComparison.OrdinalIgnoreCase))
+                            .Select(t => t.Tombstone!)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToArray();
+                        var tombstoneMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        if (tombstonePaths.Length > 0)
+                        {
+                            var existingTombstones = await repository.ReadFileHeadersByPathsAsync(tombstonePaths, cancellationToken).ConfigureAwait(false);
+                            foreach (var f in existingTombstones)
+                                tombstoneMap[FilePolicy.Normalize(f.Path)] = f.Path;
+                        }
+                        var ackPaths = new List<string>(chunk.Length);
                         foreach (var task in chunk)
                         {
                             if (!string.IsNullOrEmpty(task.Tombstone) && !string.Equals(task.Tombstone, task.Path, StringComparison.OrdinalIgnoreCase))
                             {
-                                await repository.DeleteFileAsync(task.Tombstone, cancellationToken).ConfigureAwait(false);
-                                await repository.AckTaskAsync(task.Tombstone, cancellationToken).ConfigureAwait(false);
+                                var tombstonePath = tombstoneMap.TryGetValue(FilePolicy.Normalize(task.Tombstone), out var storedTombstone) ? storedTombstone : task.Tombstone;
+                                await repository.DeleteFileAsync(tombstonePath, cancellationToken).ConfigureAwait(false);
+                                ackPaths.Add(task.Tombstone);
                             }
-                            await repository.AckTaskAsync(task.Path, cancellationToken).ConfigureAwait(false);
+                            ackPaths.Add(task.Path);
                         }
+                        await repository.AckTasksAsync(ackPaths, cancellationToken).ConfigureAwait(false);
                     }
                     else
                     {
@@ -829,13 +1055,10 @@ public sealed class IncrementalIndexQueue : IAsyncDisposable
                     }
                     processed += chunk.Length;
                 }
-                catch (Exception ex) when (ex is IndexingPausedException || (ex is OperationCanceledException && cancellationToken.IsCancellationRequested))
+                catch (Exception ex) when (ex is IndexingPausedException or OperationCanceledException)
                 {
-                    foreach (var task in chunk)
-                    {
-                        try { await repository.UpdateTaskStateAsync(task.Path, "Ready", task.Attempts, DateTimeOffset.UtcNow, task.Reason, CancellationToken.None).ConfigureAwait(false); }
-                        catch { }
-                    }
+                    try { await repository.UpdateTasksStateAsync(chunk, "Ready", DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false); }
+                    catch { }
                     throw;
                 }
                 catch (Exception ex)

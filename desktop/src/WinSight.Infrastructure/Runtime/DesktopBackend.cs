@@ -27,7 +27,21 @@ public sealed partial class DesktopBackend : IDesktopBackend
 
 private readonly SemaphoreSlim lifecycle = new(1, 1);
 
+private readonly SemaphoreSlim repositoryGate = new(1, 1);
+
+private readonly object embeddingsSync = new();
+
 private readonly IndexingController indexing = new();
+
+private readonly SemaphoreSlim backfillGate = new(1, 1);
+
+private readonly object backfillCancelSync = new();
+private CancellationTokenSource? activeBackfillCts;
+private int backfillPreemptions;
+
+private readonly object runLockSync = new();
+private IndexRunLock? activeRunLock;
+private int activeRunLockCount;
 
 private readonly SemaphoreSlim reconfiguration = new(1, 1);
 
@@ -51,6 +65,10 @@ private readonly Func<bool> isOnAcPower;
 private readonly List<IIndexRepository> repositories = [];
 
 private IEmbeddingService? embeddings;
+
+private EmbeddingInfo? cachedEmbeddingInfo;
+
+private IEmbeddingService? cachedEmbeddingInfoOwner;
 
 private AppSettings settings;
 
@@ -132,24 +150,51 @@ public async Task SaveSettingsAsync(AppSettings updated, CancellationToken cance
 // Memory pressure must free model, vector and preview caches, not merely halve concurrency.
     private async Task ReleaseCachesForMemoryPressureAsync(CancellationToken cancellationToken)
     {
+        IIndexRepository[] openStores;
+        IEmbeddingService? currentEmbeddings;
         await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (stopping != 0 || disposed) return;
-            try { await StopSourceOperationsAsync(); } catch { }
-            foreach (var store in repositories)
-            {
-                if (store is SqliteIndexRepository sqlite)
-                {
-                    sqlite.TrimMemory();
-                }
-            }
-            if (embeddings is InferenceHostClient hostClient)
-            {
-                try { await hostClient.TrimIdleSessionsAsync(cancellationToken).ConfigureAwait(false); } catch { }
-            }
+            await repositoryGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try { openStores = repositories.ToArray(); }
+            finally { repositoryGate.Release(); }
+            lock (embeddingsSync) { currentEmbeddings = embeddings; }
         }
         finally { lifecycle.Release(); }
+
+        // Release heavy I/O and IPC caches outside lifecycle so interactive SearchAsync cannot be blocked behind TrimIdleSessionsAsync.
+        try { await StopSourceOperationsAsync().ConfigureAwait(false); } catch { }
+        foreach (var store in openStores)
+        {
+            if (store is SqliteIndexRepository sqlite)
+            {
+                try { sqlite.TrimMemory(); }
+                catch (ObjectDisposedException) { }
+            }
+        }
+        if (currentEmbeddings is InferenceHostClient hostClient)
+        {
+            try { await hostClient.TrimIdleSessionsAsync(cancellationToken).ConfigureAwait(false); } catch { }
+        }
+    }
+
+private async Task DisposeRepositoriesCoreAsync()
+    {
+        var failures = new List<Exception>();
+        try
+        {
+            foreach (var store in repositories)
+            {
+                try { await store.DisposeAsync(); }
+                catch (Exception error) { failures.Add(error); }
+            }
+        }
+        finally
+        {
+            repositories.Clear();
+        }
+        if (failures.Count != 0) throw new AggregateException("Repository cleanup failed.", failures);
     }
 
 private async Task ReleaseResourcesAsync()
@@ -157,15 +202,25 @@ private async Task ReleaseResourcesAsync()
         var failures = new List<Exception>();
         try { await StopSourceOperationsAsync(); }
         catch(Exception error) { failures.Add(error); }
-        foreach (var store in repositories)
+        await repositoryGate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            try { await store.DisposeAsync(); }
-            catch (Exception error) { failures.Add(error); }
+            await DisposeRepositoriesCoreAsync();
         }
-        repositories.Clear();
-        try { if (embeddings is not null) await embeddings.DisposeAsync(); }
+        catch (AggregateException error) { failures.AddRange(error.InnerExceptions); }
         catch (Exception error) { failures.Add(error); }
-        finally { embeddings = null; }
+        finally { repositoryGate.Release(); }
+
+        IEmbeddingService? currentEmbeddings;
+        lock (embeddingsSync)
+        {
+            currentEmbeddings = embeddings;
+            embeddings = null;
+            cachedEmbeddingInfo = null;
+            cachedEmbeddingInfoOwner = null;
+        }
+        try { if (currentEmbeddings is not null) await currentEmbeddings.DisposeAsync(); }
+        catch (Exception error) { failures.Add(error); }
         if (failures.Count != 0) throw new AggregateException("Backend resource cleanup failed.", failures);
     }
 
@@ -277,6 +332,87 @@ public async ValueTask DisposeAsync()
             if (cancelled.IsCompleted) lifetimeStop.Dispose();
             else _ = RetireLifetimeAsync(cancelled);
         }
+    }
+
+    private IDisposable? AcquireRunLock()
+    {
+        lock (runLockSync)
+        {
+            if (activeRunLockCount == 0)
+            {
+                activeRunLock = IndexRunLock.TryAcquire(dataDirectory);
+                if (activeRunLock is null) return null;
+            }
+            activeRunLockCount++;
+            return new RunLockLease(this);
+        }
+    }
+
+    private void ReleaseRunLock()
+    {
+        lock (runLockSync)
+        {
+            if (activeRunLockCount <= 0) return;
+            activeRunLockCount--;
+            if (activeRunLockCount == 0)
+            {
+                activeRunLock?.Dispose();
+                activeRunLock = null;
+            }
+        }
+    }
+
+    private sealed class RunLockLease(DesktopBackend owner) : IDisposable
+    {
+        private DesktopBackend? owner = owner;
+        public void Dispose() => Interlocked.Exchange(ref owner, null)?.ReleaseRunLock();
+    }
+
+    private IDisposable SuppressAndCancelBackfill()
+    {
+        CancellationTokenSource? cts;
+        lock (backfillCancelSync)
+        {
+            backfillPreemptions++;
+            cts = activeBackfillCts;
+        }
+        if (cts is not null)
+        {
+            try { cts.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+        return new PreemptionLease(this);
+    }
+
+    private void ReleaseBackfillPreemption()
+    {
+        lock (backfillCancelSync)
+        {
+            if (backfillPreemptions > 0) backfillPreemptions--;
+        }
+    }
+
+    private sealed class PreemptionLease(DesktopBackend owner) : IDisposable
+    {
+        private DesktopBackend? owner = owner;
+        public void Dispose() => Interlocked.Exchange(ref owner, null)?.ReleaseBackfillPreemption();
+    }
+
+    private async Task<RebuildOutcome> ExecuteProtectedRebuildSwapAsync(Func<Task<RebuildOutcome>> performSwitch, CancellationToken cancellationToken)
+    {
+        await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(disposed || stopping != 0, this);
+            await repositoryGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await DisposeRepositoriesCoreAsync().ConfigureAwait(false);
+                return await performSwitch().ConfigureAwait(false);
+            }
+            finally { repositoryGate.Release(); }
+        }
+        finally { lifecycle.Release(); }
     }
 
 private async Task RetireLifetimeAsync(Task cancelled)

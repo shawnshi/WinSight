@@ -56,7 +56,8 @@ public static class IndexRebuildCoordinator
     /// database is renamed aside (never deleted) and restored if validation or the swap fails.
     /// </summary>
     public static async Task<RebuildOutcome> RebuildAsync(string indexDirectory, string generation, Func<string, Task> build,
-        Func<string, Task<IReadOnlyList<string>>> fixedQueryProbe, CancellationToken cancellationToken = default)
+        Func<string, Task<IReadOnlyList<string>>> fixedQueryProbe, CancellationToken cancellationToken = default,
+        Func<Func<Task<RebuildOutcome>>, Task<RebuildOutcome>>? swapGuard = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(generation);
         var stagingRoot = Path.Combine(indexDirectory, "rebuild", generation);
@@ -72,33 +73,42 @@ public static class IndexRebuildCoordinator
             // Pooled connections keep the staging file open; release them before any move.
             SqliteConnection.ClearAllPools();
             if (problem is not null) return new RebuildOutcome(false, generation, null, problem);
-            SqliteConnection.ClearAllPools();
-            var previous = Path.Combine(indexDirectory, "pre-" + generation);
-            if (Directory.Exists(previous)) Directory.Delete(previous, true);
-            var moved = new List<string>();
-            foreach (var suffix in new[] { "", "-wal", "-shm" })
+
+            Task<RebuildOutcome> PerformSwitchAsync()
             {
-                var source = liveDatabase + suffix;
-                if (!File.Exists(source)) continue;
-                Directory.CreateDirectory(previous);
-                File.Move(source, Path.Combine(previous, "index.sqlite" + suffix));
-                moved.Add(suffix);
-            }
-            try
-            {
+                cancellationToken.ThrowIfCancellationRequested();
+                SqliteConnection.ClearAllPools();
+                var previous = Path.Combine(indexDirectory, "pre-" + generation);
+                if (Directory.Exists(previous)) Directory.Delete(previous, true);
+                var moved = new List<string>();
                 foreach (var suffix in new[] { "", "-wal", "-shm" })
                 {
-                    var source = stagingDatabase + suffix;
-                    if (File.Exists(source)) File.Move(source, liveDatabase + suffix);
+                    var source = liveDatabase + suffix;
+                    if (!File.Exists(source)) continue;
+                    Directory.CreateDirectory(previous);
+                    File.Move(source, Path.Combine(previous, "index.sqlite" + suffix));
+                    moved.Add(suffix);
                 }
-                Directory.Delete(stagingRoot, true);
-                return new RebuildOutcome(true, generation, moved.Count == 0 ? null : previous, "switched");
+                try
+                {
+                    foreach (var suffix in new[] { "", "-wal", "-shm" })
+                    {
+                        var source = stagingDatabase + suffix;
+                        if (File.Exists(source)) File.Move(source, liveDatabase + suffix);
+                    }
+                    Directory.Delete(stagingRoot, true);
+                    return Task.FromResult(new RebuildOutcome(true, generation, moved.Count == 0 ? null : previous, "switched"));
+                }
+                catch (IOException error)
+                {
+                    foreach (var suffix in moved) File.Move(Path.Combine(previous, "index.sqlite" + suffix), liveDatabase + suffix);
+                    return Task.FromResult(new RebuildOutcome(false, generation, null, "switch failed: " + error.Message));
+                }
             }
-            catch (IOException error)
-            {
-                foreach (var suffix in moved) File.Move(Path.Combine(previous, "index.sqlite" + suffix), liveDatabase + suffix);
-                return new RebuildOutcome(false, generation, null, "switch failed: " + error.Message);
-            }
+
+            return swapGuard is not null
+                ? await swapGuard(PerformSwitchAsync).ConfigureAwait(false)
+                : await PerformSwitchAsync().ConfigureAwait(false);
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException or SqliteException)
         {

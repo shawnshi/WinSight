@@ -100,6 +100,13 @@ public sealed partial class SearchPage : Page
     {
         Bindings.Update();
         UpdateHeroStage(ViewModel.SelectedItem);
+        if (previewSessionOpen)
+        {
+            if (ViewModel.SelectedItem is { } selected)
+                _ = SourcePreview.ShowAsync(ViewModel, selected);
+            else
+                _ = SourcePreview.ClearAsync();
+        }
     }
 
     private static readonly Windows.UI.ViewManagement.UISettings SystemUi = new();
@@ -192,7 +199,8 @@ public sealed partial class SearchPage : Page
             using var loadingBadgeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             try
             {
-                await Task.Delay(overridePage.HasValue ? 20 : 120, ct);
+                if (!ViewModel.HasCachedPreview(selected, overridePage))
+                    await Task.Delay(overridePage.HasValue ? 15 : 50, ct);
                 _ = Task.Run(async () =>
                 {
                     try
@@ -240,6 +248,13 @@ public sealed partial class SearchPage : Page
                     }
                     FitDocumentRasterToViewport();
                     DocumentRasterScroll?.ChangeView(0, 0, 1.0f, true);
+                    if (heroTotalPages is { } max && heroCurrentPage < max)
+                        ViewModel.PrefetchPreview(selected, heroCurrentPage + 1);
+                    if (!overridePage.HasValue)
+                    {
+                        foreach (var h in ViewModel.Hits.Where(x => !ReferenceEquals(x, selected) && x.IsDocumentVisibility == Visibility.Visible).Take(2))
+                            ViewModel.PrefetchPreview(h);
+                    }
                 }
                 else if (!string.IsNullOrWhiteSpace(preview.Excerpt) && CanvasExcerptBlock != null)
                 {

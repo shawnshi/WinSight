@@ -64,7 +64,7 @@ internal static class Program
             using var options = RapidOcr.GetDefaultSessionOptions(cpuThreads);
             options.AppendExecutionProvider_CPU(0);
             options.EnableMemoryPattern = true;
-            options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
+            options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_BASIC;
             using var engine = new RapidOcr();
             engine.InitModels(models.ModelSet, options);
             var result = engine.Detect(bitmap, RapidOcrOptions.PPOCRv6);

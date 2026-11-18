@@ -39,6 +39,8 @@ public async Task<SearchResponse> SearchAsync(SearchRequest request, Cancellatio
                 CreateAuthorizer(codeQuery));
         }
         finally { lifecycle.Release(); }
+        if (request.Mode != SearchMode.Keyword)
+            background?.PreemptForInteractiveQuery();
         var response = await service.SearchAsync(request, cancellationToken);
         return response with { Elapsed = clock.Elapsed };
     }
@@ -47,25 +49,32 @@ private string IndexDirectory => settings.IndexDirectory ?? Path.Combine(dataDir
 
 private async Task<IReadOnlyList<IIndexRepository>> GetRepositoriesAsync(CancellationToken cancellationToken)
     {
-        if (repositories.Count != 0) return repositories;
-        Directory.CreateDirectory(IndexDirectory);
-        var created = new List<IIndexRepository>();
+        ObjectDisposedException.ThrowIf(stopping != 0, this);
+        await repositoryGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            foreach (var file in new[] { "index.sqlite", "code.sqlite" })
+            ObjectDisposedException.ThrowIf(disposed || stopping != 0, this);
+            if (repositories.Count != 0) return repositories.ToArray();
+            Directory.CreateDirectory(IndexDirectory);
+            var created = new List<IIndexRepository>();
+            try
             {
-                var repository = new SqliteIndexRepository(Path.Combine(IndexDirectory, file));
-                created.Add(repository);
-                await repository.InitializeAsync(cancellationToken);
+                foreach (var file in new[] { "index.sqlite", "code.sqlite" })
+                {
+                    var repository = new SqliteIndexRepository(Path.Combine(IndexDirectory, file));
+                    created.Add(repository);
+                    await repository.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                }
+                repositories.AddRange(created);
+                return repositories.ToArray();
             }
-            repositories.AddRange(created);
-            return repositories;
+            catch
+            {
+                foreach (var repository in created) await repository.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
         }
-        catch
-        {
-            foreach (var repository in created) await repository.DisposeAsync();
-            throw;
-        }
+        finally { repositoryGate.Release(); }
     }
 
 /// <summary>Counts indexed rows for one subtree so a completion message can state a real number.</summary>

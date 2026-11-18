@@ -268,7 +268,8 @@ public sealed partial class QuickSearchWindow : Window
             ISourcePreview? preview = null;
             try
             {
-                await Task.Delay(140, ct);
+                if (!ViewModel.HasCachedPreview(selected, null))
+                    await Task.Delay(50, ct);
                 preview = await ViewModel.PreviewAsync(selected, ct);
                 if (ct.IsCancellationRequested) return;
                 if (preview.SourceCurrent && preview.RasterPath is { } rasterPath && File.Exists(rasterPath))

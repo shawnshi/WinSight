@@ -1,0 +1,53 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/desktop/">
+    <Project Path="desktop/src/WinSight.App/WinSight.App.csproj" />
+    <Project Path="desktop/src/WinSight.Bridge/WinSight.Bridge.csproj" />
+    <Project Path="desktop/src/WinSight.Cli/WinSight.Cli.csproj" />
+    <Project Path="desktop/src/WinSight.Core/WinSight.Core.csproj" />
+    <Project Path="desktop/src/WinSight.Infrastructure/WinSight.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/inference/">
+    <Project Path="inference/WinSight.FoundryHost/WinSight.FoundryHost.csproj" />
+    <Project Path="inference/WinSight.InferenceHost/WinSight.InferenceHost.csproj" />
+    <Project Path="inference/WinSight.OcrHost/vendor/RapidOcrNet/RapidOcrNet.WinSight.csproj" />
+    <Project Path="inference/WinSight.OcrHost/WinSight.OcrHost.csproj" />
+    <Project Path="inference/WinSight.WinMlHost/WinSight.WinMlHost.csproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/desktop/">
+    <Project Path="desktop/tests/WinSight.Bridge.Tests/WinSight.Bridge.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.Deployment.Probe/WinSight.Deployment.Probe.csproj" />
+    <Project Path="desktop/tests/WinSight.DesktopPolicy.Tests/WinSight.DesktopPolicy.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.DocumentSearch.Tests/WinSight.DocumentSearch.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.Image.Tests/FakeWorker/FakeWorker.csproj" />
+    <Project Path="desktop/tests/WinSight.Image.Tests/WinSight.Image.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.Indexing.Tests/WinSight.Indexing.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.IndexingSettlement.Tests/WinSight.IndexingSettlement.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.Inference.Tests/FakeHost/FakeHost.csproj" />
+    <Project Path="desktop/tests/WinSight.Inference.Tests/WinSight.Inference.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.Media.MetadataProbe/WinSight.Media.MetadataProbe.csproj" />
+    <Project Path="desktop/tests/WinSight.Media.Probe/WinSight.Media.Probe.csproj" />
+    <Project Path="desktop/tests/WinSight.MediaBackend.Tests/CompositeHost/CompositeHost.csproj" />
+    <Project Path="desktop/tests/WinSight.MediaBackend.Tests/WinSight.MediaBackend.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.MediaIndexing.Tests/FakeNativeWorker/FakeNativeWorker.csproj" />
+    <Project Path="desktop/tests/WinSight.MediaIndexing.Tests/WinSight.MediaIndexing.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.MediaMetadata.Tests/FakeMediaOpsHost/FakeMediaOpsHost.csproj" />
+    <Project Path="desktop/tests/WinSight.MediaMetadata.Tests/WinSight.MediaMetadata.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.MediaProcess.Tests/FakeMediaHost/FakeMediaHost.csproj" />
+    <Project Path="desktop/tests/WinSight.MediaProcess.Tests/Fixtures/WinSight.MediaProcess.Fixtures.csproj" />
+    <Project Path="desktop/tests/WinSight.MediaProcess.Tests/WinSight.MediaProcess.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.NativeMedia.Tests/Fixtures/WinSight.NativeMedia.Fixtures.csproj" />
+    <Project Path="desktop/tests/WinSight.NativeMedia.Tests/TailProbe/WinSight.NativeMedia.TailProbe.csproj" />
+    <Project Path="desktop/tests/WinSight.NativeMedia.Tests/WinSight.NativeMedia.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.Pause.Tests/WinSight.Pause.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.Runtime.Tests/WinSight.Runtime.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.Storage.Tests/WinSight.Storage.Tests.csproj" />
+    <Project Path="desktop/tests/WinSight.Ui.Harness/WinSight.Ui.Harness.csproj">
+      <Platform Project="x64" />
+    </Project>
+  </Folder>
+  <Folder Name="/tests/inference/">
+    <Project Path="inference/WinSight.OcrHost/tests/OcrOracle.csproj" />
+  </Folder>
+</Solution>

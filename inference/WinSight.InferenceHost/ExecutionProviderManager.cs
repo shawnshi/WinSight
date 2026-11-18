@@ -382,16 +382,16 @@ internal sealed class ExecutionProviderManager : IDisposable
         var dmlDevice = devices.FirstOrDefault(d => d.EpName.Contains("Dml", StringComparison.OrdinalIgnoreCase));
         var ovDevice = devices.FirstOrDefault(d => d.EpName.Contains("OpenVINO", StringComparison.OrdinalIgnoreCase));
 
-        // 1. GPU (DirectML or OpenVINO GPU) 承接: 文本主干、图像融合、音频融合
+        // 1. GPU (DirectML or OpenVINO GPU): keep text backbones hot; lazily load image/audio fusion with idle eviction
         var gpuDevice = dmlDevice ?? ovDevice;
         if (gpuDevice != null)
         {
-            foreach (var graph in new[] { "model_text_d256.onnx", "model_text_q32.onnx", "model_image_140.onnx", "model_audio_10s.onnx" })
+            foreach (var graph in new[] { "model_text_d256.onnx", "model_text_q32.onnx" })
             {
                 if (!slots.TryGetValue(graph, out var slot)) continue;
                 try
                 {
-                    using var gpuOpts = ModelProbe.CpuOptions();
+                    using var gpuOpts = ModelProbe.AcceleratorOptions();
                     gpuOpts.AppendExecutionProvider(ort, new[] { gpuDevice }, new Dictionary<string, string>());
                     var session = new InferenceSession(models.Graph(graph), gpuOpts);
                     slot.Active = session;
@@ -404,15 +404,32 @@ internal sealed class ExecutionProviderManager : IDisposable
                     states[graph] = "GPU init fallback to CPU: " + ex.Message;
                 }
             }
+
+            foreach (var graph in new[] { "model_image_140.onnx", "model_audio_10s.onnx" })
+            {
+                if (!slots.TryGetValue(graph, out var slot)) continue;
+                slot.ActiveName = gpuDevice.EpName + " (GPU: " + gpuDevice.HardwareDevice.DeviceId + ")";
+                slot.ReInitFactory = slot.Initializer = () =>
+                {
+                    using var gpuOpts = ModelProbe.AcceleratorOptions();
+                    gpuOpts.AppendExecutionProvider(ort, new[] { gpuDevice }, new Dictionary<string, string>());
+                    return new InferenceSession(models.Graph(graph), gpuOpts);
+                };
+                states[graph] = "eligible " + slot.ActiveName + " [Lazy Intel Platform]";
+            }
         }
 
-        // 2. CPU 承接: 视觉与音频前置编码器
+        // 2. CPU: lazy vision and audio pre-encoders with ReInitFactory for idle eviction
         foreach (var graph in new[] { "vision_encoder_static_140.onnx", "audio_encoder_10s.onnx" })
         {
-            if (slots.TryGetValue(graph, out _))
+            if (!slots.TryGetValue(graph, out var slot)) continue;
+            slot.ActiveName = "CPUExecutionProvider";
+            slot.ReInitFactory = slot.Initializer = () =>
             {
-                states[graph] = "eligible CPUExecutionProvider [Intel Platform]";
-            }
+                using var cpuOpts = ModelProbe.CpuOptions();
+                return new InferenceSession(models.Graph(graph), cpuOpts);
+            };
+            states[graph] = "eligible CPUExecutionProvider [Lazy Intel Platform]";
         }
     }
 
@@ -729,7 +746,7 @@ internal sealed class ExecutionProviderManager : IDisposable
     internal GraphResult Run(string graph, NamedOnnxValue[] inputs, string? output = null, int? expectedRows = null)
     {
         var slot = slots[graph];
-        var signature = Signature(inputs, expectedRows);
+        var signature = Signature(graph, inputs, expectedRows);
         GraphResult result;
         lock (slot.Gate)
         {
@@ -1019,7 +1036,7 @@ internal sealed class ExecutionProviderManager : IDisposable
             InferenceSession? candidate = null;
             try
             {
-                using var options = ModelProbe.CpuOptions();
+                using var options = ModelProbe.AcceleratorOptions();
                 options.EnableMemoryPattern = false;
                 options.AppendExecutionProvider(OrtEnv.Instance(), new[] { device }, new Dictionary<string, string>());
                 candidate = new InferenceSession(models.Graph(probe.Graph), options);
@@ -1103,14 +1120,41 @@ internal sealed class ExecutionProviderManager : IDisposable
         Interlocked.Increment(ref epoch);
     }
 
-    private static string Signature(NamedOnnxValue[] inputs, int? rows) => string.Join(";", inputs.Select(input =>
-        input.Name + "=" + (input.Value switch
+    private static string Signature(string graph, NamedOnnxValue[] inputs, int? rows)
+    {
+        bool isDynamic = graph is "model_q4.onnx" or "vision_encoder_q4.onnx" or "audio_encoder_q4.onnx";
+        var parts = inputs.Select(input =>
         {
-            Tensor<float> tensor => "f:" + string.Join(",", tensor.Dimensions.ToArray()),
-            Tensor<long> tensor => "i:" + string.Join(",", tensor.Dimensions.ToArray()),
-            Tensor<bool> tensor => "b:" + string.Join(",", tensor.Dimensions.ToArray()),
-            _ => throw new ArgumentException("unsupported graph input type")
-        }))) + ";expectedRows=" + rows;
+            if (input.Value is Tensor<float> floatTensor)
+                return input.Name + "=f:" + FormatDims(isDynamic, input.Name, floatTensor.Dimensions);
+            if (input.Value is Tensor<long> longTensor)
+                return input.Name + "=i:" + FormatDims(isDynamic, input.Name, longTensor.Dimensions);
+            if (input.Value is Tensor<bool> boolTensor)
+                return input.Name + "=b:" + FormatDims(isDynamic, input.Name, boolTensor.Dimensions);
+            throw new ArgumentException("unsupported graph input type");
+        });
+        string rowsPart = isDynamic
+            ? (rows.HasValue ? (rows.Value > 0 ? "+" : "0") : "null")
+            : (rows?.ToString() ?? "");
+        return string.Join(";", parts) + ";expectedRows=" + rowsPart;
+    }
+
+    private static string FormatDims(bool isDynamic, string inputName, ReadOnlySpan<int> dims)
+    {
+        if (!isDynamic)
+            return string.Join(",", dims.ToArray());
+
+        bool dynamicSeqAxis1 = inputName is "input_ids" or "attention_mask" or "pixel_values" or "pixel_position_ids" or "input_features" or "input_features_mask";
+        bool dynamicFeatureAxis0 = inputName is "image_features" or "video_features" or "audio_features";
+        var tokens = new string[dims.Length];
+        for (int i = 0; i < dims.Length; i++)
+        {
+            if (dynamicSeqAxis1 && i == 1 && dims[i] > 0) tokens[i] = "*";
+            else if (dynamicFeatureAxis0 && i == 0) tokens[i] = dims[i] > 0 ? "+" : "0";
+            else tokens[i] = dims[i].ToString();
+        }
+        return string.Join(",", tokens);
+    }
 
     private static bool Equivalent(GraphResult cpu, GraphResult other)
     {

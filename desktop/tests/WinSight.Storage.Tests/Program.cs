@@ -585,8 +585,205 @@ await IncrementalQueueBehaviourTests.RunAsync(root, Test);
 await LargeDirectoryScaleTests.RunAsync(root, Test);
 await IncrementalQueueUsnTests.RunAsync(root, Test);
 await RetrievalCases.RunAsync(root, Test);
+
+await Test("P0-P2 BLK-01 external write + local VectorEffect.Files does not mask external vector changes", async () =>
+{
+    var path = Path.Combine(root, "blk01-dirty-external.sqlite");
+    await using var repo = new SqliteIndexRepository(path);
+    await repo.SetMetaAsync("profile_id", "synthetic-profile-v1");
+    await repo.UpsertFileAsync(SampleFile("C:/blk01/ext.txt", "ext alpha", Unit(1)));
+    await repo.UpsertFileAsync(SampleFile("C:/blk01/loc.txt", "loc beta", Unit(1)));
+    var search = new SearchService(repo, new FakeEmbedding());
+    // Warm vectorCache with Unit(0) query: initially neither file hits strongly.
+    var initial = await search.SearchAsync(new("query", Mode: SearchMode.Semantic));
+    // External writer switches ext.txt vector to Unit(0) without repo knowing.
+    await using (var ext = new SqliteIndexRepository(path))
+        await ext.UpsertFileAsync(SampleFile("C:/blk01/ext.txt", "ext alpha", Unit(0)));
+    // Local VectorEffect.Files write on loc.txt puts loc.txt in dirtyVectorPaths.
+    await repo.UpsertFileAsync(SampleFile("C:/blk01/loc.txt", "loc beta updated", Unit(1)));
+    // Next semantic search must detect connVersion drift, rebuild rather than PatchCompactVectorIndex, and retrieve ext.txt!
+    var after = await search.SearchAsync(new("query", Mode: SearchMode.Semantic));
+    Check(after.Hits.Any(h => h.Path == "C:/blk01/ext.txt"), "External write masked by PatchCompactVectorIndex after local VectorEffect.Files write.");
+    Check(initial.Hits.All(h => h.Path != "C:/blk01/ext.txt"), "Fixture initial vector unexpectedly matched.");
+});
+
+await Test("P0-P2 MED-01 MED-02 ReadAnchors targeted parser handles escaped root key and rejects duplicate keys", () =>
+{
+    string pad = new string('x', 2200);
+    string escapedJson = "{\"indexRoot\":\"" + pad + "\",\"\\u005fsourceAnchorsV1\":{\"1\":{\"Location\":{\"Type\":\"slide\",\"Page\":2},\"Channel\":\"body\"}}}";
+    var escapedAnchors = SqliteIndexRepository.ReadAnchors(escapedJson, new HashSet<long> { 1 });
+    Check(escapedAnchors.TryGetValue(1, out var slideAnchor) && slideAnchor.Location.Page == 2,
+        "Escaped _sourceAnchorsV1 top-level key lost anchors.");
+
+    string dupJson = "{\"indexRoot\":\"" + pad + "\",\"_sourceAnchorsV1\":{\"1\":{\"Location\":{\"Type\":\"paragraph\",\"Paragraph\":1},\"Channel\":\"body\"},\"2\":{\"Location\":{\"Type\":\"paragraph\",\"Paragraph\":2},\"Channel\":\"body\"},\"2\":{\"Location\":{\"Type\":\"paragraph\",\"Paragraph\":3},\"Channel\":\"body\"}}}";
+    bool threwDuplicate = false;
+    try { SqliteIndexRepository.ReadAnchors(dupJson, new HashSet<long> { 1 }); }
+    catch (InvalidDataException) { threwDuplicate = true; }
+    Check(threwDuplicate, "Duplicate key after matched target in ReadAnchors did not throw InvalidDataException.");
+
+    // M-02: duplicate top-level _sourceAnchorsV1 uses last occurrence (JsonDocument parity)
+    string dupTopJson = "{\"indexRoot\":\"" + pad + "\",\"_sourceAnchorsV1\":{\"1\":{\"Location\":{\"Type\":\"slide\",\"Page\":1},\"Channel\":\"body\"}},\"_sourceAnchorsV1\":{\"1\":{\"Location\":{\"Type\":\"slide\",\"Page\":9},\"Channel\":\"body\"}}}";
+    var dupTopAnchors = SqliteIndexRepository.ReadAnchors(dupTopJson, new HashSet<long> { 1 });
+    Check(dupTopAnchors.TryGetValue(1, out var lastWinAnchor) && lastWinAnchor.Location.Page == 9,
+        "Duplicate top-level _sourceAnchorsV1 did not match last-wins JsonDocument parity.");
+
+    // M-02: malformed JSON inside skipped anchor throws JsonException instead of silently succeeding
+    string badSkippedJson = "{\"indexRoot\":\"" + pad + "\",\"_sourceAnchorsV1\":{\"1\":{\"Location\":{\"Type\":\"paragraph\",\"Paragraph\":1},\"Channel\":\"body\"},\"2\":{\"a\":[1}}}";
+    bool threwBadSkipped = false;
+    try { SqliteIndexRepository.ReadAnchors(badSkippedJson, new HashSet<long> { 1 }); }
+    catch (JsonException) { threwBadSkipped = true; }
+    Check(threwBadSkipped, "Malformed skipped anchor object did not throw JsonException.");
+    return Task.CompletedTask;
+});
+
+await Test("P0-P2 M-01 CompactVectorIndex path lookup matches SQLite Ordinal case sensitivity", async () =>
+{
+    var path = Path.Combine(root, "m01-ordinal-path.sqlite");
+    await using var repo = new SqliteIndexRepository(path);
+    await repo.SetMetaAsync("profile_id", "synthetic-profile-v1");
+    await repo.UpsertFileAsync(SampleFile("C:/M01/ExactCase.txt", "exact content", Unit(0)));
+    var search = new SearchService(repo, new FakeEmbedding());
+    Check((await search.SearchAsync(new("query", Mode: SearchMode.Semantic))).Hits.Any(h => h.Path == "C:/M01/ExactCase.txt"),
+        "Initial M-01 vector hit missing.");
+    // Deleting with different casing deletes 0 rows in SQLite (BINARY/Ordinal) and must not evict ExactCase.txt from CompactVectorIndex.
+    await repo.DeleteFileAsync("c:/m01/exactcase.txt");
+    Check((await search.SearchAsync(new("query", Mode: SearchMode.Semantic))).Hits.Any(h => h.Path == "C:/M01/ExactCase.txt"),
+        "Mismatched-case delete evicted live SQLite file from CompactVectorIndex.");
+});
+
+await Test("BACKFILL ix_segments_pending_vec partial covering index and ReadOnly legacy fallback", async () =>
+{
+    var path = Path.Combine(root, "backfill-pending-index.sqlite");
+    await using (var repo = new SqliteIndexRepository(path))
+    {
+        await repo.InitializeAsync();
+        await repo.SetMetaAsync("profile_id", "synthetic-profile-v1");
+        await repo.UpsertFileAsync(SampleFile("C:/backfill/hasvec.txt", "embedded content", Unit(0)));
+        await repo.UpsertFileAsync(new IndexedFile(0, "C:/backfill/pending.txt", "doc", 20, 1, "partial", null, null,
+            [new("chunk", "none", 1, null, "pending segment text"), new("ocr", "none", 2, null, "ignored kind")]));
+    }
+    using (var db = Open(path))
+    {
+        Check(Convert.ToInt64(Scalar(db, "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='ix_segments_pending_vec'")) == 1,
+            "ix_segments_pending_vec was not created.");
+        using var planCmd = db.CreateCommand();
+        planCmd.CommandText = """
+            EXPLAIN QUERY PLAN
+            SELECT s.id, s.file, f.path, s.excerpt, s.kind
+            FROM segments s INDEXED BY ix_segments_pending_vec
+            JOIN files f ON s.file = f.id
+            WHERE s.id > 0
+              AND s.vec IS NULL
+              AND length(trim(coalesce(s.excerpt,''))) > 0
+              AND s.kind IN ('chunk', 'page', 'cells', 'lines')
+            ORDER BY s.id
+            LIMIT 64
+            """;
+        var planLines = new List<string>();
+        using (var reader = planCmd.ExecuteReader())
+            while (reader.Read()) planLines.Add(reader.GetString(3));
+        Check(planLines.Any(line => line.Contains("ix_segments_pending_vec", StringComparison.Ordinal)),
+            "Query planner did not use ix_segments_pending_vec: " + string.Join(" | ", planLines));
+    }
+
+    await using (var repo = new SqliteIndexRepository(path))
+    {
+        await repo.InitializeAsync();
+        Check((await repo.ReadPendingEmbeddingSegmentsAsync(0, 0)).Count == 0, "limit=0 must return empty list.");
+        Check((await repo.ReadPendingEmbeddingSegmentsAsync(-5, 0)).Count == 0, "negative limit must return empty list.");
+        var pending = await repo.ReadPendingEmbeddingSegmentsAsync(64, 0);
+        Check(pending.Count == 1 && pending[0].Path == "C:/backfill/pending.txt",
+            "ReadPendingEmbeddingSegmentsAsync returned unexpected count: " + pending.Count);
+        // Mismatched FileId (simulating rowid reuse after concurrent delete/upsert) must not update or count.
+        int mismatchedSaved = await repo.SaveBackfilledVectorsAsync([new SegmentVectorUpdate(pending[0].Id, pending[0].FileId + 999, Unit(1))]);
+        Check(mismatchedSaved == 0, "SaveBackfilledVectorsAsync modified row with mismatched FileId.");
+        Check((await repo.ReadPendingEmbeddingSegmentsAsync(64, 0)).Count == 1, "Mismatched FileId mutated pending row.");
+
+        int saved = await repo.SaveBackfilledVectorsAsync([new SegmentVectorUpdate(pending[0].Id, pending[0].FileId, Unit(1))]);
+        Check(saved == 1, $"Expected saved=1, got {saved}.");
+        // Duplicate/already-embedded update must return 0.
+        Check(await repo.SaveBackfilledVectorsAsync([new SegmentVectorUpdate(pending[0].Id, pending[0].FileId, Unit(1))]) == 0,
+            "Re-saving already embedded segment should return 0.");
+        Check((await repo.ReadPendingEmbeddingSegmentsAsync(64, 0)).Count == 0, "Saved pending segment stayed pending.");
+        var updatedFile = await repo.GetFileAsync("C:/backfill/pending.txt");
+        Check(updatedFile is not null && updatedFile.State == "done", "File was not promoted to done after backfill.");
+
+        // BLK-03: Partial PDF/truncated/compound diagnostics must be preserved while vector-only partial files promote to done.
+        await repo.UpsertFileAsync(new IndexedFile(0, "C:/backfill/scan.pdf", "pdf", 100, 1, "partial",
+            "Text-only PDF: 2 short/scan pages need rendering/OCR;", null,
+            [new("page", "none", 1, null, "scan page text")]));
+        await repo.UpsertFileAsync(new IndexedFile(0, "C:/backfill/compound.pdf", "pdf", 100, 1, "partial",
+            "Text-only PDF: 2 short/scan pages need rendering/OCR; Semantic extraction unavailable: no embedding service or required modality capability; keyword content retained.", null,
+            [new("page", "none", 1, null, "compound page text")]));
+        await repo.UpsertFileAsync(new IndexedFile(0, "C:/backfill/sampled.docx", "doc", 100, 1, "partial",
+            "Semantic vectors sampled inline (64 chunks); remaining chunks queued for background vector backfill.", null,
+            [new("chunk", "none", 1, null, "sampled doc chunk")]));
+
+        var pdfPending = await repo.ReadPendingEmbeddingSegmentsAsync(64, 0);
+        Check(pdfPending.Count == 3, $"Expected 3 partial pending segments, got {pdfPending.Count}.");
+        int batchSaved = await repo.SaveBackfilledVectorsAsync(pdfPending.Select(s => new SegmentVectorUpdate(s.Id, s.FileId, Unit(1))).ToArray());
+        Check(batchSaved == 3, $"Expected 3 saved updates, got {batchSaved}.");
+
+        var scanFile = await repo.GetFileAsync("C:/backfill/scan.pdf");
+        Check(scanFile is { State: "partial" } && scanFile.Detail!.Contains("Text-only PDF:", StringComparison.Ordinal),
+            "Text-only PDF was falsely promoted to done.");
+        var compoundFile = await repo.GetFileAsync("C:/backfill/compound.pdf");
+        Check(compoundFile is { State: "partial", Detail: "Text-only PDF: 2 short/scan pages need rendering/OCR;" },
+            "Compound PDF partial detail mismatch: " + compoundFile?.Detail);
+        var sampledFile = await repo.GetFileAsync("C:/backfill/sampled.docx");
+        Check(sampledFile is { State: "done", Detail: null },
+            "Vector-sampled partial file did not promote to done cleanly.");
+    }
+
+    // Legacy read-only fixture without native_format or ix_segments_pending_vec must also open and read cleanly.
+    var legacyRo = Path.Combine(root, "backfill-legacy-ro.sqlite");
+    CreateLegacy(legacyRo);
+    await using (var roRepo = new SqliteIndexRepository(legacyRo))
+    {
+        await roRepo.InitializeAsync();
+        var pendingLegacy = await roRepo.ReadPendingEmbeddingSegmentsAsync(64, 0);
+        Check(pendingLegacy.Count == 1 && pendingLegacy[0].Path == "/legacy/alpha.txt",
+            "Read-only legacy pending query failed.");
+    }
+});
+
 Console.WriteLine($"RESULT passed={passed} failed={failed} synthetic={root}");
+if (failed == 0 && Environment.GetEnvironmentVariable("WINSIGHT_KEEP_TEST_ARTIFACTS") != "1")
+{
+    SqliteConnection.ClearAllPools();
+    CleanupSyntheticRoot(root);
+}
 return failed == 0 ? 0 : 1;
+
+static void CleanupSyntheticRoot(string path)
+{
+    if (!Directory.Exists(path)) return;
+    var full = Path.GetFullPath(path);
+    var lp = OperatingSystem.IsWindows() && !full.StartsWith(@"\\?\", StringComparison.Ordinal)
+        ? (full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full[2..] : @"\\?\" + full)
+        : full;
+    for (var attempt = 0; attempt < 3; attempt++)
+    {
+        try
+        {
+            Directory.Delete(lp, recursive: true);
+            break;
+        }
+        catch (IOException) when (attempt < 2)
+        {
+            SqliteConnection.ClearAllPools();
+            Thread.Sleep(50);
+        }
+        catch (UnauthorizedAccessException) when (attempt < 2)
+        {
+            SqliteConnection.ClearAllPools();
+            Thread.Sleep(50);
+        }
+    }
+    var parent = Path.GetDirectoryName(full);
+    if (parent is not null && Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent).Any())
+        Directory.Delete(parent);
+}
 
 static void Check(bool condition, string message = "Assertion failed") { if (!condition) throw new Exception(message); }
 static void CheckNoStaging(string path) => Check(!Directory.EnumerateFiles(Path.GetDirectoryName(path)!, "." + Path.GetFileName(path) + ".*.initializing*").Any(), "Initializer left private staging files behind.");

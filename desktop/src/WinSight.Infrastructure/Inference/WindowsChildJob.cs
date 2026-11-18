@@ -10,8 +10,24 @@ namespace WinSight.Infrastructure.Inference;
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsChildJob : IDisposable
 {
+    private const uint JobObjectLimitKillOnJobClose = 0x2000u;
+    private const uint JobObjectLimitPriorityClass = 0x20u;
+    private const uint NormalPriorityClass = 0x20u;
+    private const uint BelowNormalPriorityClass = 0x4000u;
+
     private readonly SafeFileHandle handle;
-    private WindowsChildJob(SafeFileHandle handle) => this.handle = handle;
+    private readonly Process process;
+    private readonly bool managePriority;
+    private readonly object gate = new();
+    private bool isBoosted;
+    private bool disposed;
+
+    private WindowsChildJob(SafeFileHandle handle, Process process, bool managePriority)
+    {
+        this.handle = handle;
+        this.process = process;
+        this.managePriority = managePriority;
+    }
 
     /// <param name="lowPriority">
     /// Run the child at BELOW_NORMAL. Embedding and OCR are long CPU-bound jobs; at normal priority they compete with the
@@ -31,17 +47,57 @@ internal sealed class WindowsChildJob : IDisposable
         try
         {
             // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000, JOB_OBJECT_LIMIT_PRIORITY_CLASS = 0x20, BELOW_NORMAL_PRIORITY_CLASS = 0x4000.
-            var limits = new ExtendedLimits { Basic = new BasicLimits { LimitFlags = lowPriority ? 0x2000u | 0x20u : 0x2000u, PriorityClass = lowPriority ? 0x4000u : 0u } };
+            var limits = new ExtendedLimits
+            {
+                Basic = new BasicLimits
+                {
+                    LimitFlags = lowPriority ? JobObjectLimitKillOnJobClose | JobObjectLimitPriorityClass : JobObjectLimitKillOnJobClose,
+                    PriorityClass = lowPriority ? BelowNormalPriorityClass : 0u
+                }
+            };
             if (!SetInformationJobObject(handle, 9, ref limits, (uint)Marshal.SizeOf<ExtendedLimits>()))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot configure inference child job.");
             if (!AssignProcessToJobObject(handle, process.SafeHandle))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot bind inference host lifetime to parent.");
-            return new WindowsChildJob(handle);
+            return new WindowsChildJob(handle, process, lowPriority);
         }
         catch { handle.Dispose(); throw; }
     }
 
-    public void Dispose() => handle.Dispose();
+    internal void SetInteractiveBoost(bool boost)
+    {
+        if (!managePriority) return;
+        lock (gate)
+        {
+            if (disposed || isBoosted == boost || handle.IsInvalid || handle.IsClosed) return;
+            var limits = new ExtendedLimits
+            {
+                Basic = new BasicLimits
+                {
+                    LimitFlags = JobObjectLimitKillOnJobClose | JobObjectLimitPriorityClass,
+                    PriorityClass = boost ? NormalPriorityClass : BelowNormalPriorityClass
+                }
+            };
+            try
+            {
+                if (!SetInformationJobObject(handle, 9, ref limits, (uint)Marshal.SizeOf<ExtendedLimits>()))
+                    return;
+                process.PriorityClass = boost ? ProcessPriorityClass.Normal : ProcessPriorityClass.BelowNormal;
+                isBoosted = boost;
+            }
+            catch (Exception error) when (error is ObjectDisposedException or InvalidOperationException or Win32Exception or NotSupportedException) { }
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (gate)
+        {
+            if (disposed) return;
+            disposed = true;
+            handle.Dispose();
+        }
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct BasicLimits

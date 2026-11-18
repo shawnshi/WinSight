@@ -493,6 +493,10 @@ public sealed class QuickSearchViewModel : INotifyPropertyChanged
         backend.PreviewSourceAsync(item.Hit,item.Kind.Equals("code",StringComparison.OrdinalIgnoreCase),token);
     public Task<ISourcePreview> PreviewPageAsync(SearchItemViewModel item, int pageNumber, CancellationToken token = default) =>
         backend.PreviewSourcePageAsync(item.Hit, pageNumber, item.Kind.Equals("code", StringComparison.OrdinalIgnoreCase), token);
+    public bool HasCachedPreview(SearchItemViewModel item, int? overridePage = null) =>
+        backend.HasCachedPreview(item.Hit, overridePage);
+    public void PrefetchPreview(SearchItemViewModel item, int? overridePage = null) =>
+        backend.PrefetchPreview(item.Hit, overridePage, item.Kind.Equals("code", StringComparison.OrdinalIgnoreCase));
     public Task<SourceNavigationResult> NavigateAsync(SearchItemViewModel item,CancellationToken token=default) =>
         backend.NavigateSourceAsync(item.Hit,item.Kind.Equals("code",StringComparison.OrdinalIgnoreCase),token);
 

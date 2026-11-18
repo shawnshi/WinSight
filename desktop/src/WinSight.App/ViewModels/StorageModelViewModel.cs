@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using WinSight.Core;
+using WinSight.Core.Diagnostics;
 
 namespace WinSight.App.ViewModels;
 
@@ -96,6 +97,9 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
     private CancellationTokenSource? backfillCts;
     private bool isBackfilling;
     private string maintenanceStatus = "";
+    private int coverageRefreshInFlight;
+    private long lastCoverageRefreshTick;
+    private long metricsRefreshVersion;
 
     public string DatabaseSizeText => metrics is null ? "—" : FormatBytes(metrics.DatabaseBytes);
     public string PreviewCacheSizeText => metrics is null ? "—" : $"{metrics.PreviewCacheFiles} 个文件 · {FormatBytes(metrics.PreviewCacheBytes)}";
@@ -151,11 +155,20 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(FailedCount));
             OnPropertyChanged(nameof(StatusDetail));
             await RefreshQueueStatusAsync();
-            metrics = await backend.GetStorageMetricsAsync();
-            OnPropertyChanged(nameof(DatabaseSizeText));
-            OnPropertyChanged(nameof(PreviewCacheSizeText));
-            OnPropertyChanged(nameof(VectorCoverageText));
-            OnPropertyChanged(nameof(VectorCoveragePercent));
+            long version = Interlocked.Increment(ref metricsRefreshVersion);
+            var latestMetrics = await backend.GetStorageMetricsAsync();
+            if (Interlocked.Read(ref metricsRefreshVersion) == version)
+            {
+                metrics = latestMetrics;
+                OnPropertyChanged(nameof(DatabaseSizeText));
+                OnPropertyChanged(nameof(PreviewCacheSizeText));
+                OnPropertyChanged(nameof(VectorCoverageText));
+                OnPropertyChanged(nameof(VectorCoveragePercent));
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // App/backend is shutting down; ignore silently.
         }
         catch (Exception ex)
         {
@@ -175,7 +188,24 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
         {
             var progress = new Progress<(int Processed, int Remaining)>(p =>
             {
-                MaintenanceStatus = $"正在后台补全语义向量：已生成 {p.Processed:N0} 条…";
+                if (p.Processed == 0 && p.Remaining < 0)
+                {
+                    MaintenanceStatus = "推理宿主已就绪，正在扫描待补全的语义分段…";
+                }
+                else if (p.Processed == 0 && p.Remaining > 0)
+                {
+                    MaintenanceStatus = $"正在后台补全语义向量：已就绪，正在计算首批 {p.Remaining:N0} 条分段…";
+                }
+                else
+                {
+                    MaintenanceStatus = p.Remaining > 0
+                        ? $"正在后台补全语义向量：已生成 {p.Processed:N0} 条（本批 {p.Remaining:N0} 条）…"
+                        : $"正在后台补全语义向量：已生成 {p.Processed:N0} 条…";
+                    if (Environment.TickCount64 - Volatile.Read(ref lastCoverageRefreshTick) >= 2000)
+                    {
+                        _ = RefreshCoverageCounterOnlyAsync();
+                    }
+                }
             });
             int added = await backend.RunVectorBackfillAsync(0, progress, backfillCts.Token);
             MaintenanceStatus = added > 0
@@ -188,13 +218,49 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
             MaintenanceStatus = "已停止向量补全（已生成的向量已持久化保存）。";
             await RefreshStatusAsync();
         }
+        catch (IndexingPausedException)
+        {
+            MaintenanceStatus = "全局索引处于暂停状态，请先点击右下角“继续索引”后再启动向量补全。";
+        }
         catch (Exception ex)
         {
             MaintenanceStatus = $"向量补全失败：{ex.Message}";
+            await RefreshStatusAsync();
         }
         finally
         {
             IsBackfilling = false;
+        }
+    }
+
+    private async Task RefreshCoverageCounterOnlyAsync()
+    {
+        if (Interlocked.CompareExchange(ref coverageRefreshInFlight, 1, 0) != 0) return;
+        try
+        {
+            long version = Interlocked.Read(ref metricsRefreshVersion);
+            var latest = await backend.GetStorageMetricsAsync();
+            if (latest is not null && Interlocked.Read(ref metricsRefreshVersion) == version)
+            {
+                metrics = latest;
+                OnPropertyChanged(nameof(DatabaseSizeText));
+                OnPropertyChanged(nameof(PreviewCacheSizeText));
+                OnPropertyChanged(nameof(VectorCoverageText));
+                OnPropertyChanged(nameof(VectorCoveragePercent));
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // App/backend is shutting down; ignore silently.
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Failed to refresh vector coverage counter during backfill", ex);
+        }
+        finally
+        {
+            Volatile.Write(ref lastCoverageRefreshTick, Environment.TickCount64);
+            Interlocked.Exchange(ref coverageRefreshInFlight, 0);
         }
     }
 
@@ -261,6 +327,10 @@ public sealed class StorageModelViewModel : INotifyPropertyChanged
         {
             queue = await backend.GetIndexingQueueStatusAsync();
             failures = await backend.GetFailureSummaryAsync();
+        }
+        catch (ObjectDisposedException)
+        {
+            queue = null;
         }
         catch (Exception ex)
         {

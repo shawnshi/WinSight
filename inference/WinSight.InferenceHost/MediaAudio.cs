@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace WinSight.InferenceHost;
 
 // Numerical contract: transformers.js 4.3.1 Gemma4/Gemma3n extractors and utils/audio.js,
@@ -8,6 +10,12 @@ internal static class MediaAudio
     private static readonly double[] Hann = Enumerable.Range(0, Window)
         .Select(i => 0.5 - 0.5 * Math.Cos(i * (2 * Math.PI / Window))).ToArray();
     private static readonly float[] Filters = CreateFilters();
+    private static readonly double[] TwiddleReal = CreateTwiddles(cos: true);
+    private static readonly double[] TwiddleImag = CreateTwiddles(cos: false);
+
+    [ThreadStatic] private static double[]? tlsReal;
+    [ThreadStatic] private static double[]? tlsImaginary;
+    [ThreadStatic] private static float[]? tlsMagnitude;
 
     internal static AudioInputs Extract(double[] waveform)
     {
@@ -16,9 +24,13 @@ internal static class MediaAudio
         int frames = (paddedSamples + 160 - 321) / Hop + 1;
         var features = new float[checked(frames * Mels)];
         var mask = new bool[frames];
-        var real = new double[FftSize];
-        var imaginary = new double[FftSize];
-        var magnitude = new float[Bins];
+        var real = tlsReal ??= new double[FftSize];
+        var imaginary = tlsImaginary ??= new double[FftSize];
+        var magnitude = tlsMagnitude ??= new float[Bins];
+        int vecWidth = Vector<float>.Count;
+        var filtersSpan = Filters.AsSpan();
+        var magSpan = magnitude.AsSpan();
+
         for (int frame = 0; frame < frames; ++frame)
         {
             mask[frame] = frame * Hop + 160 < waveform.Length;
@@ -40,14 +52,45 @@ internal static class MediaAudio
             }
             for (int mel = 0; mel < Mels; ++mel)
             {
+                var filterRow = filtersSpan.Slice(mel * Bins, Bins);
                 float sum = 0;
-                for (int bin = 0; bin < Bins; ++bin)
-                    sum += Filters[mel * Bins + bin] * magnitude[bin];
+                int bin = 0;
+                if (Vector.IsHardwareAccelerated)
+                {
+                    var vSum = Vector<float>.Zero;
+                    int limit = Bins - vecWidth;
+                    for (; bin <= limit; bin += vecWidth)
+                    {
+                        vSum += new Vector<float>(filterRow.Slice(bin, vecWidth)) * new Vector<float>(magSpan.Slice(bin, vecWidth));
+                    }
+                    sum = Vector.Dot(vSum, Vector<float>.One);
+                }
+                for (; bin < Bins; ++bin)
+                    sum += filterRow[bin] * magSpan[bin];
                 float floored = (float)(sum + 0.001);
                 features[frame * Mels + mel] = (float)Math.Log(floored);
             }
         }
         return new AudioInputs(features, mask, frames);
+    }
+
+    private static double[] CreateTwiddles(bool cos)
+    {
+        // Stage S (length = 2^S, half = length / 2) uses half twiddle factors; total across log2(512)=9 stages = 511 entries.
+        var table = new double[FftSize];
+        int offset = 0;
+        for (int length = 2; length <= FftSize; length <<= 1)
+        {
+            int half = length >> 1;
+            double angleStep = -2 * Math.PI / length;
+            for (int j = 0; j < half; ++j)
+            {
+                double angle = angleStep * j;
+                table[offset + j] = cos ? Math.Cos(angle) : Math.Sin(angle);
+            }
+            offset += half;
+        }
+        return table;
     }
 
     private static float[] CreateFilters()
@@ -78,25 +121,26 @@ internal static class MediaAudio
             j ^= bit;
             if (i < j) (real[i], real[j]) = (real[j], real[i]);
         }
+        int twiddleBase = 0;
         for (int length = 2; length <= FftSize; length <<= 1)
         {
-            double angle = -2 * Math.PI / length;
-            double rootReal = Math.Cos(angle), rootImaginary = Math.Sin(angle);
+            int half = length >> 1;
             for (int offset = 0; offset < FftSize; offset += length)
             {
-                double wr = 1, wi = 0;
-                for (int j = 0; j < length / 2; ++j)
+                for (int j = 0; j < half; ++j)
                 {
-                    int even = offset + j, odd = even + length / 2;
+                    double wr = TwiddleReal[twiddleBase + j];
+                    double wi = TwiddleImag[twiddleBase + j];
+                    int even = offset + j, odd = even + half;
                     double tr = wr * real[odd] - wi * imaginary[odd];
                     double ti = wr * imaginary[odd] + wi * real[odd];
                     real[odd] = real[even] - tr;
                     imaginary[odd] = imaginary[even] - ti;
                     real[even] += tr;
                     imaginary[even] += ti;
-                    (wr, wi) = (wr * rootReal - wi * rootImaginary, wr * rootImaginary + wi * rootReal);
                 }
             }
+            twiddleBase += half;
         }
     }
 }

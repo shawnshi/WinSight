@@ -100,6 +100,13 @@ public interface IIndexRepository : IAsyncDisposable
     Task ResetHangingTasksAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     Task EnqueueIndexTaskAsync(IndexTask task, CancellationToken cancellationToken = default) => Task.CompletedTask;
     Task AckTaskAsync(string taskPath, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    Task AckTasksAsync(IReadOnlyList<string> taskPaths, CancellationToken cancellationToken = default) =>
+        taskPaths.Count == 0 ? Task.CompletedTask
+        : taskPaths.Aggregate(Task.CompletedTask, async (previous, path) =>
+        {
+            await previous.ConfigureAwait(false);
+            await AckTaskAsync(path, cancellationToken).ConfigureAwait(false);
+        });
 
     Task EnqueueIndexTasksAsync(IReadOnlyList<IndexTask> tasks, CancellationToken cancellationToken = default) =>
         tasks.Count == 0 ? Task.CompletedTask
@@ -111,6 +118,13 @@ public interface IIndexRepository : IAsyncDisposable
     Task<IReadOnlyList<IndexTask>> ReadDueTasksAsync(int limit, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<IndexTask>>([]);
     Task<IndexTask?> GetTaskAsync(string path, CancellationToken cancellationToken = default) => Task.FromResult<IndexTask?>(null);
     Task UpdateTaskStateAsync(string path, string state, int attempts, DateTimeOffset dueUtc, string? reason = null, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    Task UpdateTasksStateAsync(IReadOnlyList<IndexTask> tasks, string state, DateTimeOffset dueUtc, CancellationToken cancellationToken = default) =>
+        tasks.Count == 0 ? Task.CompletedTask
+        : tasks.Aggregate(Task.CompletedTask, async (previous, task) =>
+        {
+            await previous.ConfigureAwait(false);
+            await UpdateTaskStateAsync(task.Path, state, task.Attempts, dueUtc, task.Reason, cancellationToken).ConfigureAwait(false);
+        });
     Task AckTaskWithUpsertAsync(IndexedFile file, string taskPath, string? tombstone = null, CancellationToken cancellationToken = default) => UpsertFileAsync(file, cancellationToken);
     Task AckTaskWithDeleteAsync(string filePath, string taskPath, CancellationToken cancellationToken = default) => DeleteFileAsync(filePath, cancellationToken);
     Task<int> TrimTasksAsync(int maxTasks = 50000, CancellationToken cancellationToken = default) => Task.FromResult(0);
@@ -152,6 +166,12 @@ public interface IEmbeddingService : IAsyncDisposable
     /// </summary>
     Task<IReadOnlyList<EmbeddingResult>> EmbedInteractiveAsync(IReadOnlyList<EmbeddingInput> inputs,
         CancellationToken cancellationToken = default) => EmbedAsync(inputs, cancellationToken);
+}
+
+public interface IHostEmbeddingService : IEmbeddingService
+{
+    bool TryGetVerifiedIdentity(out EmbeddingInfo info);
+    Task<EmbeddingInfo> GetOrStartInfoAsync(bool interactive, CancellationToken cancellationToken = default);
 }
 public sealed record ExtractionResult(IReadOnlyList<IndexSegment> Segments, string State,
     string? Detail = null, string? Info = null);
@@ -250,6 +270,8 @@ public interface ISearchBackend
         Task.FromException<ISourcePreview>(new NotSupportedException("Source preview is unavailable in this backend."));
     Task<ISourcePreview> PreviewSourcePageAsync(SearchHit hit, int pageNumber, bool code = false, CancellationToken cancellationToken = default) =>
         PreviewSourceAsync(hit, code, cancellationToken);
+    bool HasCachedPreview(SearchHit hit, int? overridePage = null) => false;
+    void PrefetchPreview(SearchHit hit, int? overridePage = null, bool code = false) { }
     Task<SourceNavigationResult> NavigateSourceAsync(SearchHit hit, bool code = false, CancellationToken cancellationToken = default) =>
         Task.FromException<SourceNavigationResult>(new NotSupportedException("Precise source navigation is unavailable in this backend."));
 }

@@ -107,6 +107,48 @@ internal static class ReviewCases
             await db.UpsertFileAsync(new(0, exact, "doc", 1, 1, "done", null, null, []));
             Need((await service.SearchAsync(new("001234", Mode: SearchMode.Keyword))).Hits.Single().Path == exact, "Exact numeric folder tokens must remain searchable.");
         });
+        await Case("DS01-R06-docx-coalescing", async folder =>
+        {
+            var paragraphs = Enumerable.Range(1, 100)
+                .Select(i => $"第{i}段 医院信息化建设标准条款与业务流程说明内容。")
+                .ToArray();
+            var docx = Word(folder, paragraphs);
+            var extracted = await new ContentExtractor().ExtractAsync(docx, false);
+            Need(extracted.State == "done" && extracted.Segments.Count <= 20 && extracted.Segments.Count >= 2,
+                $"Large DOCX should coalesce short paragraphs into bounded chunks, got {extracted.Segments.Count}");
+            Need(extracted.Segments[0].Source?.Location.Paragraph == 1,
+                $"First coalesced block should anchor at paragraph 1, got {extracted.Segments[0].Source?.Location.Paragraph}");
+            Need(extracted.Segments.Any(s => s.Source?.Location.Paragraph > 1),
+                "Subsequent coalesced blocks must advance their starting paragraph anchor.");
+            await using var db = new SqliteIndexRepository(Path.Combine(folder, "index.sqlite"));
+            await Store(db, docx, extracted);
+            var hit = (await new SearchService(db).SearchAsync(new("第99段", Mode: SearchMode.Keyword))).Hits.FirstOrDefault();
+            Need(hit is not null && hit.Path == docx && hit.Source?.Location.Paragraph >= 1,
+                "Coalesced DOCX block must remain searchable with a valid paragraph anchor.");
+
+            var slideShapes = Enumerable.Range(1, 25)
+                .Select(i => i == 20
+                    ? $"<p:sp><p:nvSpPr><p:cNvPr id=\"{i}\" name=\"s{i}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>关键指标 PRJ-2026-999</a:t></a:r></a:p></p:txBody></p:sp>"
+                    : $"<p:sp><p:nvSpPr><p:cNvPr id=\"{i}\" name=\"s{i}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>幻灯片节点 {i}</a:t></a:r></a:p></p:txBody></p:sp>")
+                .ToArray();
+            var multiShapePptx = Package(folder, "coalesced.pptx", new()
+            {
+                ["[Content_Types].xml"] = Types(("ppt/presentation.xml", "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"), ("ppt/slides/1.xml", "application/vnd.openxmlformats-officedocument.presentationml.slide+xml")),
+                ["_rels/.rels"] = $"<Relationships xmlns=\"{R}\"><Relationship Id=\"r\" Type=\"{O}/officeDocument\" Target=\"ppt/presentation.xml\"/></Relationships>",
+                ["ppt/presentation.xml"] = $"<p:presentation xmlns:p=\"{P}\" xmlns:r=\"{O}\"><p:sldIdLst><p:sldId id=\"256\" r:id=\"r0\"/></p:sldIdLst></p:presentation>",
+                ["ppt/_rels/presentation.xml.rels"] = $"<Relationships xmlns=\"{R}\"><Relationship Id=\"r0\" Type=\"{O}/slide\" Target=\"slides/1.xml\"/></Relationships>",
+                ["ppt/slides/1.xml"] = $"<p:sld xmlns:p=\"{P}\" xmlns:a=\"{A}\"><p:cSld><p:spTree>{string.Concat(slideShapes)}</p:spTree></p:cSld></p:sld>"
+            });
+            var pptxExtracted = await new ContentExtractor().ExtractAsync(multiShapePptx, false);
+            Need(pptxExtracted.State == "done" && pptxExtracted.Segments.Count == 1
+                && pptxExtracted.Segments[0].Kind == "page"
+                && pptxExtracted.Segments[0].Source?.Location is { Type: "slide", Page: 1 },
+                $"Multi-shape slide 1 should coalesce into 1 page segment, got {pptxExtracted.Segments.Count}");
+            await Store(db, multiShapePptx, pptxExtracted);
+            var pptHit = (await new SearchService(db).SearchAsync(new("PRJ-2026-999", Mode: SearchMode.Keyword))).Hits.FirstOrDefault();
+            Need(pptHit is not null && pptHit.Path == multiShapePptx && pptHit.Source?.Location is { Type: "slide", Page: 1 },
+                "Coalesced PPTX slide must remain searchable by exact identifier.");
+        });
         await File.WriteAllTextAsync(Path.Combine(root, "results.json"), JsonSerializer.Serialize(new { passed, failed, results,
             scope = "Actual Office/PdfPig extraction and SQLite keyword/field recall; no OCR, model, GUI or Office process." }, new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"Review cases {passed} passed, {failed} failed");
@@ -121,6 +163,14 @@ internal static class ReviewCases
         foreach (var part in parts) { using var stream = zip.CreateEntry(part.Key).Open(); stream.Write(Encoding.UTF8.GetBytes(part.Value)); }
         return path;
     }
+    private static string Word(string folder, params string[] paragraphs) => Package(folder, "fixture.docx", new()
+    {
+        ["[Content_Types].xml"] = Types(("word/document.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml")),
+        ["_rels/.rels"] = $"<Relationships xmlns=\"{R}\"><Relationship Id=\"r\" Type=\"{O}/officeDocument\" Target=\"word/document.xml\"/></Relationships>",
+        ["word/document.xml"] = "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>"
+            + string.Concat(paragraphs.Select(p => $"<w:p><w:r><w:t>{Xml(p)}</w:t></w:r></w:p>"))
+            + "</w:body></w:document>"
+    });
     private static string Sheet(string folder, params string[][] rows) => Package(folder, "fixture.xlsx", new()
     {
         ["[Content_Types].xml"] = Types(("xl/workbook.xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"), ("xl/worksheets/sheet.xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml")),

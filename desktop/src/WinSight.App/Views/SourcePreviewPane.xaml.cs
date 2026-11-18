@@ -34,7 +34,7 @@ public sealed partial class SourcePreviewPane : UserControl
         request?.Cancel(); request?.Dispose(); request = new(); var token = request.Token; long epoch = ++generation;
         viewModel = model; item = selected; var old = preview; preview = null;
         SourceTitle.Text = selected.FileName; SourceLocation.Text = selected.LocationDisplay;
-        if (!overridePage.HasValue) Excerpt.Text = "";
+        if (!overridePage.HasValue) Excerpt.Text = selected.Excerpt ?? "";
         Notice.Text = UiText.PreviewLoading;
         ResetRaster();
         LoadingRing.Visibility = Visibility.Visible; LoadingRing.IsActive = true;
@@ -78,12 +78,16 @@ public sealed partial class SourcePreviewPane : UserControl
             ApplyFitZoom();
             ShowRasterInViewport();
             PlayRasterHandoff();
+            if (totalPages is { } max && currentPage < max)
+                model.PrefetchPreview(selected, currentPage + 1);
+            if (currentPage > 1)
+                model.PrefetchPreview(selected, currentPage - 1);
         }
         catch (OperationCanceledException) { if (epoch == generation) { ResetRaster(); Notice.Text = UiText.PreviewCanceled; } }
         catch (Exception e) { if (epoch == generation) { ResetRaster(); Notice.Text = UiText.PreviewUnavailable(e.Message); } }
         finally
         {
-            try { if (loaded is not null) await loaded.DisposeAsync(); }
+            try { if (loaded is not null) await loaded.DisposeAsync(); } catch { }
             finally { if (epoch == generation) { LoadingRing.IsActive = false; LoadingRing.Visibility = Visibility.Collapsed; } }
         }
     }

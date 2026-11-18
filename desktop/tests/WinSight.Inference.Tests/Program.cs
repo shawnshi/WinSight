@@ -369,4 +369,36 @@ await Test("child job lowers CPU priority only when asked", async () =>
     finally { foreach (var p in new[] { normal, low }) { try { p.Kill(true); } catch (InvalidOperationException) { } } await Task.CompletedTask; }
 });
 Console.WriteLine($"RESULT passed={passed} failed={failed}; synthetic-only; artifacts={testRoot}");
+if (failed == 0 && Environment.GetEnvironmentVariable("WINSIGHT_KEEP_TEST_ARTIFACTS") != "1")
+{
+    CleanupArtifactRoot(testRoot);
+}
 return failed == 0 ? 0 : 1;
+
+static void CleanupArtifactRoot(string path)
+{
+    if (!Directory.Exists(path)) return;
+    var full = Path.GetFullPath(path);
+    var lp = OperatingSystem.IsWindows() && !full.StartsWith(@"\\?\", StringComparison.Ordinal)
+        ? (full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full[2..] : @"\\?\" + full)
+        : full;
+    for (var attempt = 0; attempt < 3; attempt++)
+    {
+        try
+        {
+            Directory.Delete(lp, recursive: true);
+            break;
+        }
+        catch (IOException) when (attempt < 2)
+        {
+            Thread.Sleep(50);
+        }
+        catch (UnauthorizedAccessException) when (attempt < 2)
+        {
+            Thread.Sleep(50);
+        }
+    }
+    var parent = Path.GetDirectoryName(full);
+    if (parent is not null && Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent).Any())
+        Directory.Delete(parent);
+}

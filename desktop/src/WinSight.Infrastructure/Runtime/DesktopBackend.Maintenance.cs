@@ -16,7 +16,7 @@ public sealed partial class DesktopBackend
 {
 private volatile string rebuildStatus = "idle";
 
-private volatile bool rebuildRunning;
+private int rebuildRunning;
 
 /// <summary>
     /// Lists everything that must be idle before an export: an indexing pass, a generation rebuild, or
@@ -32,7 +32,7 @@ private async Task<List<string>> MigrationHostileWorkAsync(CancellationToken can
     {
         var blockers = new List<string>();
         if (indexing.HasWork) blockers.Add("indexing is running");
-        if (rebuildRunning) blockers.Add("a generation rebuild is running");
+        if (Volatile.Read(ref rebuildRunning) != 0) blockers.Add("a generation rebuild is running");
         var store = JobStore;
         if (Directory.Exists(store.Inbox) && Directory.GetFiles(store.Inbox, "*.json").Length != 0) blockers.Add("maintenance requests are waiting to be drained");
         if (Directory.Exists(store.Claimed) && Directory.GetFiles(store.Claimed, "*.json").Length != 0) blockers.Add("a maintenance request is in progress");
@@ -78,6 +78,7 @@ private async Task<List<string>> MigrationHostileWorkAsync(CancellationToken can
 /// <summary>True when the live generation no longer matches the model or the lexicon.</summary>
     public async Task<bool> RebuildNeededAsync(CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(stopping != 0, this);
         var info = await GetEmbeddings().GetInfoAsync(cancellationToken).ConfigureAwait(false);
         var dictionary = NativeSegmenter.Fingerprint(Array.Empty<string>());
         return IndexRebuildCoordinator.NeedsRebuild(IndexDirectory, info.ProfileId, dictionary);
@@ -91,78 +92,113 @@ public string RebuildStatus => rebuildStatus;
     /// </summary>
     public async Task<string> StartRebuildAsync(CancellationToken cancellationToken = default)
     {
-        if (rebuildRunning) return "already running";
-        var info = await GetEmbeddings().GetInfoAsync(cancellationToken).ConfigureAwait(false);
-        var roots = (settings.Folders ?? new List<string>()).Where(root => IsAuthorizedResult(root, false)).ToArray();
-        if (roots.Length == 0) return "no authorized folders";
-        rebuildRunning = true;
-        rebuildStatus = "running: staging " + roots.Length + " root(s)";
-        _ = Task.Run(async () =>
+        ObjectDisposedException.ThrowIf(stopping != 0, this);
+        if (Interlocked.CompareExchange(ref rebuildRunning, 1, 0) != 0) return "already running";
+        bool handedOff = false;
+        try
         {
-            await reconfiguration.WaitAsync().ConfigureAwait(false);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetimeStop.Token);
+            await GetEmbeddings().GetInfoAsync(linked.Token).ConfigureAwait(false);
+            string[] roots;
+            await lifecycle.WaitAsync(linked.Token).ConfigureAwait(false);
             try
             {
-                await StopWatchingAsync().ConfigureAwait(false);
-                using var runLock = IndexRunLock.TryAcquire(dataDirectory);
-                if (runLock is null)
-                {
-                    rebuildStatus = "failed: another indexing run is active";
-                    return;
-                }
-                var dictionary = NativeSegmenter.Fingerprint(Array.Empty<string>());
-                var generation = info.ProfileId[..Math.Min(12, info.ProfileId.Length)] + "-" + dictionary[..8] + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
-                await lifecycle.WaitAsync().ConfigureAwait(false);
+                ObjectDisposedException.ThrowIf(disposed || stopping != 0, this);
+                roots = (settings.Folders ?? new List<string>()).Where(root => IsAuthorizedResult(root, false)).ToArray();
+            }
+            finally { lifecycle.Release(); }
+            if (roots.Length == 0) return "no authorized folders";
+            rebuildStatus = "running: staging " + roots.Length + " root(s)";
+            handedOff = true;
+            _ = Task.Run(async () =>
+            {
+                var stopToken = lifetimeStop.Token;
+                bool acquiredReconfig = false;
                 try
                 {
-                    ObjectDisposedException.ThrowIf(disposed || stopping != 0, this);
-                    if (repositories.Count > 0)
+                    await reconfiguration.WaitAsync(stopToken).ConfigureAwait(false);
+                    acquiredReconfig = true;
+                    await StopWatchingAsync().ConfigureAwait(false);
+                    using var preemption = SuppressAndCancelBackfill();
+                    await indexing.RunAsync(async workToken =>
                     {
-                        foreach (var store in repositories) await store.DisposeAsync().ConfigureAwait(false);
-                        repositories.Clear();
-                    }
+                        using var runLock = AcquireRunLock();
+                        if (runLock is null)
+                        {
+                            rebuildStatus = "failed: another indexing run is active";
+                            return;
+                        }
+                        await backfillGate.WaitAsync(workToken).ConfigureAwait(false);
+                        try
+                        {
+                            string[] currentRoots;
+                            IEmbeddingService currentService;
+                            await lifecycle.WaitAsync(workToken).ConfigureAwait(false);
+                            try
+                            {
+                                ObjectDisposedException.ThrowIf(disposed || stopping != 0, this);
+                                currentRoots = (settings.Folders ?? new List<string>()).Where(root => IsAuthorizedResult(root, false)).ToArray();
+                                currentService = GetEmbeddings();
+                            }
+                            finally { lifecycle.Release(); }
+                            if (currentRoots.Length == 0)
+                            {
+                                rebuildStatus = "failed: no authorized folders";
+                                return;
+                            }
+                            var currentInfo = await currentService.GetInfoAsync(workToken).ConfigureAwait(false);
+                            var dictionary = NativeSegmenter.Fingerprint(Array.Empty<string>());
+                            var generation = currentInfo.ProfileId[..Math.Min(12, currentInfo.ProfileId.Length)] + "-" + dictionary[..8] + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+                            var outcome = await IndexRebuildCoordinator.RebuildAsync(IndexDirectory, generation, async stagingRoot =>
+                            {
+                                await using var staging = new SqliteIndexRepository(Path.Combine(stagingRoot, "index.sqlite"));
+                                await staging.InitializeAsync(workToken).ConfigureAwait(false);
+                                await staging.SetMetaAsync("profile_id", currentInfo.ProfileId, workToken).ConfigureAwait(false);
+                                await staging.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, IndexRebuildCoordinator.LexiconSchema, workToken).ConfigureAwait(false);
+                                await staging.SetMetaAsync(IndexRebuildCoordinator.DictionaryKey, dictionary, workToken).ConfigureAwait(false);
+                                await staging.SetMetaAsync(IndexRebuildCoordinator.GenerationKey, generation, workToken).ConfigureAwait(false);
+                                await using var mediaClient = GetMediaClient();
+                                var builder = new IndexingService(staging, new ContentExtractor(mediaClient), currentService,
+                                    null, null, null, allowDeferredStages: true);
+                                await builder.IndexAsync(new IndexRequest(currentRoots), null, workToken).ConfigureAwait(false);
+                            }, async database =>
+                            {
+                                await using var probe = new SqliteIndexRepository(database);
+                                await probe.InitializeAsync(workToken).ConfigureAwait(false);
+                                var files = await probe.ReadFileHeadersAsync(workToken).ConfigureAwait(false);
+                                return files.Count == 0 ? Array.Empty<string>() : new[] { "files:" + files.Count };
+                            }, workToken, swapGuard: performSwitch => ExecuteProtectedRebuildSwapAsync(performSwitch, workToken)).ConfigureAwait(false);
+
+                            rebuildStatus = outcome.Switched
+                                ? "done: rebuilt with " + currentRoots.Length + " root(s); previous generation kept as " + Path.GetFileName(outcome.PreviousDirectory ?? "none")
+                                : "failed: " + (outcome.Detail ?? "unknown");
+                        }
+                        finally { backfillGate.Release(); }
+                    }, stopToken).ConfigureAwait(false);
                 }
-                finally { lifecycle.Release(); }
-
-                var outcome = await IndexRebuildCoordinator.RebuildAsync(IndexDirectory, generation, async stagingRoot =>
+                catch (OperationCanceledException)
                 {
-                    await using var staging = new SqliteIndexRepository(Path.Combine(stagingRoot, "index.sqlite"));
-                    await staging.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-                    await staging.SetMetaAsync("profile_id", info.ProfileId, CancellationToken.None).ConfigureAwait(false);
-                    await staging.SetMetaAsync(IndexRebuildCoordinator.LexiconSchemaKey, IndexRebuildCoordinator.LexiconSchema, CancellationToken.None).ConfigureAwait(false);
-                    await staging.SetMetaAsync(IndexRebuildCoordinator.DictionaryKey, dictionary, CancellationToken.None).ConfigureAwait(false);
-                    await staging.SetMetaAsync(IndexRebuildCoordinator.GenerationKey, generation, CancellationToken.None).ConfigureAwait(false);
-                    await using var mediaClient = GetMediaClient();
-                    var builder = new IndexingService(staging, new ContentExtractor(mediaClient), embeddings!,
-                        null, null, null, allowDeferredStages: true);
-                    await builder.IndexAsync(new IndexRequest(roots), null, CancellationToken.None).ConfigureAwait(false);
-                }, async database =>
+                    rebuildStatus = stopToken.IsCancellationRequested
+                        ? "cancelled: shutdown in progress"
+                        : "cancelled: indexing paused";
+                }
+                catch (Exception error) when (error is IOException or InvalidOperationException or InvalidDataException or ObjectDisposedException)
                 {
-                    await using var probe = new SqliteIndexRepository(database);
-                    await probe.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-                    var files = await probe.ReadFileHeadersAsync(CancellationToken.None).ConfigureAwait(false);
-                    return files.Count == 0 ? Array.Empty<string>() : new[] { "files:" + files.Count };
-                }, CancellationToken.None).ConfigureAwait(false);
-
-                await lifecycle.WaitAsync().ConfigureAwait(false);
-                try { repositories.Clear(); }
-                finally { lifecycle.Release(); }
-
-                rebuildStatus = outcome.Switched
-                    ? "done: rebuilt with " + roots.Length + " root(s); previous generation kept as " + Path.GetFileName(outcome.PreviousDirectory ?? "none")
-                    : "failed: " + (outcome.Detail ?? "unknown");
-            }
-            catch (Exception error) when (error is IOException or InvalidOperationException or InvalidDataException or ObjectDisposedException)
-            {
-                rebuildStatus = "failed: " + error.GetType().Name + ": " + error.Message;
-            }
-            finally
-            {
-                rebuildRunning = false;
-                if (stopping == 0) ConfigureWatching();
-                reconfiguration.Release();
-            }
-        }, CancellationToken.None);
-        return "started";
+                    rebuildStatus = "failed: " + error.GetType().Name + ": " + error.Message;
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref rebuildRunning, 0);
+                    if (stopping == 0) ConfigureWatching();
+                    if (acquiredReconfig) reconfiguration.Release();
+                }
+            }, CancellationToken.None);
+            return "started";
+        }
+        finally
+        {
+            if (!handedOff) Interlocked.Exchange(ref rebuildRunning, 0);
+        }
     }
 
 private MaintenanceJobStore JobStore => new(dataDirectory);
@@ -250,6 +286,7 @@ public Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default
     {
         maintenanceLoop = Task.Run(async () =>
         {
+            var nextIdleBackfillRetryUtc = DateTimeOffset.MinValue;
             try
             {
                 using var timer = new PeriodicTimer(maintenancePoll);
@@ -272,6 +309,27 @@ public Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException) { }
 
+                    if (DateTimeOffset.UtcNow >= nextIdleBackfillRetryUtc)
+                    {
+                        try
+                        {
+                            await RunIdleBackfillTickAsync(128, lifetimeStop.Token).ConfigureAwait(false);
+                        }
+                        catch (IndexingPausedException)
+                        {
+                            // Indexing was paused concurrently; yield without error backoff.
+                        }
+                        catch (OperationCanceledException) when (stopping == 0 && !lifetimeStop.IsCancellationRequested)
+                        {
+                            // Preempted by user pause, interactive query, or generation rebuild; keep maintenance loop alive.
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            nextIdleBackfillRetryUtc = DateTimeOffset.UtcNow.AddMinutes(5);
+                            AppLog.Warn("Idle vector backfill tick failed; backing off 5 minutes.", ex);
+                        }
+                    }
+
                     if (MaintenanceJobStore.ReadGrant(dataDirectory) is null) continue;
                     var inbox = JobStore.Inbox;
                     if (!Directory.Exists(inbox) || Directory.GetFiles(inbox, "*.json").Length == 0) continue;
@@ -287,6 +345,39 @@ public Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default
         });
     }
 
+    internal async Task<int> RunIdleBackfillTickAsync(int maxSegments = 128, CancellationToken cancellationToken = default)
+    {
+        if (stopping != 0 || indexing.State != IndexingControlState.Running || indexing.HasWork
+            || Volatile.Read(ref rebuildRunning) != 0 || backfillGate.CurrentCount == 0)
+            return 0;
+        var nowLocal = DateTime.Now;
+        if (settings.IndexHoursOn && !BackgroundIndexCoordinator.IsScheduledTime(settings.IndexHours, nowLocal.Hour * 60 + nowLocal.Minute))
+            return 0;
+        if (background is not { } coord) return 0;
+
+        var budgets = coord.BudgetController.ComputeBudgets();
+        if (budgets.FirstOrDefault(b => b.Class == "Backfill") is not { State: "active", InferenceConcurrency: > 0 })
+            return 0;
+
+        var qStatus = await coord.GetIndexingQueueStatusAsync(cancellationToken).ConfigureAwait(false);
+        if (qStatus.Pending != 0 || qStatus.Stabilizing != 0 || qStatus.Ready != 0 || qStatus.Running != 0)
+            return 0;
+
+        var stores = await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false);
+        bool hasPending = false;
+        foreach (var store in stores)
+        {
+            if ((await store.ReadPendingEmbeddingSegmentsAsync(1, 0, cancellationToken).ConfigureAwait(false)).Count > 0)
+            {
+                hasPending = true;
+                break;
+            }
+        }
+        if (!hasPending) return 0;
+
+        return await BackfillMissingEmbeddingsAsync(maxSegments, null, cancellationToken).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Performs in-place embedding backfill for legacy text-only segments without re-parsing files from disk.
     /// Uses the active inference accelerator (DirectML GPU or NPU) to generate embeddings at maximum speed.
@@ -297,68 +388,169 @@ public Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(stopping != 0, this);
+        ArgumentOutOfRangeException.ThrowIfNegative(maxSegments);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetimeStop.Token);
         const int batchSize = 32;
         int totalProcessed = 0;
 
-        await indexing.RunAsync(async token =>
+        await indexing.RunConcurrentAsync(async token =>
         {
-            using var runLock = IndexRunLock.TryAcquire(dataDirectory)
-                ?? throw new IOException("Another WinSight process is currently indexing this data directory.");
-            var stores = await GetRepositoriesAsync(token).ConfigureAwait(false);
-            var service = GetEmbeddings();
-            var info = await service.GetInfoAsync(token).ConfigureAwait(false);
-            if (info == null || !info.Capabilities.Contains("text", StringComparer.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Embedding service is not available or does not support text.");
-
-            foreach (var repo in stores)
+            await backfillGate.WaitAsync(token).ConfigureAwait(false);
+            CancellationTokenSource? backfillRunCts = null;
+            try
             {
-                var currentProfile = await repo.GetMetaAsync("profile_id", token).ConfigureAwait(false);
-                if (string.IsNullOrWhiteSpace(currentProfile))
+                backfillRunCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                lock (backfillCancelSync)
                 {
-                    await repo.SetMetaAsync("profile_id", info.ProfileId, token).ConfigureAwait(false);
+                    if (backfillPreemptions > 0)
+                        backfillRunCts.Cancel();
+                    activeBackfillCts = backfillRunCts;
                 }
-                else if (!FilePolicy.IsCompatibleProfile(currentProfile, info.ProfileId))
+                var runToken = backfillRunCts.Token;
+                runToken.ThrowIfCancellationRequested();
+
+                using var runLock = AcquireRunLock()
+                    ?? throw new IOException("Another WinSight process is currently indexing this data directory.");
+                IIndexRepository[] stores;
+                IEmbeddingService service;
+                await lifecycle.WaitAsync(runToken).ConfigureAwait(false);
+                try
                 {
-                    throw new InvalidOperationException($"Active embedding profile '{info.ProfileId}' is incompatible with index profile '{currentProfile}'. Rebuild the index before backfilling vectors.");
+                    ObjectDisposedException.ThrowIf(disposed || stopping != 0, this);
+                    stores = (await GetRepositoriesAsync(runToken).ConfigureAwait(false)).ToArray();
+                    service = GetEmbeddings();
                 }
+                finally { lifecycle.Release(); }
 
-                long afterId = 0;
-                while (!token.IsCancellationRequested)
+                var info = service is IHostEmbeddingService client
+                    ? await client.GetOrStartInfoAsync(interactive: false, runToken).ConfigureAwait(false)
+                    : await service.GetInfoAsync(runToken).ConfigureAwait(false);
+                if (info == null || !info.Capabilities.Contains("text", StringComparer.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Embedding service is not available or does not support text.");
+                progress?.Report((0, -1));
+
+                foreach (var repo in stores)
                 {
-                    if (maxSegments > 0 && totalProcessed >= maxSegments) break;
-                    int remainingBudget = maxSegments > 0 ? maxSegments - totalProcessed : 256;
-                    int queryLimit = Math.Min(remainingBudget, 256);
-                    var segments = await repo.ReadPendingEmbeddingSegmentsAsync(queryLimit, afterId, token).ConfigureAwait(false);
-                    if (segments.Count == 0) break;
-                    afterId = segments[^1].Id;
-
-                    foreach (var chunk in segments.Chunk(batchSize))
+                    var currentProfile = await repo.GetMetaAsync("profile_id", runToken).ConfigureAwait(false);
+                    if (string.IsNullOrWhiteSpace(currentProfile))
                     {
-                        token.ThrowIfCancellationRequested();
-                        var inputs = chunk.Select(s => new EmbeddingInput(
-                            "text",
-                            $"title: {s.Title} | text: {ContentExtractor.Prefix(s.Excerpt, s.Kind == "page" ? 1000 : 4000)}"
-                        )).ToArray();
+                        await repo.SetMetaAsync("profile_id", info.ProfileId, runToken).ConfigureAwait(false);
+                    }
+                    else if (!FilePolicy.IsCompatibleProfile(currentProfile, info.ProfileId))
+                    {
+                        throw new InvalidOperationException($"Active embedding profile '{info.ProfileId}' is incompatible with index profile '{currentProfile}'. Rebuild the index before backfilling vectors.");
+                    }
+                }
 
-                        var results = await service.EmbedAsync(inputs, token).ConfigureAwait(false);
-                        var updates = new List<SegmentVectorUpdate>();
-                        for (int i = 0; i < chunk.Length; i++)
+                int batchesRun = 0;
+                int failedItems = 0;
+                string? firstFailure = null;
+                foreach (var repo in stores)
+                {
+                    long afterId = 0;
+                    while (!runToken.IsCancellationRequested)
+                    {
+                        if (maxSegments > 0 && totalProcessed >= maxSegments) break;
+                        int defaultBatch = maxSegments == 0 && batchesRun == 0 ? 64 : 256;
+                        int remainingBudget = maxSegments > 0 ? maxSegments - totalProcessed : defaultBatch;
+                        int queryLimit = Math.Min(remainingBudget, defaultBatch);
+                        var segments = await repo.ReadPendingEmbeddingSegmentsAsync(queryLimit, afterId, runToken).ConfigureAwait(false);
+                        if (segments.Count == 0) break;
+                        afterId = segments[^1].Id;
+                        if (batchesRun == 0)
                         {
-                            if (results[i].Vector is { } vec)
-                            {
-                                updates.Add(new SegmentVectorUpdate(chunk[i].Id, chunk[i].FileId, vec));
-                            }
+                            progress?.Report((totalProcessed, segments.Count));
                         }
+                        batchesRun++;
 
-                        if (updates.Count > 0)
+                        foreach (var chunk in segments.Chunk(batchSize))
                         {
-                            await repo.SaveBackfilledVectorsAsync(updates, token).ConfigureAwait(false);
-                            totalProcessed += updates.Count;
-                            progress?.Report((totalProcessed, -1));
+                            runToken.ThrowIfCancellationRequested();
+                            var inputs = chunk.Select(s => new EmbeddingInput(
+                                "text",
+                                FilePolicy.FormatTextEmbeddingPrompt(s.Title, s.Excerpt, s.Kind, maxNonPageChars: FilePolicy.DefaultMaxNonPageEmbeddingChars)
+                            )).ToArray();
+
+                            IReadOnlyList<EmbeddingResult> results;
+                            const int maxPreemptRetries = 3;
+                            int preemptRetries = 0;
+                            while (true)
+                            {
+                                runToken.ThrowIfCancellationRequested();
+                                var preemptToken = preemptRetries < maxPreemptRetries
+                                    ? (background?.BudgetController.BackfillInferenceToken ?? CancellationToken.None)
+                                    : CancellationToken.None;
+                                try
+                                {
+                                    if (service is InferenceHostClient hostClient)
+                                    {
+                                        results = await hostClient.EmbedAsync(inputs, runToken, preemptToken).ConfigureAwait(false);
+                                    }
+                                    else
+                                    {
+                                        using var embedCts = CancellationTokenSource.CreateLinkedTokenSource(runToken, preemptToken);
+                                        results = await service.EmbedAsync(inputs, embedCts.Token).ConfigureAwait(false);
+                                    }
+                                    break;
+                                }
+                                catch (OperationCanceledException) when (!runToken.IsCancellationRequested && preemptToken.IsCancellationRequested)
+                                {
+                                    preemptRetries++;
+                                    AppLog.Info("Backfill chunk yielded to interactive search query; resuming after brief backoff.");
+                                    await Task.Delay(100, runToken).ConfigureAwait(false);
+                                }
+                            }
+                            if (results.Count != chunk.Length)
+                                throw new InvalidDataException($"Embedding service returned {results.Count} results for {chunk.Length} inputs.");
+
+                            var updates = new List<SegmentVectorUpdate>();
+                            for (int i = 0; i < chunk.Length; i++)
+                            {
+                                if (results[i].Error is null && results[i].Vector is { } vec)
+                                {
+                                    updates.Add(new SegmentVectorUpdate(chunk[i].Id, chunk[i].FileId, vec));
+                                }
+                                else
+                                {
+                                    failedItems++;
+                                    firstFailure ??= results[i].Error ?? "Embedding vector is missing.";
+                                    AppLog.Warn($"Vector backfill failed for segment {chunk[i].Id}: {results[i].Error ?? "empty vector"}");
+                                }
+                            }
+
+                            if (updates.Count > 0)
+                            {
+                                int saved = await repo.SaveBackfilledVectorsAsync(updates, runToken).ConfigureAwait(false);
+                                if (saved > 0)
+                                {
+                                    totalProcessed += saved;
+                                    progress?.Report((totalProcessed, segments.Count));
+                                }
+                            }
+                            else if (failedItems > 0)
+                            {
+                                throw new InvalidOperationException($"Embedding backfill failed ({failedItems} segment(s)): {firstFailure}");
+                            }
                         }
                     }
                 }
+
+                runToken.ThrowIfCancellationRequested();
+
+                if (failedItems > 0)
+                {
+                    throw new InvalidOperationException($"Vector backfill finished with {failedItems} failed segment(s): {firstFailure}");
+                }
+            }
+            finally
+            {
+                lock (backfillCancelSync)
+                {
+                    if (ReferenceEquals(activeBackfillCts, backfillRunCts))
+                        activeBackfillCts = null;
+                }
+                backfillRunCts?.Dispose();
+                backfillGate.Release();
             }
         }, linked.Token).ConfigureAwait(false);
 
@@ -367,6 +559,7 @@ public Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default
 
     public async Task<StorageMetrics?> GetStorageMetricsAsync(CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(stopping != 0, this);
         var dbPath = Path.Combine(IndexDirectory, "index.sqlite");
         long dbBytes = File.Exists(dbPath) ? new FileInfo(dbPath).Length : 0;
         var repo = (await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false))[0];
@@ -416,12 +609,13 @@ public Task RevokeMaintenanceAsync(CancellationToken cancellationToken = default
 
     public async Task<int> CompactDatabaseAsync(CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(stopping != 0, this);
         var repos = await GetRepositoriesAsync(cancellationToken).ConfigureAwait(false);
         int reclaimed = 0;
         foreach (var repo in repos)
         {
             if (repo is SqliteIndexRepository sqliteRepo)
-                reclaimed += await sqliteRepo.IncrementalVacuumAsync(2000, cancellationToken).ConfigureAwait(false);
+                reclaimed += await sqliteRepo.CompactStorageAsync(50000, cancellationToken).ConfigureAwait(false);
         }
         return reclaimed;
     }

@@ -15,6 +15,7 @@ internal sealed class IndexingController(TimeSpan? transitionTimeout = null)
     private int participants;
     private bool stopping;
     private bool retiring;
+    private bool epochDisposed;
     private IndexingControlState state;
     private string? failure;
     private Exception? unsettled;
@@ -41,7 +42,13 @@ internal sealed class IndexingController(TimeSpan? transitionTimeout = null)
         if (unsettled is not null) throw new IndexingSettlementException(unsettled);
     }
 
-    public async Task RunAsync(Func<CancellationToken, Task> work, CancellationToken token)
+    public Task RunAsync(Func<CancellationToken, Task> work, CancellationToken token) =>
+        RunCoreAsync(work, exclusive: true, token);
+
+    public Task RunConcurrentAsync(Func<CancellationToken, Task> work, CancellationToken token) =>
+        RunCoreAsync(work, exclusive: false, token);
+
+    private async Task RunCoreAsync(Func<CancellationToken, Task> work, bool exclusive, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         CancellationToken generation;
@@ -56,15 +63,22 @@ internal sealed class IndexingController(TimeSpan? transitionTimeout = null)
         try
         {
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, generation);
-            await workGate.WaitAsync(linked.Token);
+            bool acquired = false;
             try
             {
+                if (exclusive)
+                {
+                    await workGate.WaitAsync(linked.Token);
+                    acquired = true;
+                }
+                generation.ThrowIfCancellationRequested();
                 linked.Token.ThrowIfCancellationRequested();
                 lock (sync) ThrowIfUnsettled(); // Already queued entrants must not pass a later settlement failure.
                 await work(linked.Token);
+                generation.ThrowIfCancellationRequested();
                 linked.Token.ThrowIfCancellationRequested();
             }
-            finally { workGate.Release(); }
+            finally { if (acquired) workGate.Release(); }
         }
         catch (OperationCanceledException) when (generation.IsCancellationRequested)
         {
@@ -102,7 +116,7 @@ internal sealed class IndexingController(TimeSpan? transitionTimeout = null)
                 token.ThrowIfCancellationRequested();
                 ObjectDisposedException.ThrowIf(stopping && !shutdown, this);
                 if (!shutdown && state == (paused ? IndexingControlState.Paused : IndexingControlState.Running)) return false;
-                cancel = state == IndexingControlState.Running || (unsettled is not null && !epoch.IsCancellationRequested);
+                cancel = state == IndexingControlState.Running || (unsettled is not null && !epochDisposed && !epoch.IsCancellationRequested);
                 state = IndexingControlState.Pausing;
                 drained = idle.Task;
             }
@@ -152,7 +166,11 @@ internal sealed class IndexingController(TimeSpan? transitionTimeout = null)
     {
         try { await settled; }
         catch (Exception error) { lock (sync) if (unsettled is null) failure = "Shutdown cancellation failed: " + error.Message; }
-        finally { source.Dispose(); }
+        finally
+        {
+            lock (sync) { epochDisposed = true; }
+            source.Dispose();
+        }
     }
 
     private static TaskCompletionSource Completed()

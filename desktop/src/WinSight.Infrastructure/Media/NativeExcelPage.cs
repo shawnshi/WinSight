@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace WinSight.Infrastructure.Media;
 
-public sealed record NativeExcelPageRequest(string SourcePath, int PageNumber = 1, int MaxEdge = 2400, string? SheetName = null)
+public sealed record NativeExcelPageRequest(string SourcePath, int PageNumber = 1, int MaxEdge = 1600, string? SheetName = null)
 {
     internal void Validate()
     {

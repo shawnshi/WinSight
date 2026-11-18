@@ -63,9 +63,13 @@ public sealed class ReadOnlyIndexReader : IDisposable
     private static string[] SegmentedTokens(string text)
     {
         if (!NativeSegmenter.IsAvailable) return [];
-        return NativeSegmenter.SegmentQuery(text)
+        var raw = NativeSegmenter.SegmentQuery(text)
             .Where(t => !string.IsNullOrWhiteSpace(t) && t != "AND" && t != "OR" && t != "NOT")
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var content = raw.Where(t => !SearchText.IsCjkFunctionWord(t)).ToArray();
+        var selected = content.Length != 0 ? content : raw;
+        return selected
             .Select(t => "\"" + t.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"")
             .ToArray();
     }

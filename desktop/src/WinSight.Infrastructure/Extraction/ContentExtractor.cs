@@ -359,22 +359,6 @@ public sealed class ContentExtractor : IContentExtractor
         html = Regex.Replace(html, @"<(br|/p|/div|/li|/h[1-6]|/tr|/section|/article)\b[^>]*>", "\n", RegexOptions.IgnoreCase, RegexTimeout);
         return WebUtility.HtmlDecode(Regex.Replace(html, "<[^>]+>", " ", RegexOptions.None, RegexTimeout));
     }
-    internal static string Prefix(string text, int length)
-    {
-        if (text.Length <= length) return text;
-        if (length > 0 && char.IsHighSurrogate(text[length - 1])) length--;
-        return text[..length];
-    }
-    internal static string Title(string path)
-    {
-        // Only inspect ancestors' marker existence; never read repository contents or credentials for a title.
-        var folder = Path.GetDirectoryName(path);
-        while (folder is not null)
-        {
-            if (FilePolicy.ProjectMarkers.Any(marker => File.Exists(Path.Combine(folder, marker)) || Directory.Exists(Path.Combine(folder, marker))))
-                return Path.GetFileName(folder) + "/" + Path.GetRelativePath(folder, path).Replace('\\', '/');
-            folder = Path.GetDirectoryName(folder);
-        }
-        return Path.GetFileName(path);
-    }
+    internal static string Prefix(string text, int length) => FilePolicy.Prefix(text, length);
+    internal static string Title(string path) => FilePolicy.Title(path);
 }

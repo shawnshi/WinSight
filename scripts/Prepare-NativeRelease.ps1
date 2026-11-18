@@ -146,7 +146,7 @@ if ($ReuseFrozenPayload) {
         Assert-ReuseRelative ('app/' + $f.path)
         $records.Add([pscustomobject]@{ path = 'app/models/' + $f.path; bytes = $f.size; sha256 = $f.sha256; source = Join-Path $models $f.path; kind = 'model' })
     }
-    foreach ($relative in @('THIRD-PARTY-NOTICES.txt', 'licenses/DigUp-MIT.txt')) {
+    foreach ($relative in @('THIRD-PARTY-NOTICES.txt')) {
         $source = Join-Path $desktop $relative
         $records.Add([pscustomobject]@{ path = 'app/' + $relative; bytes = (New-Object IO.FileInfo $source).Length; sha256 = Get-ReuseHash $source; source = $source; kind = 'notice' })
     }

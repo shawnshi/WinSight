@@ -110,43 +110,74 @@ internal sealed class ModelManifest : IDisposable
         // 4. 解析选中平台的目录结构
         if (IsModernPlatform)
         {
-            OnnxDir = Directory.Exists(Path.Combine(PlatformDir, "onnx"))
-                ? Path.Combine(PlatformDir, "onnx")
-                : Directory.Exists(Path.Combine(Root, "onnx"))
-                ? Path.Combine(Root, "onnx")
-                : PlatformDir;
-
-            ConfigPath = File.Exists(Path.Combine(PlatformDir, "config.json"))
-                ? Path.Combine(PlatformDir, "config.json")
-                : Path.Combine(Root, "config.json");
-
-            var tokPath = File.Exists(Path.Combine(PlatformDir, "tokenizer.json"))
-                ? Path.Combine(PlatformDir, "tokenizer.json")
-                : Path.Combine(Root, "tokenizer.json");
-
-            if (!File.Exists(tokPath))
-                throw new FileNotFoundException($"分词器配置文件未找到: '{tokPath}' (平台: {Platform}, 搜索目录: {PlatformDir})", tokPath);
-
-            TokenizerJson = File.ReadAllBytes(tokPath);
-
-            if (IsRyzenAI)
+            try
             {
-                // Prefer the standard system ProgramData location (C:\ProgramData\RyzenAI\vaip_cache) which avoids spaces and driver parser issues
-                const string systemProgramDataCache = @"C:\ProgramData\RyzenAI\vaip_cache";
-                if (Directory.Exists(systemProgramDataCache) && File.Exists(Path.Combine(systemProgramDataCache, "eg2_vis_140", "eg2_vis_140.rai")))
+                OnnxDir = Directory.Exists(Path.Combine(PlatformDir, "onnx"))
+                    ? Path.Combine(PlatformDir, "onnx")
+                    : Directory.Exists(Path.Combine(Root, "onnx"))
+                    ? Path.Combine(Root, "onnx")
+                    : PlatformDir;
+
+                ConfigPath = File.Exists(Path.Combine(PlatformDir, "config.json"))
+                    ? Path.Combine(PlatformDir, "config.json")
+                    : Path.Combine(Root, "config.json");
+
+                var tokPath = File.Exists(Path.Combine(PlatformDir, "tokenizer.json"))
+                    ? Path.Combine(PlatformDir, "tokenizer.json")
+                    : Path.Combine(Root, "tokenizer.json");
+
+                if (!File.Exists(tokPath))
+                    throw new FileNotFoundException($"分词器配置文件未找到: '{tokPath}' (平台: {Platform}, 搜索目录: {PlatformDir})", tokPath);
+
+                // Hold FileShare.Read locks across tokenizer and lazy-loaded platform graphs to prevent TOCTOU tampering.
+                var tokStream = new FileStream(tokPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                readLocks.Add(tokStream);
+                if (tokStream.Length <= 0)
+                    throw new InvalidDataException($"Pinned tokenizer file is empty: '{tokPath}'.");
+                TokenizerJson = ReadExactStream(tokStream);
+
+                if (IsRyzenAI)
                 {
-                    VaipCacheDir = systemProgramDataCache;
-                    VaiConfigFile = File.Exists(Path.Combine(systemProgramDataCache, "vai_ep_config.json"))
-                        ? Path.Combine(systemProgramDataCache, "vai_ep_config.json")
-                        : (File.Exists(Path.Combine(PlatformDir, "vai_ep_config.json")) ? Path.Combine(PlatformDir, "vai_ep_config.json") : Path.Combine(Root, "vai_ep_config.json"));
+                    // Prefer the standard system ProgramData location (C:\ProgramData\RyzenAI\vaip_cache) which avoids spaces and driver parser issues
+                    const string systemProgramDataCache = @"C:\ProgramData\RyzenAI\vaip_cache";
+                    if (Directory.Exists(systemProgramDataCache) && File.Exists(Path.Combine(systemProgramDataCache, "eg2_vis_140", "eg2_vis_140.rai")))
+                    {
+                        VaipCacheDir = systemProgramDataCache;
+                        VaiConfigFile = File.Exists(Path.Combine(systemProgramDataCache, "vai_ep_config.json"))
+                            ? Path.Combine(systemProgramDataCache, "vai_ep_config.json")
+                            : (File.Exists(Path.Combine(PlatformDir, "vai_ep_config.json")) ? Path.Combine(PlatformDir, "vai_ep_config.json") : Path.Combine(Root, "vai_ep_config.json"));
+                    }
+                    else
+                    {
+                        VaiConfigFile = Path.Combine(File.Exists(Path.Combine(PlatformDir, "vai_ep_config.json")) ? PlatformDir : Root, "vai_ep_config.json");
+                        VaipCacheDir = Path.Combine(Directory.Exists(Path.Combine(PlatformDir, "vaip_cache")) ? PlatformDir : Root, "vaip_cache");
+                    }
                 }
-                else
+
+                string[] modernGraphs = IsRyzenAI
+                    ? ["model_text_s256.onnx", "model_image_s144.onnx", "model_audio_10s.onnx", "vision_encoder_static_140.onnx", "audio_encoder_10s.onnx"]
+                    : ["model_text_d256.onnx", "model_text_q32.onnx", "model_image_140.onnx", "model_audio_10s.onnx", "vision_encoder_static_140.onnx", "audio_encoder_10s.onnx"];
+                var lockedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { Path.GetFullPath(tokPath) };
+                foreach (var graphName in modernGraphs)
                 {
-                    VaiConfigFile = Path.Combine(File.Exists(Path.Combine(PlatformDir, "vai_ep_config.json")) ? PlatformDir : Root, "vai_ep_config.json");
-                    VaipCacheDir = Path.Combine(Directory.Exists(Path.Combine(PlatformDir, "vaip_cache")) ? PlatformDir : Root, "vaip_cache");
+                    var graphPath = Graph(graphName);
+                    foreach (var candidate in new[] { graphPath, graphPath + "_data", graphPath + ".data" })
+                    {
+                        var full = Path.GetFullPath(candidate);
+                        if (!File.Exists(full) || !lockedPaths.Add(full)) continue;
+                        var graphLock = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.Read);
+                        readLocks.Add(graphLock);
+                        if (graphLock.Length <= 0)
+                            throw new InvalidDataException($"Pinned modern platform model asset is empty: '{full}'.");
+                    }
                 }
+                return;
             }
-            return;
+            catch
+            {
+                Dispose();
+                throw;
+            }
         }
 
         // 5. 回退到通用 Legacy Q4 模型清单校验
@@ -168,20 +199,46 @@ internal sealed class ModelManifest : IDisposable
         }
         try
         {
+            var opened = new List<(Asset Asset, string FullPath, FileStream Stream)>(manifest.Files.Length);
             foreach (var asset in manifest.Files)
             {
-                var path = Path.Combine(Root, asset.Path);
+                var path = Path.GetFullPath(Path.Combine(Root, asset.Path));
                 if (!File.Exists(path))
                 {
                     throw new FileNotFoundException(
                         $"EmbeddingGemma-2 模型权重文件 '{asset.Path}' 未找到。请将完整的 ONNX 权重文件复制至 '{Root}' 目录（包含 RyzenAI/ 静态模型、IntelOpenVINO/ 静态模型或 onnx/model_q4.onnx 等）。", asset.Path);
                 }
-                // Windows read-sharing locks prevent replacement between hashing and lazy graph creation.
+                // Windows read-sharing locks prevent replacement between verification and lazy graph creation.
                 var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
                 readLocks.Add(file);
-                if (file.Length != asset.Size || !string.Equals(Convert.ToHexString(SHA256.HashData(file)), asset.Sha256, StringComparison.OrdinalIgnoreCase))
+                if (file.Length != asset.Size)
                     throw new InvalidDataException($"Pinned model asset mismatch: {asset.Path} (expected {asset.Size} bytes, sha256 {asset.Sha256})");
+                opened.Add((asset, path, file));
             }
+
+            var fastStamp = ComputeFastStamp(opened);
+            var stampPath = ResolveFastStampPath();
+            bool fastStampMatched = false;
+            try
+            {
+                if (File.Exists(stampPath))
+                {
+                    fastStampMatched = string.Equals(File.ReadAllText(stampPath).Trim(), fastStamp, StringComparison.Ordinal);
+                }
+            }
+            catch { fastStampMatched = false; }
+
+            if (!fastStampMatched)
+            {
+                foreach (var (asset, _, file) in opened)
+                {
+                    file.Position = 0;
+                    if (!string.Equals(Convert.ToHexString(SHA256.HashData(file)), asset.Sha256, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException($"Pinned model asset mismatch: {asset.Path} (expected {asset.Size} bytes, sha256 {asset.Sha256})");
+                }
+                TryWriteFastStamp(stampPath, fastStamp);
+            }
+
             TokenizerJson = File.ReadAllBytes(Path.Combine(Root, "tokenizer.json"));
             if (Hash(TokenizerJson) != manifest.Files.Single(asset => asset.Path == "tokenizer.json").Sha256)
                 throw new InvalidDataException("Tokenizer changed during validation");
@@ -191,6 +248,58 @@ internal sealed class ModelManifest : IDisposable
             Dispose();
             throw;
         }
+    }
+
+    private static byte[] ReadExactStream(FileStream stream)
+    {
+        var bytes = new byte[checked((int)stream.Length)];
+        int offset = 0;
+        while (offset < bytes.Length)
+        {
+            int read = stream.Read(bytes, offset, bytes.Length - offset);
+            if (read == 0) throw new EndOfStreamException("Unexpected EOF reading locked model asset.");
+            offset += read;
+        }
+        return bytes;
+    }
+
+    private static string ResolveFastStampPath()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(localAppData)) localAppData = Path.GetTempPath();
+        return Path.Combine(localAppData, "WinSight", "cache", "model-manifest-verified-v1.stamp");
+    }
+
+    private static string ComputeFastStamp(List<(Asset Asset, string FullPath, FileStream Stream)> opened)
+    {
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var sampleBuf = new byte[16384];
+        foreach (var (asset, fullPath, file) in opened.OrderBy(item => item.Asset.Path, StringComparer.Ordinal))
+        {
+            var ticks = File.GetLastWriteTimeUtc(fullPath).Ticks;
+            hasher.AppendData(Encoding.UTF8.GetBytes($"{fullPath}\n{asset.Size}\n{asset.Sha256}\n{ticks}\n"));
+            file.Position = 0;
+            int headRead = file.Read(sampleBuf, 0, (int)Math.Min(sampleBuf.Length, file.Length));
+            hasher.AppendData(sampleBuf.AsSpan(0, headRead));
+            if (file.Length > sampleBuf.Length)
+            {
+                file.Position = file.Length - sampleBuf.Length;
+                int tailRead = file.Read(sampleBuf, 0, sampleBuf.Length);
+                hasher.AppendData(sampleBuf.AsSpan(0, tailRead));
+            }
+        }
+        return Convert.ToHexString(hasher.GetHashAndReset()).ToLowerInvariant();
+    }
+
+    private static void TryWriteFastStamp(string stampPath, string fastStamp)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(stampPath);
+            if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(stampPath, fastStamp);
+        }
+        catch { }
     }
 
     internal string Graph(string name)

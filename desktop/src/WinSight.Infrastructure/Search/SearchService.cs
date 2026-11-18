@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using WinSight.Core;
 using WinSight.Infrastructure.Extraction;
 using WinSight.Infrastructure.Storage;
@@ -54,14 +55,22 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         {
             compactSnapshot = await sqlite.ReadCompactSearchSnapshotAsync(keywordQuery, request.Kind, request.Root, wantSemantic,
                 request.Mode != SearchMode.Semantic && plan.Text.Length != 0, request.Limit, cancellationToken,
-                authorize, plan.HasFilters ? MatchesSource : null, allHeaders: true, includeHeaderInfo: needHeaderInfo, needsSourceAnchors: needsSourceAnchors).ConfigureAwait(false);
-            var scoped = new Dictionary<long, IndexedFile>(compactSnapshot.Headers.Count);
-            foreach (var f in compactSnapshot.Headers.Values)
+                authorize, plan.HasFilters ? MatchesSource : null, allHeaders: true, includeHeaderInfo: needHeaderInfo, needsSourceAnchors: needsSourceAnchors,
+                filterSignature: (plan.HasFilters || plan.Literals.Length > 0) ? plan.FilterSignature : null).ConfigureAwait(false);
+            if (request.Kind is null && request.Root is null && authorize is null)
             {
-                if (InScope(f, request) && (authorize is null || authorize(f.Path)))
-                    scoped[f.Id] = f;
+                files = compactSnapshot.Headers;
             }
-            files = scoped;
+            else
+            {
+                var scoped = new Dictionary<long, IndexedFile>(compactSnapshot.Headers.Count);
+                foreach (var f in compactSnapshot.Headers.Values)
+                {
+                    if (InScope(f, request) && (authorize is null || authorize(f.Path)))
+                        scoped[f.Id] = f;
+                }
+                files = scoped;
+            }
             words = compactSnapshot.Words;
             profile = compactSnapshot.Profile;
         }
@@ -81,7 +90,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
             {
                 if (embeddings is null) throw new InvalidOperationException("No embedding service configured.");
                 if (string.IsNullOrWhiteSpace(profile)) throw new InvalidDataException("Index has no profile_id; reindex separately.");
-                ValidateProfile(await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false), profile);
+                ValidateProfile(await GetRequiredInfoAsync(embeddings, cancellationToken).ConfigureAwait(false), profile);
                 bool hasVectors = compactSnapshot is not null
                     ? HasVectorsInScope(compactSnapshot.Vectors, files)
                     : files.Values.Any(f => f.Segments.Any(s => s.Vector is not null));
@@ -92,7 +101,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
                     throw new InvalidDataException(encoded.Count == 1 ? "Query embedding failed: " + (encoded[0].Error ?? "missing vector") : "Query embedding result count is invalid.");
                 queryVector = encoded[0].Vector;
                 VectorContract.Validate(queryVector!);
-                ValidateProfile(await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false), profile);
+                ValidateProfile(await GetRequiredInfoAsync(embeddings, cancellationToken).ConfigureAwait(false), profile);
             }
             catch (Exception error) when (request.Mode == SearchMode.Hybrid && error is InvalidDataException or IOException or InvalidOperationException or TimeoutException or NotSupportedException)
             {
@@ -101,6 +110,33 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
             }
         }
         int channelLimit = Math.Clamp(request.Limit * 4, 100, 4000);
+        var (shapeLatin, shapeCjk) = plan.Text.Length == 0 ? (Array.Empty<string>(), Array.Empty<string>()) : SearchText.LexicalTerms(plan.Text);
+        var lexicalTokens = shapeLatin.Concat(shapeCjk).ToArray();
+        int lexicalCount = lexicalTokens.Length;
+        bool isSentence = lexicalCount >= 4 || (plan.Text.Length >= 10 && lexicalCount >= 3 && SearchText.ContainsCjk(plan.Text)) || plan.Text.IndexOfAny(['?', '？', '!', '！']) >= 0;
+        bool isSingleTerm = lexicalCount <= 1 && !isSentence;
+        double semanticWeight = isSentence ? 2.2 : isSingleTerm ? 0.8 : 1.2;
+        double keywordWeight = isSentence ? 1.2 : 2.0;
+        double filenameWeight = isSentence ? 1.0 : isSingleTerm ? 1.8 : 1.5;
+        double folderWeight = isSentence ? 0.5 : 0.7;
+        double minCoverage = isSentence ? 0.34 : 0.5;
+        var normPlanText = string.IsNullOrWhiteSpace(plan.Text) ? "" : SearchText.Normalize(plan.Text);
+        int ProximityBonus(WordEvidence w)
+        {
+            if (lexicalCount < 2 || string.IsNullOrEmpty(w.Segment.Excerpt)) return 0;
+            var norm = SearchText.Normalize(w.Segment.Excerpt);
+            if (normPlanText.Length > 0 && norm.Contains(normPlanText, StringComparison.OrdinalIgnoreCase)) return 2;
+            int minIdx = int.MaxValue, maxIdx = -1;
+            foreach (var tok in lexicalTokens)
+            {
+                int idx = norm.IndexOf(tok, StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) return 0;
+                if (idx < minIdx) minIdx = idx;
+                int end = idx + tok.Length;
+                if (end > maxIdx) maxIdx = end;
+            }
+            return (maxIdx - minIdx) <= 64 ? 1 : 0;
+        }
         var channels = new List<(string Name, double Weight, IReadOnlyList<Candidate> Rows)>();
         void Channel(string name, double weight, IEnumerable<Candidate> ordered)
         {
@@ -133,7 +169,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
                 foreach (var group in compactGroups)
                 {
                     if (group.SmallSample) notice = Append(notice, "Small-sample semantic fallback: fewer than 5 calibration source units in a channel; cosine >= 0.5.");
-                    Channel("semantic:" + group.Channel, 1, group.Winners
+                    Channel("semantic:" + group.Channel, semanticWeight, group.Winners
                         .Where(w => hydrated.ContainsKey(w.SegmentId))
                         .Select(w => { var h = hydrated[w.SegmentId]; return new Candidate(h.File, h.Segment); }));
                 }
@@ -144,15 +180,15 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
                 foreach (var group in Semantic(files.Values, queryVector, plan, cancellationToken, validateVectors: repository is not SqliteIndexRepository).GroupBy(s => s.Channel))
                 {
                     if (group.Any(s => s.SmallSample)) notice = Append(notice, "Small-sample semantic fallback: fewer than 5 calibration source units in a channel; cosine >= 0.5.");
-                    Channel("semantic:" + group.Key, 1, group.Where(s => s.Accepted).OrderByDescending(s => s.Rank)
+                    Channel("semantic:" + group.Key, semanticWeight, group.Where(s => s.Accepted).OrderByDescending(s => s.Rank)
                         .ThenBy(s => s.File.Id).Select(s => new Candidate(s.File, s.Segment)));
                 }
             }
         }
         if (request.Mode != SearchMode.Semantic || plan.Text.Length == 0)
         {
-            Channel("keyword", 2, words.Where(w => files.ContainsKey(w.FileId) && w.Coverage >= 0.5)
-                .OrderByDescending(w => w.Coverage).ThenBy(w => w.Rank).ThenBy(w => w.FileId)
+            Channel("keyword", keywordWeight, words.Where(w => files.ContainsKey(w.FileId) && w.Coverage >= minCoverage)
+                .OrderByDescending(w => w.Coverage).ThenByDescending(ProximityBonus).ThenBy(w => w.Rank).ThenBy(w => w.FileId)
                 .Where(w => plan.Matches(files[w.FileId].Path, files[w.FileId].Info, w.Segment.Source, w.Segment.Excerpt, checkLiterals: !w.ExactLiteralsVerified))
                 .Select(w => new Candidate(files[w.FileId], w.Segment)));
             if (plan.Text.Length == 0)
@@ -180,7 +216,6 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
             else
             {
                 var terms = SearchText.Terms(plan.Text);
-                var normPlanText = string.IsNullOrWhiteSpace(plan.Text) ? "" : SearchText.Normalize(plan.Text);
                 bool ContainsTerms(string value)
                 {
                     if (terms.Length == 0 || string.IsNullOrEmpty(value)) return false;
@@ -188,39 +223,147 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
                     return terms.All(t => norm.Contains(t, StringComparison.OrdinalIgnoreCase))
                         || (normPlanText.Length > 0 && norm.Contains(normPlanText, StringComparison.OrdinalIgnoreCase));
                 }
-                var folderMatchCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-                bool FolderMatches(string path)
+                int FilenameRankTier(string stemNorm)
                 {
-                    var dir = Path.GetDirectoryName(path) ?? "";
-                    if (folderMatchCache.TryGetValue(dir, out var ok)) return ok;
-                    ok = ContainsTerms(dir) && plan.FolderLiteralsMatch(path);
-                    folderMatchCache[dir] = ok;
-                    return ok;
+                    if (normPlanText.Length == 0) return 3;
+                    if (stemNorm.Equals(normPlanText, StringComparison.OrdinalIgnoreCase)) return 0;
+                    if (stemNorm.StartsWith(normPlanText, StringComparison.OrdinalIgnoreCase)) return 1;
+                    if (stemNorm.Contains(normPlanText, StringComparison.OrdinalIgnoreCase)) return 2;
+                    return 3;
                 }
-                var eligible = files.Values.OrderBy(f => f.Id).Where(f => plan.Matches(f.Path, f.Info, null)).ToArray();
-                Channel("filename", 1.5, eligible.Where(f => ContainsTerms(Path.GetFileName(f.Path)) && plan.NameLiteralsMatch(f.Path)).Select(f => new Candidate(f, new("name", "none", null, null, Path.GetFileName(f.Path)))));
-                Channel("folder", 0.7, eligible.Where(f => FolderMatches(f.Path)).Select(f => new Candidate(f, new("name", "none", null, null, null))));
+                var filenameMatches = new List<(IndexedFile File, string Name, int Tier, int Length)>();
+                var folderMatches = new List<(IndexedFile File, int Tier, int DirLength)>();
+                var folderMatchCache = new Dictionary<string, (bool Matched, int Tier, int DirLength)>(StringComparer.OrdinalIgnoreCase);
+                foreach (var file in files.Values)
+                {
+                    var fileName = Path.GetFileName(file.Path);
+                    var normFileName = string.IsNullOrEmpty(fileName) ? "" : SearchText.Normalize(fileName);
+                    bool nameHit = ContainsTerms(fileName)
+                        || (terms.Length > 1 && terms.Any(t => normFileName.Contains(t, StringComparison.OrdinalIgnoreCase)) && ContainsTerms(file.Path));
+                    nameHit = nameHit && plan.PathLiteralsMatch(file.Path);
+                    var dir = Path.GetDirectoryName(file.Path) ?? "";
+                    if (!folderMatchCache.TryGetValue(dir, out var dirState))
+                    {
+                        bool dirMatched = ContainsTerms(dir) && plan.FolderLiteralsMatch(file.Path);
+                        int dirTier = 3;
+                        if (dirMatched && normPlanText.Length > 0)
+                        {
+                            var leaf = Path.GetFileName(dir);
+                            var normLeaf = string.IsNullOrEmpty(leaf) ? "" : SearchText.Normalize(leaf);
+                            var normDir = SearchText.Normalize(dir);
+                            dirTier = normLeaf.Equals(normPlanText, StringComparison.OrdinalIgnoreCase) ? 0
+                                : normLeaf.Contains(normPlanText, StringComparison.OrdinalIgnoreCase) ? 1
+                                : normDir.Contains(normPlanText, StringComparison.OrdinalIgnoreCase) ? 2 : 3;
+                        }
+                        dirState = (dirMatched, dirTier, dir.Length);
+                        folderMatchCache[dir] = dirState;
+                    }
+                    if (!nameHit && !dirState.Matched) continue;
+                    if (!plan.Matches(file.Path, file.Info, null)) continue;
+                    if (nameHit)
+                    {
+                        var normStem = SearchText.Normalize(Path.GetFileNameWithoutExtension(fileName));
+                        filenameMatches.Add((file, fileName, FilenameRankTier(normStem), normStem.Length));
+                    }
+                    if (dirState.Matched)
+                        folderMatches.Add((file, dirState.Tier, dirState.DirLength));
+                }
+                filenameMatches.Sort(static (a, b) =>
+                {
+                    int cmp = a.Tier.CompareTo(b.Tier);
+                    if (cmp != 0) return cmp;
+                    cmp = a.Length.CompareTo(b.Length);
+                    return cmp != 0 ? cmp : a.File.Id.CompareTo(b.File.Id);
+                });
+                folderMatches.Sort(static (a, b) =>
+                {
+                    int cmp = a.Tier.CompareTo(b.Tier);
+                    if (cmp != 0) return cmp;
+                    cmp = a.DirLength.CompareTo(b.DirLength);
+                    return cmp != 0 ? cmp : a.File.Id.CompareTo(b.File.Id);
+                });
+                Channel("filename", filenameWeight, filenameMatches.Select(m => new Candidate(m.File, new("name", "none", null, null, m.Name))));
+                Channel("folder", folderWeight, folderMatches.Select(m => new Candidate(m.File, new("name", "none", null, null, null))));
             }
         }
         var fused = new Dictionary<(long File, string Unit), Fused>();
+        var bestContentUnitByFile = new Dictionary<long, (string Unit, double Score)>();
+        var deferredNameRows = new List<(string ChannelName, double Weight, int RankIndex, Candidate Row)>();
         double maximum = channels.Sum(c => c.Weight / 61);
+        void Accumulate(string channelName, double weight, int rankIndex, Candidate row, bool allowContentRedirect)
+        {
+            var unit = allowContentRedirect && bestContentUnitByFile.TryGetValue(row.File.Id, out var bestUnit)
+                ? bestUnit.Unit
+                : Unit(row.Segment);
+            var key = (row.File.Id, unit);
+            if (!fused.TryGetValue(key, out var hit)) fused.Add(key, hit = new(row));
+            else if (hit.Channels.Contains(channelName, StringComparer.Ordinal)) return;
+            hit.Score += weight / (60 + rankIndex + 1);
+            double singleCeiling = weight / 61.0;
+            if (singleCeiling > hit.MaxSingleChannelScore) hit.MaxSingleChannelScore = singleCeiling;
+            hit.Channels.Add(channelName);
+            if (hit.Row.Segment.Kind == "name" && row.Segment.Kind != "name") hit.Row = row;
+            if (row.Segment.Kind != "name")
+            {
+                if (!bestContentUnitByFile.TryGetValue(row.File.Id, out var cur) || hit.Score > cur.Score)
+                    bestContentUnitByFile[row.File.Id] = (key.unit, hit.Score);
+            }
+        }
+        // Pass 1: fuse non-name content units so each file establishes its strongest content anchor.
         foreach (var channel in channels)
+        {
             for (int i = 0; i < channel.Rows.Count; i++)
             {
                 var row = channel.Rows[i];
-                var key = (row.File.Id, Unit(row.Segment));
-                if (!fused.TryGetValue(key, out var hit)) fused.Add(key, hit = new(row));
-                hit.Score += channel.Weight / (60 + i + 1);
-                hit.Channels.Add(channel.Name);
-                if (hit.Row.Segment.Kind == "name" && row.Segment.Kind != "name") hit.Row = row;
+                if (row.Segment.Kind == "name")
+                {
+                    deferredNameRows.Add((channel.Name, channel.Weight, i, row));
+                    continue;
+                }
+                Accumulate(channel.Name, channel.Weight, i, row, allowContentRedirect: false);
             }
+        }
+        // Pass 2: merge 'name' rows (keyword filename hits, filename, folder, fallback fields) into best content unit when present.
+        foreach (var entry in deferredNameRows)
+            Accumulate(entry.ChannelName, entry.Weight, entry.RankIndex, entry.Row, allowContentRedirect: true);
         double topScore = fused.Values.Select(f => f.Score).DefaultIfEmpty(0).Max();
-        // Dynamic relevance filter: when MinScore > 0, filter strictly by relative relevance: (f.Score / topScore) >= MinScore.
+        // Dynamic relevance filter: compare against min(topScore, hit's strongest single-channel ceiling)
+        // so multi-channel lexical leaders cannot suppress statistically significant pure-semantic hits.
         var eligibleCandidates = fused.Values
-            .Where(f => topScore == 0 || request.MinScore <= 0 || (f.Score / topScore) >= request.MinScore)
-            .OrderByDescending(f => f.Score).ThenBy(f => f.Row.File.Id).ThenBy(f => Unit(f.Row.Segment), StringComparer.Ordinal);
-        var hits = eligibleCandidates
-            .Take(request.Limit).Select(f =>
+            .Where(f =>
+            {
+                if (topScore == 0 || request.MinScore <= 0) return true;
+                double refScore = f.MaxSingleChannelScore > 0 ? Math.Min(topScore, f.MaxSingleChannelScore) : topScore;
+                return refScore == 0 || (f.Score / refScore) >= request.MinScore;
+            })
+            .OrderByDescending(f => f.Score).ThenBy(f => f.Row.File.Id).ThenBy(f => Unit(f.Row.Segment), StringComparer.Ordinal)
+            .ToArray();
+        var diverseCandidates = new List<Fused>(Math.Min(request.Limit, eligibleCandidates.Length));
+        var overflowCandidates = new List<Fused>();
+        var fileHitCounts = new Dictionary<long, int>();
+        const int perFileDiversityCap = 4;
+        foreach (var cand in eligibleCandidates)
+        {
+            long fid = cand.Row.File.Id;
+            int seenCount = fileHitCounts.GetValueOrDefault(fid);
+            fileHitCounts[fid] = seenCount + 1;
+            if (seenCount < perFileDiversityCap)
+            {
+                diverseCandidates.Add(cand);
+                if (diverseCandidates.Count == request.Limit) break;
+            }
+            else
+            {
+                overflowCandidates.Add(cand);
+            }
+        }
+        if (diverseCandidates.Count < request.Limit && overflowCandidates.Count > 0)
+        {
+            int need = Math.Min(request.Limit - diverseCandidates.Count, overflowCandidates.Count);
+            for (int i = 0; i < need; i++) diverseCandidates.Add(overflowCandidates[i]);
+        }
+        var hits = diverseCandidates
+            .Select(f =>
             {
                 var file = f.Row.File; var segment = f.Row.Segment;
                 string match = f.Channels.Any(c => c.StartsWith("semantic:", StringComparison.Ordinal)) ? f.Channels.Count > 1 ? "hybrid" : "semantic" : "keyword";
@@ -241,12 +384,18 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
     {
         internal Candidate Row = row;
         internal double Score;
+        internal double MaxSingleChannelScore;
         internal List<string> Channels { get; } = [];
     }
     private readonly record struct SemanticRow(IndexedFile File, IndexSegment Segment, string Channel, double Cosine,
         double Rank = 0, bool Accepted = false, bool SmallSample = false);
     private static string Unit(IndexSegment segment) => SearchText.SourceUnit(segment);
     private static string Append(string? notice, string message) => notice is null ? message : notice.Contains(message, StringComparison.Ordinal) ? notice : notice + " " + message;
+    private static ValueTask<EmbeddingInfo> GetRequiredInfoAsync(IEmbeddingService embeddings, CancellationToken cancellationToken) =>
+        embeddings is IHostEmbeddingService host && host.TryGetVerifiedIdentity(out var cached)
+            ? ValueTask.FromResult(cached)
+            : new ValueTask<EmbeddingInfo>(embeddings.GetInfoAsync(cancellationToken));
+
     private static void ValidateProfile(EmbeddingInfo info, string profile)
     {
         if (info.Dimension != VectorContract.Dimension || !FilePolicy.IsCompatibleProfile(info.ProfileId, profile))
@@ -315,6 +464,42 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         return -(((((c[0] * u + c[1]) * u + c[2]) * u + c[3]) * u + c[4]) * u + c[5]) / ((((d[0] * u + d[1]) * u + d[2]) * u + d[3]) * u + 1);
     }
 
+    private static void CalibrateCosineStats(
+        IEnumerable<(long FileId, double Cosine)> items,
+        int unitCount,
+        out double mean,
+        out double deviation,
+        out double threshold,
+        out bool small)
+    {
+        var fileMax = new Dictionary<long, double>();
+        int total = 0;
+        foreach (var (fid, cosine) in items)
+        {
+            total++;
+            if (!fileMax.TryGetValue(fid, out var prev) || cosine > prev)
+                fileMax[fid] = cosine;
+        }
+        bool usePerFile = fileMax.Count >= MinCalibratedUnits;
+        int popSize = usePerFile ? fileMax.Count : unitCount;
+        small = popSize < MinCalibratedUnits;
+        if (small || total == 0)
+        {
+            mean = 0;
+            deviation = 0;
+            threshold = double.PositiveInfinity;
+            return;
+        }
+        IEnumerable<double> sample = usePerFile ? fileMax.Values : items.Select(x => x.Cosine);
+        double sum = 0;
+        foreach (var c in sample) sum += c;
+        mean = sum / popSize;
+        double variance = 0;
+        foreach (var c in sample) variance += (c - mean) * (c - mean);
+        deviation = Math.Sqrt(variance / popSize);
+        threshold = SignificanceThreshold(popSize);
+    }
+
     private static IReadOnlyList<SemanticRow> Semantic(IEnumerable<IndexedFile> files, float[] query, DocumentSearchQuery plan, CancellationToken ct, bool validateVectors = true)
     {
         // Single-pass: directly aggregate the best vector per (file, unit, channel) to reduce memory allocations
@@ -335,14 +520,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         foreach (var channel in best.Values.GroupBy(r => r.Channel))
         {
             var group = channel.ToArray();
-            bool small = group.Length < MinCalibratedUnits;
-            double mean = 0;
-            foreach (var row in group) mean += row.Cosine;
-            mean /= group.Length;
-            double variance = 0;
-            foreach (var row in group) variance += (row.Cosine - mean) * (row.Cosine - mean);
-            double deviation = Math.Sqrt(variance / group.Length);
-            double threshold = SignificanceThreshold(group.Length);
+            CalibrateCosineStats(group.Select(r => (r.File.Id, r.Cosine)), group.Length, out double mean, out double deviation, out double threshold, out bool small);
             foreach (var row in group)
             {
                 double rank = small ? row.Cosine : deviation > 1e-12 ? (row.Cosine - mean) / deviation : 0;
@@ -352,8 +530,8 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         return result;
     }
 
-    private readonly record struct CompactWinner(long SegmentId, long FileId, double Rank);
-    private sealed record CompactChannelGroup(string Channel, bool SmallSample, IReadOnlyList<CompactWinner> Winners);
+    internal readonly record struct CompactWinner(long SegmentId, long FileId, double Rank);
+    internal sealed record CompactChannelGroup(string Channel, bool SmallSample, IReadOnlyList<CompactWinner> Winners);
 
     private static bool HasVectorsInScope(CompactVectorIndex? index, IReadOnlyDictionary<long, IndexedFile> files)
     {
@@ -368,25 +546,80 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         return false;
     }
 
-    private static List<CompactChannelGroup> SemanticCompact(CompactVectorIndex index, IReadOnlyDictionary<long, IndexedFile> files, float[] query, int channelLimit, CancellationToken ct, HashSet<long>? allowedSegmentIds = null)
+    internal static void ScanCompactChunks(
+        CompactVectorIndex index,
+        int startChunk,
+        int endChunk,
+        IReadOnlyDictionary<long, IndexedFile> files,
+        ReadOnlySpan<short> qSpan,
+        float queryScale,
+        HashSet<long>? allowedSegmentIds,
+        Dictionary<(long FileId, ulong UnitHash, byte ChannelId), (long SegmentId, double Cosine)> target,
+        CancellationToken ct)
     {
-        Span<short> qInt16 = stackalloc short[CompactVectorIndex.Dimension];
-        CompactVectorIndex.QuantizeQuery(query, qInt16, out float queryScale);
-        var best = new Dictionary<(long FileId, ulong UnitHash, byte ChannelId), (long SegmentId, double Cosine)>();
-        for (int c = 0; c < index.ChunkCount; c++)
+        long lastFileId = long.MinValue;
+        bool lastFileInScope = false;
+        for (int c = startChunk; c < endChunk; c++)
         {
             var (vecs, metas, len) = index.GetChunk(c);
             for (int i = 0; i < len; i++)
             {
                 if ((i & 255) == 0) ct.ThrowIfCancellationRequested();
                 ref readonly var m = ref metas[i];
-                if (m.FileId < 0 || !files.ContainsKey(m.FileId)) continue;
+                if (m.FileId < 0) continue;
+                if (m.FileId != lastFileId)
+                {
+                    lastFileId = m.FileId;
+                    lastFileInScope = files.ContainsKey(m.FileId);
+                }
+                if (!lastFileInScope) continue;
                 if (allowedSegmentIds is not null && !allowedSegmentIds.Contains(m.SegmentId)) continue;
-                double cosine = CompactVectorIndex.DotInt8PreQuantized(vecs.AsSpan(i * CompactVectorIndex.Dimension, CompactVectorIndex.Dimension), m.Scale, qInt16, queryScale);
+                double cosine = CompactVectorIndex.DotInt8PreQuantized(vecs.AsSpan(i * CompactVectorIndex.Dimension, CompactVectorIndex.Dimension), m.Scale, qSpan, queryScale);
                 var key = (m.FileId, m.UnitHash, m.ChannelId);
-                if (!best.TryGetValue(key, out var old) || cosine > old.Cosine)
-                    best[key] = (m.SegmentId, cosine);
+                ref var slot = ref CollectionsMarshal.GetValueRefOrAddDefault(target, key, out bool exists);
+                if (!exists || cosine > slot.Cosine || (cosine == slot.Cosine && m.SegmentId < slot.SegmentId))
+                    slot = (m.SegmentId, cosine);
             }
+        }
+    }
+
+    internal static List<CompactChannelGroup> SemanticCompact(CompactVectorIndex index, IReadOnlyDictionary<long, IndexedFile> files, float[] query, int channelLimit, CancellationToken ct, HashSet<long>? allowedSegmentIds = null, bool allowParallel = true)
+    {
+        Dictionary<(long FileId, ulong UnitHash, byte ChannelId), (long SegmentId, double Cosine)> best;
+        if (allowParallel && index.ChunkCount >= 256)
+        {
+            var qArray = new short[CompactVectorIndex.Dimension];
+            CompactVectorIndex.QuantizeQuery(query, qArray, out float queryScale);
+            int workerCount = Math.Clamp(Environment.ProcessorCount, 2, Math.Max(2, index.ChunkCount / 16));
+            var partials = new Dictionary<(long FileId, ulong UnitHash, byte ChannelId), (long SegmentId, double Cosine)>[workerCount];
+            int chunksPerWorker = (index.ChunkCount + workerCount - 1) / workerCount;
+            Parallel.For(0, workerCount, new ParallelOptions { CancellationToken = ct }, workerIdx =>
+            {
+                int startChunk = workerIdx * chunksPerWorker;
+                int endChunk = Math.Min(index.ChunkCount, startChunk + chunksPerWorker);
+                if (startChunk >= endChunk) return;
+                var localBest = new Dictionary<(long FileId, ulong UnitHash, byte ChannelId), (long SegmentId, double Cosine)>(Math.Max(64, files.Count / workerCount));
+                ScanCompactChunks(index, startChunk, endChunk, files, qArray, queryScale, allowedSegmentIds, localBest, ct);
+                partials[workerIdx] = localBest;
+            });
+            best = new Dictionary<(long FileId, ulong UnitHash, byte ChannelId), (long SegmentId, double Cosine)>(Math.Min(index.Count, Math.Max(64, files.Count * 8)));
+            foreach (var local in partials)
+            {
+                if (local is null) continue;
+                foreach (var kv in local)
+                {
+                    ref var slot = ref CollectionsMarshal.GetValueRefOrAddDefault(best, kv.Key, out bool exists);
+                    if (!exists || kv.Value.Cosine > slot.Cosine || (kv.Value.Cosine == slot.Cosine && kv.Value.SegmentId < slot.SegmentId))
+                        slot = kv.Value;
+                }
+            }
+        }
+        else
+        {
+            Span<short> qInt16 = stackalloc short[CompactVectorIndex.Dimension];
+            CompactVectorIndex.QuantizeQuery(query, qInt16, out float queryScale);
+            best = new Dictionary<(long FileId, ulong UnitHash, byte ChannelId), (long SegmentId, double Cosine)>(Math.Min(index.Count, Math.Max(64, files.Count * 8)));
+            ScanCompactChunks(index, 0, index.ChunkCount, files, qInt16, queryScale, allowedSegmentIds, best, ct);
         }
 
         var byChannel = new Dictionary<byte, List<(long SegmentId, long FileId, double Cosine)>>();
@@ -401,14 +634,7 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
         foreach (var kv in byChannel)
         {
             var list = kv.Value;
-            bool small = list.Count < MinCalibratedUnits;
-            double mean = 0;
-            foreach (var item in list) mean += item.Cosine;
-            mean /= list.Count;
-            double variance = 0;
-            foreach (var item in list) variance += (item.Cosine - mean) * (item.Cosine - mean);
-            double deviation = Math.Sqrt(variance / list.Count);
-            double threshold = SignificanceThreshold(list.Count);
+            CalibrateCosineStats(list.Select(item => (item.FileId, item.Cosine)), list.Count, out double mean, out double deviation, out double threshold, out bool small);
 
             var winners = new List<CompactWinner>();
             foreach (var item in list)
@@ -421,7 +647,9 @@ public sealed class SearchService(IIndexRepository repository, IEmbeddingService
             winners.Sort((a, b) =>
             {
                 int cmp = b.Rank.CompareTo(a.Rank);
-                return cmp != 0 ? cmp : a.FileId.CompareTo(b.FileId);
+                if (cmp != 0) return cmp;
+                cmp = a.FileId.CompareTo(b.FileId);
+                return cmp != 0 ? cmp : a.SegmentId.CompareTo(b.SegmentId);
             });
             if (winners.Count > channelLimit) winners.RemoveRange(channelLimit, winners.Count - channelLimit);
             string channelName = kv.Key < index.Channels.Count ? index.Channels[kv.Key] : "text";
